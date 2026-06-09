@@ -15,8 +15,13 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       SESSION_SECRET: ${SESSION_SECRET:-please-change-this-to-a-long-random-string}
       CHANNEL_DURATION: ${CHANNEL_DURATION:-120}
-      CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1920}
-      CHANNEL_HEIGHT: ${CHANNEL_HEIGHT:-1080}
+      # The card is a static image; 720p + low frame rates look identical on a
+      # TV but cost far less CPU to encode on a small host.
+      CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1280}
+      CHANNEL_HEIGHT: ${CHANNEL_HEIGHT:-720}
+      CHANNEL_FPS: ${CHANNEL_FPS:-12}
+      CHANNEL_STILL_FPS: ${CHANNEL_STILL_FPS:-4}
+      FFMPEG_PRESET: ${FFMPEG_PRESET:-ultrafast}
       CHANNEL_LIVE_LOOP: ${CHANNEL_LIVE_LOOP:-true}
       EXPIRING_THRESHOLD_DAYS: ${EXPIRING_THRESHOLD_DAYS:-7}
       INTRO_ENABLED: ${INTRO_ENABLED:-true}
