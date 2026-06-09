@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
-  buildLivePlaylist, currentLoopPosition, writeLoopState,
+  buildLivePlaylist, createIntroSession, currentLoopPosition, writeLoopState,
 } from '../src/liveloop.js';
 
 function fixture(segmentCount = 5) {
@@ -71,4 +71,21 @@ test('a rebuilt generation can continue counters with a new segment version', (t
   assert.match(playlist, /#EXT-X-DISCONTINUITY-SEQUENCE:2/);
   assert.match(playlist, /seg_000\.ts\?v=new/);
   assert.doesNotMatch(playlist, /\?v=old/);
+});
+
+test('a new channel entry starts at the intro and then advances', (t) => {
+  const dir = fixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writeLoopState(dir, { version: 'intro' }, 100_000);
+
+  const session = createIntroSession(dir, 112_000);
+  const first = buildLivePlaylist(dir, 112_000, session);
+  assert.match(first, /#EXT-X-START:TIME-OFFSET=0\.000,PRECISE=YES/);
+  assert.match(first, /seg_000\.ts\?v=intro/);
+  assert.doesNotMatch(first, /seg_001\.ts\?v=intro/);
+
+  const later = buildLivePlaylist(dir, 118_000, session);
+  assert.match(later, /seg_000\.ts\?v=intro/);
+  assert.match(later, /seg_001\.ts\?v=intro/);
+  assert.doesNotMatch(later, /seg_002\.ts\?v=intro/);
 });

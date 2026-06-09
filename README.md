@@ -139,9 +139,10 @@ docker compose logs -f m3u-info
    the intro disabled it just loops the still card.
    Rendering happens once per data change, so idle CPU use stays near zero.
 3. The server presents those segments as a sliding **live HLS** window with no
-   end marker, so IPTV clients keep playing indefinitely. It generates a user's
-   stream on first request and switches open clients to rebuilt content whenever
-   their data, their plan's price, or the branding changes.
+   end marker, so IPTV clients keep playing indefinitely. Each `.m3u` load gets
+   a tune-in session that starts at the intro before joining the continuous
+   loop. It generates a user's stream on first request and switches open clients
+   to rebuilt content whenever their data, plan price, or branding changes.
 4. A **daily job** (00:05) rebuilds every stream so the day counter and expiry
    status stay current.
 

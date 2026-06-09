@@ -102,6 +102,23 @@ export function currentLoopPosition(dir, now = Date.now()) {
   return position(meta, state, now);
 }
 
+// Give a newly opened player its own timeline beginning at segment 0. Sequence
+// numbers start beyond the shared live window so clients accept the tune-in as
+// fresh content even if they recently watched the same channel.
+export function createIntroSession(dir, now = Date.now()) {
+  const meta = readLoopMeta(dir);
+  const state = readState(dir);
+  if (!meta || !state) return null;
+
+  const current = position(meta, state, now);
+  return {
+    epoch: now,
+    baseSeq: current.mediaSequence + LIVE_WINDOW_SEGMENTS,
+    baseDiscontinuity: current.discontinuitySequence + 1,
+    version: state.version,
+  };
+}
+
 // Initialize a newly rendered generation. A short preroll means the first
 // playlist already has a healthy live window instead of only one segment.
 export function writeLoopState(
@@ -126,7 +143,7 @@ export function writeLoopState(
   return state;
 }
 
-export function buildLivePlaylist(dir, now = Date.now()) {
+export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
   const meta = readLoopMeta(dir);
   if (!meta) return null;
 
@@ -144,17 +161,20 @@ export function buildLivePlaylist(dir, now = Date.now()) {
     }
   }
 
-  const current = position(meta, state, now);
-  const firstSequence = Math.max(
-    state.baseSeq,
-    current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1,
-  );
-  const firstOffset = firstSequence - state.baseSeq;
+  const playbackState = introSession || state;
+  const current = position(meta, playbackState, now);
+  const firstSequence = introSession
+    ? Math.max(
+      playbackState.baseSeq,
+      current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1,
+    )
+    : Math.max(state.baseSeq, current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1);
+  const playbackOffset = firstSequence - playbackState.baseSeq;
   const discontinuitySequence =
-    state.baseDiscontinuity + Math.floor(firstOffset / meta.segments.length);
+    playbackState.baseDiscontinuity + Math.floor(playbackOffset / meta.segments.length);
   const segmentCount = current.mediaSequence - firstSequence + 1;
   const advertisedDuration = Array.from({ length: segmentCount }, (_, index) => {
-    const offset = firstOffset + index;
+    const offset = playbackOffset + index;
     return meta.segments[offset % meta.segments.length].duration;
   }).reduce((sum, duration) => sum + duration, 0);
 
@@ -164,18 +184,20 @@ export function buildLivePlaylist(dir, now = Date.now()) {
     `#EXT-X-TARGETDURATION:${meta.targetDuration}`,
     `#EXT-X-MEDIA-SEQUENCE:${firstSequence}`,
     `#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitySequence}`,
-    `#EXT-X-START:TIME-OFFSET=-${advertisedDuration.toFixed(3)},PRECISE=NO`,
+    introSession
+      ? '#EXT-X-START:TIME-OFFSET=0.000,PRECISE=YES'
+      : `#EXT-X-START:TIME-OFFSET=-${advertisedDuration.toFixed(3)},PRECISE=NO`,
   ];
 
   for (let index = 0; index < segmentCount; index += 1) {
     const sequence = firstSequence + index;
-    const offset = sequence - state.baseSeq;
+    const offset = sequence - playbackState.baseSeq;
     const localIndex = offset % meta.segments.length;
     const segment = meta.segments[localIndex];
 
     if (offset > 0 && localIndex === 0) lines.push('#EXT-X-DISCONTINUITY');
     lines.push(`#EXTINF:${segment.duration.toFixed(6)},`);
-    lines.push(`${segment.file}?v=${encodeURIComponent(state.version)}`);
+    lines.push(`${segment.file}?v=${encodeURIComponent(playbackState.version)}`);
   }
   lines.push('');
   return lines.join('\n');
