@@ -21,8 +21,8 @@ RUN mkdir -p /app/data
 VOLUME ["/app/data"]
 
 ENV NODE_ENV=production
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=9222
+EXPOSE 9222
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "src/server.js"]

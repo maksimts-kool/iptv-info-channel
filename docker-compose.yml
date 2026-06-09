@@ -4,14 +4,14 @@ services:
     container_name: m3u-playlist-info
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${PORT:-9222}:${PORT:-9222}"
     environment:
       # Override the .env values for the container here if you like.
-      PORT: 8080
+      PORT: ${PORT:-9222}
       TZ: ${TZ:-Europe/Tallinn}
       # IMPORTANT: set this to the address clients use to reach the server.
-      # For LAN IPTV players use the host machine IP, e.g. http://192.168.1.50:8080
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      # For LAN IPTV players use the host machine IP, e.g. http://192.168.1.50:9222
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:9222}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       SESSION_SECRET: ${SESSION_SECRET:-please-change-this-to-a-long-random-string}
       CHANNEL_DURATION: ${CHANNEL_DURATION:-120}
