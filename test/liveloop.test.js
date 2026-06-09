@@ -80,12 +80,15 @@ test('a new channel entry starts at the intro and then advances', (t) => {
 
   const session = createIntroSession(dir, 112_000);
   const first = buildLivePlaylist(dir, 112_000, session);
+  assert.match(first, /#EXT-X-INDEPENDENT-SEGMENTS/);
   assert.match(first, /#EXT-X-START:TIME-OFFSET=0\.000,PRECISE=YES/);
   assert.match(first, /seg_000\.ts\?v=intro/);
-  assert.doesNotMatch(first, /seg_001\.ts\?v=intro/);
+  assert.match(first, /seg_001\.ts\?v=intro/);
+  assert.match(first, /seg_002\.ts\?v=intro/);
+  assert.doesNotMatch(first, /seg_003\.ts\?v=intro/);
 
   const later = buildLivePlaylist(dir, 118_000, session);
   assert.match(later, /seg_000\.ts\?v=intro/);
   assert.match(later, /seg_001\.ts\?v=intro/);
-  assert.doesNotMatch(later, /seg_002\.ts\?v=intro/);
+  assert.match(later, /seg_002\.ts\?v=intro/);
 });

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const LIVE_WINDOW_SEGMENTS = 4;
+export const INTRO_STARTUP_SEGMENTS = 3;
 
 const STATE_FILE = 'loop.json';
 const metaCache = new Map();
@@ -172,7 +173,13 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
   const playbackOffset = firstSequence - playbackState.baseSeq;
   const discontinuitySequence =
     playbackState.baseDiscontinuity + Math.floor(playbackOffset / meta.segments.length);
-  const segmentCount = current.mediaSequence - firstSequence + 1;
+  const availableSegmentCount = current.mediaSequence - firstSequence + 1;
+  const segmentCount = introSession
+    ? Math.min(
+      meta.segments.length,
+      Math.max(INTRO_STARTUP_SEGMENTS, availableSegmentCount),
+    )
+    : availableSegmentCount;
   const advertisedDuration = Array.from({ length: segmentCount }, (_, index) => {
     const offset = playbackOffset + index;
     return meta.segments[offset % meta.segments.length].duration;
@@ -181,6 +188,7 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
   const lines = [
     '#EXTM3U',
     '#EXT-X-VERSION:3',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
     `#EXT-X-TARGETDURATION:${meta.targetDuration}`,
     `#EXT-X-MEDIA-SEQUENCE:${firstSequence}`,
     `#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitySequence}`,
