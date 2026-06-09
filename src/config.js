@@ -53,6 +53,9 @@ export const config = {
     duration: num(process.env.CHANNEL_DURATION, 120),
     width: num(process.env.CHANNEL_WIDTH, 1920),
     height: num(process.env.CHANNEL_HEIGHT, 1080),
+    // Serve the per-user stream as an endless LIVE playlist (looped segments,
+    // no seek bar, no end) instead of a finite VOD clip. `false` = plain VOD.
+    liveLoop: (process.env.CHANNEL_LIVE_LOOP ?? 'true').toLowerCase() !== 'false',
   },
   intro: {
     // Animated brand intro (slide 1 -> slide 2) before the user-details card.

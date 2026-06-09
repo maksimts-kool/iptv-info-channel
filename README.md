@@ -97,6 +97,7 @@ falls back to the bundled track.
 | `SESSION_SECRET` | — | Signs the admin cookie. Use a long random string. |
 | `CHANNEL_DURATION` | `120` | Length (seconds) of the generated loop. Static cards compress tiny. |
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
+| `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
 | `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
 | `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
@@ -134,13 +135,12 @@ docker compose logs -f m3u-info
    **brand intro slide** and the **info card**.
 2. **ffmpeg** builds the loop: brand slide → (`xfade` transition) → the info
    card held for the rest of `CHANNEL_DURATION`, mixes in the background music,
-   and writes a VOD **HLS** playlist (`index.m3u8` + `.ts` segments). With the
-   intro disabled it just loops the still card.
-   Rendering happens once per data change — idle CPU is zero — and because
-   players restart a VOD from segment 0 on each tune‑in, the branding intro
-   plays every time the channel is opened.
-3. The server serves the per‑user **.m3u** (pointing at the HLS) and the HLS
-   files, generating a user's stream on first request and rebuilding it whenever
+   and writes reusable **HLS** segments (`index.m3u8` + `.ts` segments). With
+   the intro disabled it just loops the still card.
+   Rendering happens once per data change, so idle CPU use stays near zero.
+3. The server presents those segments as a sliding **live HLS** window with no
+   end marker, so IPTV clients keep playing indefinitely. It generates a user's
+   stream on first request and switches open clients to rebuilt content whenever
    their data, their plan's price, or the branding changes.
 4. A **daily job** (00:05) rebuilds every stream so the day counter and expiry
    status stay current.
@@ -164,7 +164,8 @@ docker compose logs -f m3u-info
 
 ## Notes
 
-- The HLS playlist is **VOD**; most IPTV players loop it. For a longer seamless
-  loop just raise `CHANNEL_DURATION` (a static card stays only a few hundred KB).
+- The generated media is reused as an endless live channel, so ffmpeg does not
+  need to run continuously. Set `CHANNEL_LIVE_LOOP=false` only to expose the
+  finite generated VOD directly.
 - Access is by unguessable per‑user token in the URL. Put the server behind
   HTTPS / a reverse proxy if exposing it to the internet.

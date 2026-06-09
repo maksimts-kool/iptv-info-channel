@@ -7,6 +7,9 @@ import cron from 'node-cron';
 import { config } from './config.js';
 import { Users, Plans, Settings } from './db.js';
 import { renderBodyPng, renderSlidesPng } from './overlay.js';
+import {
+  currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
+} from './liveloop.js';
 import { elapsedMs, log } from './logger.js';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
@@ -194,6 +197,9 @@ export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
     });
 
     const finalDir = userHlsDir(user.id);
+    const previousPosition = config.channel.liveLoop
+      ? currentLoopPosition(finalDir)
+      : null;
     fs.mkdirSync(config.hlsDir, { recursive: true });
     // Build in a temp dir on the SAME filesystem as the target so rename() works.
     // A cross-device rename throws EXDEV when data/ is a separate mount or Docker volume.
@@ -214,6 +220,19 @@ export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
         stillFfmpegArgs(cardPng, music, tmpDir),
         `HLS encode for user ${user.id}`,
       );
+    }
+
+    if (config.channel.liveLoop) {
+      writeLoopState(tmpDir, {
+        // Skip beyond the previous advertised window. This makes an already
+        // open player reload the new generation instead of treating it as old.
+        baseSeq: previousPosition
+          ? previousPosition.mediaSequence + LIVE_WINDOW_SEGMENTS
+          : 0,
+        baseDiscontinuity: previousPosition
+          ? previousPosition.discontinuitySequence + 1
+          : 0,
+      });
     }
 
     // Atomic-ish swap: replace the live dir with the freshly generated one.

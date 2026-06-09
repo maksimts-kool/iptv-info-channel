@@ -5,6 +5,7 @@ import path from 'node:path';
 import { config } from '../config.js';
 import { Users, Settings } from '../db.js';
 import { userHlsDir, ensureUserStream } from '../channel.js';
+import { buildLivePlaylist } from '../liveloop.js';
 import { log } from '../logger.js';
 
 const router = express.Router();
@@ -71,7 +72,24 @@ router.get('/hls/:token/:file', async (req, res) => {
     return res.status(500).type('text/plain').send('Stream generation failed');
   }
 
-  const filePath = path.join(userHlsDir(user.id), file);
+  const dir = userHlsDir(user.id);
+
+  // Serve the master playlist as an endless live loop so players show a
+  // continuous channel (no seek bar, no end) instead of a finite VOD clip.
+  if (file === 'index.m3u8' && config.channel.liveLoop) {
+    const playlist = buildLivePlaylist(dir);
+    if (playlist) {
+      return res
+        .status(200)
+        .set('Cache-Control', 'no-store, no-cache, must-revalidate')
+        .set('Pragma', 'no-cache')
+        .type('application/vnd.apple.mpegurl')
+        .send(playlist);
+    }
+    // Fall through to the on-disk VOD playlist if the loop can't be built.
+  }
+
+  const filePath = path.join(dir, file);
   if (!fs.existsSync(filePath)) {
     log.warn('stream', 'requested HLS file is missing', {
       user_id: user.id,
@@ -80,7 +98,7 @@ router.get('/hls/:token/:file', async (req, res) => {
     return res.status(404).type('text/plain').send('Not found');
   }
 
-  res.set('Cache-Control', 'no-cache');
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
   if (file.endsWith('.m3u8')) res.type('application/vnd.apple.mpegurl');
   else res.type('video/mp2t');
   fs.createReadStream(filePath).pipe(res);
