@@ -70,6 +70,7 @@ function load() {
   for (const [index, plan] of data.plans.entries()) {
     if (!Array.isArray(plan.features)) plan.features = [];
     if (!Number.isFinite(plan.sort)) plan.sort = index + 1;
+    if (plan.billing_period === undefined) plan.billing_period = '';
   }
 }
 
@@ -90,6 +91,7 @@ function decorate(u) {
     plan_name: plan.name ?? u.plan_id,
     price_cents: plan.price_cents ?? 0,
     currency: plan.currency ?? 'EUR',
+    billing_period: plan.billing_period ?? '',
   };
 }
 
@@ -122,12 +124,13 @@ function makePlanId(name) {
 export const Plans = {
   all: () => [...data.plans].sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name)),
   get: (id) => data.plans.find((p) => p.id === id) || null,
-  create: ({ name, price_cents, currency = 'EUR', features = [] }) => {
+  create: ({ name, price_cents, currency = 'EUR', billing_period = '', features = [] }) => {
     const p = {
       id: makePlanId(name),
       name,
       price_cents,
       currency,
+      billing_period,
       features: cleanFeatures(features),
       sort: data.plans.reduce((max, plan) => Math.max(max, Number(plan.sort) || 0), 0) + 1,
     };
@@ -138,7 +141,7 @@ export const Plans = {
   update: (id, fields) => {
     const p = data.plans.find((x) => x.id === id);
     if (!p) return null;
-    for (const key of ['name', 'price_cents', 'currency', 'sort']) {
+    for (const key of ['name', 'price_cents', 'currency', 'billing_period', 'sort']) {
       if (fields[key] !== undefined) p[key] = fields[key];
     }
     if (fields.features !== undefined) p.features = cleanFeatures(fields.features);

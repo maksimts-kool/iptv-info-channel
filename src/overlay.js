@@ -4,7 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { config } from './config.js';
 import {
-  formatPrice, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays, localDateString,
+  formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays, localDateString,
 } from './util.js';
 
 function esc(s) {
@@ -80,6 +80,7 @@ export function buildCardSvg(user, settings = {}) {
   const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
   const tagline = esc(settings.tagline || 'Информационный канал аккаунта');
   const price = formatPrice(user.price_cents, user.currency);
+  const period = periodLabel(user.billing_period);
   const statusFontSize = meta.label.length > 10 ? 27 : 32;
 
   return svgDoc(`
@@ -108,7 +109,7 @@ export function buildCardSvg(user, settings = {}) {
     <text x="104" y="492" fill="#ffffff" font-size="44" font-weight="700">${esc(user.plan_name)}</text>
 
     <text x="464" y="436" fill="#7f93b5" font-size="22" letter-spacing="2">ЦЕНА</text>
-    <text x="464" y="492" fill="#7dd3fc" font-size="44" font-weight="700">${esc(price)}</text>
+    <text x="464" y="492" fill="#7dd3fc" font-size="44" font-weight="700">${esc(price)}${period ? `<tspan font-size="26" font-weight="600">${esc(period)}</tspan>` : ''}</text>
 
     <text x="824" y="436" fill="#7f93b5" font-size="22" letter-spacing="2">ИСТЕКАЕТ</text>
     <text x="824" y="492" fill="#ffffff" font-size="44" font-weight="700">${esc(formatDate(user.expires_at))}</text>
@@ -183,7 +184,7 @@ export function buildExpiredPlansSvg(user, plans = [], settings = {}) {
       <g font-family="Inter, sans-serif">
         <rect x="${x}" y="${y}" width="${cardWidth}" height="${cardHeight}" rx="${compact ? 14 : 20}" fill="#131f3d" stroke="${current ? '#38bdf8' : '#2b3d68'}" stroke-width="${current ? 3 : 1.5}"/>
         <text x="${x + 24}" y="${y + (compact ? 43 : 58)}" fill="#ffffff" font-size="${nameSize}" font-weight="700">${esc(clipText(plan.name, nameChars))}</text>
-        <text x="${x + 24}" y="${y + (compact ? 82 : 119)}" fill="#7dd3fc" font-size="${priceSize}" font-weight="800">${esc(formatPrice(plan.price_cents, plan.currency))}</text>
+        <text x="${x + 24}" y="${y + (compact ? 82 : 119)}" fill="#7dd3fc" font-size="${priceSize}" font-weight="800">${esc(formatPrice(plan.price_cents, plan.currency))}${periodLabel(plan.billing_period) ? `<tspan font-size="${Math.round(priceSize * 0.62)}" font-weight="600">${esc(periodLabel(plan.billing_period))}</tspan>` : ''}</text>
         ${compact ? '' : `<line x1="${x + 24}" y1="${y + 146}" x2="${x + cardWidth - 24}" y2="${y + 146}" stroke="#2b3d68" stroke-width="1"/>`}
         ${featureRows || (compact ? '' : `<text x="${x + 24}" y="${y + featureStart}" fill="#7f93b5" font-size="${featureFontSize}">Подробности у администратора</text>`)}
         ${moreRow}

@@ -31,12 +31,15 @@ function regenAll(reason) {
     .catch((e) => log.error('admin', 'bulk regeneration failed', { reason, error: e.message }));
 }
 
+const VALID_PERIODS = ['', 'month', 'year'];
+
 function planJson(plan) {
   return {
     id: plan.id,
     name: plan.name,
     price_cents: plan.price_cents,
     currency: plan.currency,
+    billing_period: plan.billing_period || '',
     price: formatPrice(plan.price_cents, plan.currency),
     features: plan.features || [],
     sort: plan.sort,
@@ -181,7 +184,7 @@ router.delete('/api/users/:id', (req, res) => {
 
 // Create plan -> rebuild streams because expired accounts show every plan.
 router.post('/api/plans', (req, res) => {
-  const { name, price_eur, features = [] } = req.body || {};
+  const { name, price_eur, billing_period = '', features = [] } = req.body || {};
   const cleanName = String(name || '').trim();
   const cents = Math.round(Number(price_eur) * 100);
   if (!cleanName) return res.status(400).json({ error: 'plan name required' });
@@ -189,6 +192,7 @@ router.post('/api/plans', (req, res) => {
   if (price_eur === '' || price_eur === null || price_eur === undefined || !Number.isFinite(cents) || cents < 0) {
     return res.status(400).json({ error: 'bad price' });
   }
+  if (!VALID_PERIODS.includes(billing_period)) return res.status(400).json({ error: 'bad billing_period' });
   if (duplicatePlanName(cleanName)) return res.status(409).json({ error: 'a plan with this name already exists' });
   const parsedFeatures = parseFeatures(features);
   if (parsedFeatures.error) return res.status(400).json({ error: parsedFeatures.error });
@@ -197,6 +201,7 @@ router.post('/api/plans', (req, res) => {
     name: cleanName,
     price_cents: cents,
     currency: 'EUR',
+    billing_period,
     features: parsedFeatures.features,
   });
   log.info('admin', 'plan created', { plan_id: plan.id, name: plan.name });
@@ -209,9 +214,13 @@ router.patch('/api/plans/:id', (req, res) => {
   const id = req.params.id;
   const plan = Plans.get(id);
   if (!plan) return res.status(404).json({ error: 'not found' });
-  const { price_eur, name, features } = req.body || {};
+  const { price_eur, name, billing_period, features } = req.body || {};
   const updates = {};
 
+  if (billing_period !== undefined) {
+    if (!VALID_PERIODS.includes(billing_period)) return res.status(400).json({ error: 'bad billing_period' });
+    updates.billing_period = billing_period;
+  }
   if (price_eur !== undefined) {
     const cents = Math.round(Number(price_eur) * 100);
     if (price_eur === '' || price_eur === null || !Number.isFinite(cents) || cents < 0) {

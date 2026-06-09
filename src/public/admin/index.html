@@ -91,6 +91,13 @@
       <input type="hidden" id="plan-id" />
       <label>Plan name<input id="plan-name" type="text" maxlength="80" required /></label>
       <label>Price (EUR)<input id="plan-price" type="number" step="0.01" min="0" required /></label>
+      <label>Billing period
+        <select id="plan-period">
+          <option value="">One-time / no period</option>
+          <option value="month">Monthly (/мес.)</option>
+          <option value="year">Yearly (/год)</option>
+        </select>
+      </label>
       <label>Features, one per line
         <textarea id="plan-features" rows="7" maxlength="1200" placeholder="Sport channels&#10;Estonian channels"></textarea>
       </label>

@@ -158,7 +158,7 @@ function renderPlans() {
       <div class="plan-heading">
         <div>
           <div class="plan-name">${escapeHtml(p.name)}</div>
-          <div class="plan-price">${escapeHtml(p.price)}</div>
+          <div class="plan-price">${escapeHtml(p.price)}${p.billing_period === 'month' ? '/мес.' : p.billing_period === 'year' ? '/год' : ''}</div>
         </div>
         <div class="actions">
           <button class="btn tiny ghost" data-act="edit-plan">Edit</button>
@@ -253,7 +253,10 @@ function openDialog(user) {
   $('#f-expires').value = user?.expires_at || '';
   $('#f-active').checked = user ? user.active : true;
   const sel = $('#f-plan');
-  sel.innerHTML = STATE.plans.map((p) => `<option value="${p.id}">${escapeHtml(p.name)} (${p.price})</option>`).join('');
+  sel.innerHTML = STATE.plans.map((p) => {
+    const period = p.billing_period === 'month' ? '/мес.' : p.billing_period === 'year' ? '/год' : '';
+    return `<option value="${p.id}">${escapeHtml(p.name)} (${p.price}${period})</option>`;
+  }).join('');
   sel.value = user?.plan_id || STATE.plans[0]?.id;
   dlg.showModal();
 }
@@ -286,6 +289,7 @@ function openPlanDialog(plan) {
   $('#plan-id').value = plan?.id || '';
   $('#plan-name').value = plan?.name || '';
   $('#plan-price').value = plan ? (plan.price_cents / 100).toFixed(2) : '';
+  $('#plan-period').value = plan?.billing_period || '';
   $('#plan-features').value = (plan?.features || []).join('\n');
   $('#plan-dialog').showModal();
 }
@@ -297,6 +301,7 @@ $('#plan-dialog-save').onclick = async (e) => {
   const payload = {
     name: $('#plan-name').value.trim(),
     price_eur: Number(priceText),
+    billing_period: $('#plan-period').value,
     features: $('#plan-features').value
       .split('\n')
       .map((feature) => feature.trim())

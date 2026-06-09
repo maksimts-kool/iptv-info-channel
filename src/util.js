@@ -7,6 +7,13 @@ export function formatPrice(cents, currency = 'EUR') {
   return `${value} ${symbol}`;
 }
 
+// Human-readable period suffix for a plan: '/мес.', '/год', or ''.
+export function periodLabel(period) {
+  if (period === 'month') return '/мес.';
+  if (period === 'year') return '/год';
+  return '';
+}
+
 function datePartsInTimezone(date, timezone) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
