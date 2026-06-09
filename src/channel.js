@@ -91,26 +91,31 @@ function stillFfmpegArgs(cardPng, music, tmpDir) {
   ];
 }
 
-function run(cmd, args, label = cmd) {
+class AbortedError extends Error {
+  constructor() { super('generation aborted by newer request'); this.aborted = true; }
+}
+
+function run(cmd, args, label = cmd, signal = null) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     p.stderr.on('data', (d) => { err += d.toString(); });
     p.on('error', (error) => {
+      if (signal?.aborted) { reject(new AbortedError()); return; }
       log.error('process', `${label} could not start`, { error: error.message });
       reject(error);
     });
     p.on('close', (code) => {
-      if (code === 0) resolve();
-      else {
-        log.error('process', `${label} failed`, {
-          pid: p.pid,
-          code,
-          output: err.slice(-800),
-        });
-        reject(new Error(`${cmd} exited ${code}: ${err.slice(-800)}`));
-      }
+      if (code === 0) { resolve(); return; }
+      if (signal?.aborted) { reject(new AbortedError()); return; }
+      log.error('process', `${label} failed`, {
+        pid: p.pid,
+        code,
+        output: err.slice(-800),
+      });
+      reject(new Error(`${cmd} exited ${code}: ${err.slice(-800)}`));
     });
+    signal?.addEventListener('abort', () => p.kill(), { once: true });
   });
 }
 
@@ -195,9 +200,10 @@ export function playlistPath(userId) {
   return path.join(userHlsDir(userId), 'index.m3u8');
 }
 
-// One ffmpeg run per user at a time.
+// One ffmpeg run per user at a time. Each entry: { promise, abort, gen }.
 const inFlight = new Map();
 const generationJobs = new Map();
+let genSequence = 0;
 const bulkGenerationJobs = new Map();
 let bulkJobSequence = 0;
 
@@ -224,7 +230,13 @@ export function generationStatus() {
 export function generateForUser(userOrId, { reason = 'unspecified', force = false } = {}) {
   const user = typeof userOrId === 'object' ? userOrId : Users.get(userOrId);
   if (!user) throw new Error('user not found');
-  if (inFlight.has(user.id)) return inFlight.get(user.id);
+
+  // Abort any in-flight encode for this user so the newer request wins.
+  if (inFlight.has(user.id)) inFlight.get(user.id).abort();
+
+  const myGen = ++genSequence;
+  const ac = new AbortController();
+  const { signal } = ac;
 
   generationJobs.set(user.id, {
     userId: user.id,
@@ -235,25 +247,30 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
 
   const job = (async () => {
     const startedAt = Date.now();
+    // Re-fetch from DB so we always encode the latest values, not a stale caller snapshot.
+    const freshUser = Users.get(user.id);
+    if (!freshUser) throw new Error('user not found');
     const settings = Settings.all();
     const plans = Plans.all();
     const music = await ensureMusic();
 
-    const finalDir = userHlsDir(user.id);
-    const signature = streamSignature(user, settings, plans, music);
+    const finalDir = userHlsDir(freshUser.id);
+    const signature = streamSignature(freshUser, settings, plans, music);
     // Skip the encode entirely when the existing stream already matches.
-    if (!force && fs.existsSync(playlistPath(user.id)) && readSig(finalDir) === signature) {
+    if (!force && fs.existsSync(playlistPath(freshUser.id)) && readSig(finalDir) === signature) {
       log.info('channel', 'stream up to date; skipping encode', {
-        user_id: user.id,
-        username: user.username,
+        user_id: freshUser.id,
+        username: freshUser.username,
         reason,
       });
-      return playlistPath(user.id);
+      return playlistPath(freshUser.id);
     }
 
+    if (signal.aborted) throw new AbortedError();
+
     log.info('channel', 'generating stream', {
-      user_id: user.id,
-      username: user.username,
+      user_id: freshUser.id,
+      username: freshUser.username,
       reason,
     });
 
@@ -263,66 +280,68 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     fs.mkdirSync(config.hlsDir, { recursive: true });
     // Build in a temp dir on the SAME filesystem as the target so rename() works.
     // A cross-device rename throws EXDEV when data/ is a separate mount or Docker volume.
-    const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, `.build-${user.id}-`));
-
-    if (config.intro.enabled) {
-      const slides = await renderSlidesPng(user, settings, tmpDir, plans);
-      await run(
-        FFMPEG,
-        introFfmpegArgs(slides, music, tmpDir),
-        `HLS encode for user ${user.id}`,
-      );
-    } else {
-      const cardPng = path.join(tmpDir, 'card.png');
-      await renderBodyPng(user, settings, cardPng, plans);
-      await run(
-        FFMPEG,
-        stillFfmpegArgs(cardPng, music, tmpDir),
-        `HLS encode for user ${user.id}`,
-      );
-    }
-
-    if (config.channel.liveLoop) {
-      writeLoopState(tmpDir, {
-        // Skip beyond the previous advertised window. This makes an already
-        // open player reload the new generation instead of treating it as old.
-        baseSeq: previousPosition
-          ? previousPosition.mediaSequence + LIVE_WINDOW_SEGMENTS
-          : 0,
-        baseDiscontinuity: previousPosition
-          ? previousPosition.discontinuitySequence + 1
-          : 0,
-      });
-    }
-
-    // Record the fingerprint alongside the segments so the next run can skip an
-    // identical re-encode.
-    fs.writeFileSync(path.join(tmpDir, SIG_FILE), signature);
-
-    // Atomic-ish swap: replace the live dir with the freshly generated one.
-    const segmentCount = fs.readdirSync(tmpDir).filter((file) => file.endsWith('.ts')).length;
-    fs.rmSync(finalDir, { recursive: true, force: true });
-    fs.renameSync(tmpDir, finalDir);
-    log.info('channel', 'stream ready', {
-      user_id: user.id,
-      segments: segmentCount,
-      duration_ms: elapsedMs(startedAt),
-    });
-    return playlistPath(user.id);
-  })().finally(() => {
-    inFlight.delete(user.id);
-    generationJobs.delete(user.id);
-    // Clean up any leftover build dirs for this user (e.g. after a failure).
+    const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, `.build-${freshUser.id}-`));
     try {
-      for (const d of fs.readdirSync(config.hlsDir)) {
-        if (d.startsWith(`.build-${user.id}-`)) {
-          fs.rmSync(path.join(config.hlsDir, d), { recursive: true, force: true });
-        }
+      if (config.intro.enabled) {
+        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans);
+        await run(
+          FFMPEG,
+          introFfmpegArgs(slides, music, tmpDir),
+          `HLS encode for user ${freshUser.id}`,
+          signal,
+        );
+      } else {
+        const cardPng = path.join(tmpDir, 'card.png');
+        await renderBodyPng(freshUser, settings, cardPng, plans);
+        await run(
+          FFMPEG,
+          stillFfmpegArgs(cardPng, music, tmpDir),
+          `HLS encode for user ${freshUser.id}`,
+          signal,
+        );
       }
-    } catch { /* ignore */ }
+
+      if (config.channel.liveLoop) {
+        writeLoopState(tmpDir, {
+          // Skip beyond the previous advertised window. This makes an already
+          // open player reload the new generation instead of treating it as old.
+          baseSeq: previousPosition
+            ? previousPosition.mediaSequence + LIVE_WINDOW_SEGMENTS
+            : 0,
+          baseDiscontinuity: previousPosition
+            ? previousPosition.discontinuitySequence + 1
+            : 0,
+        });
+      }
+
+      // Record the fingerprint alongside the segments so the next run can skip an
+      // identical re-encode.
+      fs.writeFileSync(path.join(tmpDir, SIG_FILE), signature);
+
+      // Atomic-ish swap: replace the live dir with the freshly generated one.
+      const segmentCount = fs.readdirSync(tmpDir).filter((file) => file.endsWith('.ts')).length;
+      fs.rmSync(finalDir, { recursive: true, force: true });
+      fs.renameSync(tmpDir, finalDir);
+      log.info('channel', 'stream ready', {
+        user_id: freshUser.id,
+        segments: segmentCount,
+        duration_ms: elapsedMs(startedAt),
+      });
+      return playlistPath(freshUser.id);
+    } catch (err) {
+      // Each job cleans up only its own tmpDir to avoid racing with a successor job.
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      throw err;
+    }
+  })().finally(() => {
+    // Only unregister if this is still the current job (not superseded by a newer one).
+    if (inFlight.get(user.id)?.gen === myGen) {
+      inFlight.delete(user.id);
+      generationJobs.delete(user.id);
+    }
   });
 
-  inFlight.set(user.id, job);
+  inFlight.set(user.id, { promise: job, abort: () => ac.abort(), gen: myGen });
   return job;
 }
 

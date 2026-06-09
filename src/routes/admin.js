@@ -24,7 +24,7 @@ const router = express.Router();
 function regen(userOrId, reason) {
   Promise.resolve()
     .then(() => generateForUser(userOrId, { reason }))
-    .catch((e) => log.error('admin', 'user regeneration failed', { reason, error: e.message }));
+    .catch((e) => { if (!e.aborted) log.error('admin', 'user regeneration failed', { reason, error: e.message }); });
 }
 function regenAll(reason) {
   generateAll({ reason })
