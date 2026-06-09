@@ -123,10 +123,52 @@ router.get('/hls/:token/:file', async (req, res) => {
     return res.status(404).type('text/plain').send('Not found');
   }
 
-  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-  if (file.endsWith('.m3u8')) res.type('application/vnd.apple.mpegurl');
-  else res.type('video/mp2t');
-  fs.createReadStream(filePath).pipe(res);
+  const contentType = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
+  return sendFileWithRange(req, res, filePath, contentType);
 });
+
+// Serve a static file honoring HTTP Range. ExoPlayer/IJK (Televizo) probe
+// segments with `Range:` and can stall on a plain 200 that ignores it; we reply
+// 206 with Content-Range so they get the bytes they asked for.
+function sendFileWithRange(req, res, filePath, contentType) {
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return res.status(404).type('text/plain').send('Not found');
+  }
+  const total = stat.size;
+  res
+    .set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    .set('Accept-Ranges', 'bytes')
+    .type(contentType);
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec((req.headers.range || '').trim());
+  if (match && (match[1] !== '' || match[2] !== '')) {
+    let start;
+    let end;
+    if (match[1] === '') {
+      // Suffix range: the final N bytes.
+      start = Math.max(0, total - Number(match[2]));
+      end = total - 1;
+    } else {
+      start = Number(match[1]);
+      end = match[2] === '' ? total - 1 : Math.min(Number(match[2]), total - 1);
+    }
+    if (start > end || start >= total) {
+      return res.status(416).set('Content-Range', `bytes */${total}`).end();
+    }
+    res
+      .status(206)
+      .set('Content-Range', `bytes ${start}-${end}/${total}`)
+      .set('Content-Length', String(end - start + 1));
+    if (req.method === 'HEAD') return res.end();
+    return fs.createReadStream(filePath, { start, end }).pipe(res);
+  }
+
+  res.status(200).set('Content-Length', String(total));
+  if (req.method === 'HEAD') return res.end();
+  return fs.createReadStream(filePath).pipe(res);
+}
 
 export default router;

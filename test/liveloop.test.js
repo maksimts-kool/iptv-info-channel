@@ -29,7 +29,7 @@ test('serves a trailing live window without an end marker', (t) => {
   writeLoopState(dir, { version: 'one' }, 100_000);
 
   const playlist = buildLivePlaylist(dir, 106_000);
-  assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:1/);
+  assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:0/);
   assert.match(playlist, /seg_001\.ts\?v=one&s=1/);
   assert.match(playlist, /seg_004\.ts\?v=one&s=4/);
   assert.doesNotMatch(playlist, /#EXT-X-ENDLIST/);
@@ -41,13 +41,13 @@ test('advances through a loop with a discontinuity and monotonic sequence', (t) 
   writeLoopState(dir, { version: 'one' }, 100_000);
 
   const playlist = buildLivePlaylist(dir, 118_000);
-  assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:3/);
+  assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:0/);
   assert.match(
     playlist,
     /seg_004\.ts\?v=one&s=4\n#EXT-X-DISCONTINUITY\n#EXTINF:6\.000000,\nseg_000\.ts\?v=one&s=5/,
   );
   assert.deepEqual(currentLoopPosition(dir, 118_000), {
-    mediaSequence: 6,
+    mediaSequence: 7,
     discontinuitySequence: 1,
   });
 });
@@ -67,9 +67,9 @@ test('a rebuilt generation can continue counters with a new segment version', (t
   }, 112_000);
 
   const playlist = buildLivePlaylist(newDir, 112_000);
-  assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:9/);
+  assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:10/);
   assert.match(playlist, /#EXT-X-DISCONTINUITY-SEQUENCE:2/);
-  assert.match(playlist, /seg_000\.ts\?v=new&s=9/);
+  assert.match(playlist, /seg_000\.ts\?v=new&s=10/);
   assert.doesNotMatch(playlist, /\?v=old/);
 });
 

@@ -2,7 +2,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const LIVE_WINDOW_SEGMENTS = 4;
+// A wider window gives strict live players (ExoPlayer/IJK in Televizo) buffer
+// headroom behind the synthetic live edge. Too thin (e.g. 4) and they rebuffer
+// at the edge forever even though lenient players (OTT Play) cope.
+export const LIVE_WINDOW_SEGMENTS = 8;
 export const INTRO_LOOKAHEAD_SEGMENTS = 3;
 
 const STATE_FILE = 'loop.json';
@@ -35,12 +38,21 @@ function readLoopMeta(dir) {
   }
   if (segments.length === 0) return null;
 
-  const totalDuration = segments.reduce((sum, segment) => sum + segment.duration, 0);
+  // Drop sub-second runt segments (the trailing sliver left when the loop length
+  // isn't an exact multiple of the segment time, e.g. a 0.04s seg_020). Listing
+  // one stalls strict decoders and forces a needless discontinuity on every
+  // loop. The file stays on disk; we just never reference it.
+  const longest = Math.max(...segments.map((segment) => segment.duration));
+  const runtThreshold = Math.min(1, longest * 0.5);
+  const usable = segments.filter((segment) => segment.duration >= runtThreshold);
+  const finalSegments = usable.length > 0 ? usable : segments;
+
+  const totalDuration = finalSegments.reduce((sum, segment) => sum + segment.duration, 0);
   const targetDuration = Math.max(
     1,
-    Math.ceil(Math.max(...segments.map((segment) => segment.duration))),
+    Math.ceil(Math.max(...finalSegments.map((segment) => segment.duration))),
   );
-  const meta = { segments, totalDuration, targetDuration };
+  const meta = { segments: finalSegments, totalDuration, targetDuration };
   metaCache.set(playlistPath, { mtimeMs: stat.mtimeMs, size: stat.size, meta });
   return meta;
 }
@@ -181,7 +193,10 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
 
   const lines = [
     '#EXTM3U',
-    '#EXT-X-VERSION:3',
+    // Version 6: matches the tags we emit (EXT-X-DISCONTINUITY-SEQUENCE,
+    // EXT-X-START) and the on-disk VOD playlist. Strict players reject the
+    // version/tag mismatch a lower number implies.
+    '#EXT-X-VERSION:6',
     '#EXT-X-INDEPENDENT-SEGMENTS',
     ...(introSession ? ['#EXT-X-PLAYLIST-TYPE:EVENT'] : []),
     `#EXT-X-TARGETDURATION:${meta.targetDuration}`,
