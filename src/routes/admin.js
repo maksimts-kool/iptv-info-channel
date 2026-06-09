@@ -7,7 +7,9 @@ import { Users, Plans, Settings } from '../db.js';
 import {
   daysLeft, accountStatus, formatPrice, formatDate, STATUS_META,
 } from '../util.js';
-import { generateForUser, generateAll, removeUserHls } from '../channel.js';
+import {
+  generateForUser, generateAll, generationStatus, removeUserHls,
+} from '../channel.js';
 import {
   requireAuth, requireAuthPage, checkPassword, setSession, clearSession,
 } from '../middleware/auth.js';
@@ -114,6 +116,10 @@ router.get('/api/state', (req, res) => {
     plans: Plans.all().map(planJson),
     users: Users.all().map(decorateUser),
   });
+});
+
+router.get('/api/generation-status', (req, res) => {
+  res.json(generationStatus());
 });
 
 // Create user

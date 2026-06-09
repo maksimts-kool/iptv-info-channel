@@ -15,6 +15,18 @@
     </div>
   </header>
 
+  <aside id="generation-status" class="generation-status" role="status" aria-live="polite" hidden>
+    <div class="generation-spinner" aria-hidden="true"></div>
+    <div class="generation-copy">
+      <strong id="generation-title">Updating channel streams</strong>
+      <span id="generation-detail">FFmpeg is rendering new video segments in the background.</span>
+      <div id="generation-progress" class="generation-progress" hidden>
+        <div id="generation-progress-bar" class="generation-progress-bar"></div>
+      </div>
+      <span id="generation-count" class="generation-count"></span>
+    </div>
+  </aside>
+
   <main class="wrap">
     <section class="card">
       <div class="card-head">

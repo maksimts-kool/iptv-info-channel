@@ -2,5 +2,6 @@ node_modules
 data
 .git
 .env
+.env.server
 *.log
 npm-debug.log

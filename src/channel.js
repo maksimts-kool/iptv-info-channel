@@ -134,11 +134,41 @@ export function playlistPath(userId) {
 
 // One ffmpeg run per user at a time.
 const inFlight = new Map();
+const generationJobs = new Map();
+const bulkGenerationJobs = new Map();
+let bulkJobSequence = 0;
+
+export function generationStatus() {
+  const userJobs = [...generationJobs.values()];
+  const bulkJobs = [...bulkGenerationJobs.values()];
+  const startedAt = [...userJobs, ...bulkJobs]
+    .map((job) => job.startedAt)
+    .sort()[0] || null;
+  const latestBulk = bulkJobs.at(-1);
+
+  return {
+    active: userJobs.length > 0 || bulkJobs.length > 0,
+    started_at: startedAt,
+    reason: latestBulk?.reason || userJobs.at(-1)?.reason || null,
+    active_users: userJobs.map(({ userId, username }) => ({ id: userId, username })),
+    bulk: latestBulk ? {
+      total: latestBulk.total,
+      completed: latestBulk.completed,
+    } : null,
+  };
+}
 
 export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
   const user = typeof userOrId === 'object' ? userOrId : Users.get(userOrId);
   if (!user) throw new Error('user not found');
   if (inFlight.has(user.id)) return inFlight.get(user.id);
+
+  generationJobs.set(user.id, {
+    userId: user.id,
+    username: user.username,
+    reason,
+    startedAt: new Date().toISOString(),
+  });
 
   const job = (async () => {
     const startedAt = Date.now();
@@ -186,6 +216,7 @@ export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
     return playlistPath(user.id);
   })().finally(() => {
     inFlight.delete(user.id);
+    generationJobs.delete(user.id);
     // Clean up any leftover build dirs for this user (e.g. after a failure).
     try {
       for (const d of fs.readdirSync(config.hlsDir)) {
@@ -203,31 +234,46 @@ export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
 export async function generateAll({ reason = 'bulk regeneration' } = {}) {
   const startedAt = Date.now();
   const users = Users.all();
-  if (users.length > 1) {
-    log.info('channel', 'rebuilding streams', { reason, users: users.length });
-  }
-  const results = [];
-  for (const u of users) {
-    try {
-      await generateForUser(u, { reason });
-      results.push({ id: u.id, ok: true });
-    } catch (e) {
-      results.push({ id: u.id, ok: false, error: e.message });
-      log.error('channel', 'generation failed', {
-        user_id: u.id,
-        username: u.username,
-        error: e.message,
+  const bulkJobId = ++bulkJobSequence;
+  const bulkJob = {
+    reason,
+    total: users.length,
+    completed: 0,
+    startedAt: new Date().toISOString(),
+  };
+  bulkGenerationJobs.set(bulkJobId, bulkJob);
+
+  try {
+    if (users.length > 1) {
+      log.info('channel', 'rebuilding streams', { reason, users: users.length });
+    }
+    const results = [];
+    for (const u of users) {
+      try {
+        await generateForUser(u, { reason });
+        results.push({ id: u.id, ok: true });
+      } catch (e) {
+        results.push({ id: u.id, ok: false, error: e.message });
+        log.error('channel', 'generation failed', {
+          user_id: u.id,
+          username: u.username,
+          error: e.message,
+        });
+      } finally {
+        bulkJob.completed += 1;
+      }
+    }
+    if (users.length !== 1) {
+      log.info('channel', 'stream rebuild complete', {
+        succeeded: results.filter((result) => result.ok).length,
+        failed: results.filter((result) => !result.ok).length,
+        duration_ms: elapsedMs(startedAt),
       });
     }
+    return results;
+  } finally {
+    bulkGenerationJobs.delete(bulkJobId);
   }
-  if (users.length !== 1) {
-    log.info('channel', 'stream rebuild complete', {
-      succeeded: results.filter((result) => result.ok).length,
-      failed: results.filter((result) => !result.ok).length,
-      duration_ms: elapsedMs(startedAt),
-    });
-  }
-  return results;
 }
 
 export function removeUserHls(userId) {

@@ -1,6 +1,9 @@
 // Admin panel logic (vanilla JS). Talks to /admin/api/*.
 const $ = (sel) => document.querySelector(sel);
 let STATE = { users: [], plans: [], settings: {}, publicBaseUrl: '' };
+let generationStatusLoading = false;
+let generationInProgress = false;
+let generationCompleteTimer;
 
 async function api(method, url, body) {
   const res = await fetch(url, {
@@ -22,8 +25,111 @@ function toast(msg) {
   toast._t = setTimeout(() => { t.hidden = true; }, 2200);
 }
 
-function copy(text) {
-  navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard'));
+async function copy(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', '');
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      input.setSelectionRange(0, input.value.length);
+      const copied = document.execCommand('copy');
+      input.remove();
+      if (!copied) throw new Error('copy command was rejected');
+    }
+    toast('Copied to clipboard');
+  } catch {
+    window.prompt('Copy this URL:', text);
+  }
+}
+
+function showGenerationPending(title = 'Updating channel streams') {
+  const banner = $('#generation-status');
+  clearTimeout(generationCompleteTimer);
+  generationInProgress = true;
+  banner.hidden = false;
+  banner.classList.remove('is-complete');
+  $('#generation-title').textContent = title;
+  $('#generation-detail').textContent = 'Your changes are saved. FFmpeg is rendering new video segments in the background, so IPTV playback updates only after encoding finishes.';
+  $('#generation-progress').hidden = true;
+  $('#generation-count').textContent = 'Waiting for the encoder…';
+  $('#regen-all').disabled = true;
+}
+
+function clearGenerationPending() {
+  clearTimeout(generationCompleteTimer);
+  generationInProgress = false;
+  $('#generation-status').hidden = true;
+  $('#generation-status').classList.remove('is-complete');
+  $('#regen-all').disabled = false;
+}
+
+function showGenerationComplete() {
+  const banner = $('#generation-status');
+  generationInProgress = false;
+  banner.hidden = false;
+  banner.classList.add('is-complete');
+  $('#generation-title').textContent = 'Stream update complete';
+  $('#generation-detail').textContent = 'Encoding finished. The updated channel stream is ready for IPTV playback.';
+  $('#generation-progress').hidden = false;
+  $('#generation-progress-bar').style.width = '100%';
+  $('#generation-count').textContent = 'Completed';
+  $('#regen-all').disabled = false;
+  clearTimeout(generationCompleteTimer);
+  generationCompleteTimer = setTimeout(() => {
+    banner.hidden = true;
+    banner.classList.remove('is-complete');
+  }, 5000);
+}
+
+function renderGenerationStatus(status) {
+  const banner = $('#generation-status');
+  if (!status.active) {
+    if (generationInProgress) showGenerationComplete();
+    else if (!banner.classList.contains('is-complete')) clearGenerationPending();
+    return;
+  }
+
+  clearTimeout(generationCompleteTimer);
+  generationInProgress = true;
+  const names = status.active_users.map((user) => user.username).filter(Boolean);
+  banner.hidden = false;
+  banner.classList.remove('is-complete');
+  $('#regen-all').disabled = true;
+  $('#generation-title').textContent = status.bulk
+    ? 'Rebuilding all channel streams'
+    : `Updating ${names[0] || 'channel'} stream`;
+  $('#generation-detail').textContent = 'FFmpeg is encoding video in the background. Existing streams stay online, but saved changes will appear in IPTV playback only when the new stream is ready.';
+
+  if (status.bulk?.total) {
+    const completed = Math.min(status.bulk.completed, status.bulk.total);
+    const percent = Math.round((completed / status.bulk.total) * 100);
+    $('#generation-progress').hidden = false;
+    $('#generation-progress-bar').style.width = `${percent}%`;
+    $('#generation-count').textContent = `${completed} of ${status.bulk.total} streams encoded${names.length ? ` · Now: ${names.join(', ')}` : ''}`;
+  } else {
+    $('#generation-progress').hidden = true;
+    $('#generation-count').textContent = names.length
+      ? `Encoding: ${names.join(', ')}`
+      : 'Preparing stream encoding…';
+  }
+}
+
+async function refreshGenerationStatus() {
+  if (generationStatusLoading) return;
+  generationStatusLoading = true;
+  try {
+    renderGenerationStatus(await api('GET', '/admin/api/generation-status'));
+  } catch {
+    // Keep the current indicator during brief network failures.
+  } finally {
+    generationStatusLoading = false;
+  }
 }
 
 async function load() {
@@ -63,11 +169,13 @@ function renderPlans() {
     div.querySelector('[data-act="edit-plan"]').onclick = () => openPlanDialog(p);
     div.querySelector('[data-act="delete-plan"]').onclick = async () => {
       if (!confirm(`Delete plan "${p.name}"?`)) return;
+      showGenerationPending('Deleting plan and rebuilding streams');
       try {
         await api('DELETE', `/admin/api/plans/${p.id}`);
-        toast('Plan deleted');
+        toast('Plan deleted — streams rebuilding');
         await load();
-      } catch (e) { toast(e.message); }
+        await refreshGenerationStatus();
+      } catch (e) { toast(e.message); clearGenerationPending(); }
     };
     wrap.appendChild(div);
   }
@@ -105,8 +213,12 @@ function renderUsers() {
     sw.className = 'switch';
     sw.innerHTML = `<input type="checkbox" ${u.active ? 'checked' : ''}><span class="slider"></span>`;
     sw.querySelector('input').onchange = async (e) => {
-      try { await api('PATCH', `/admin/api/users/${u.id}`, { active: e.target.checked }); await load(); }
-      catch (err) { toast(err.message); }
+      showGenerationPending(`Updating ${u.username}'s stream`);
+      try {
+        await api('PATCH', `/admin/api/users/${u.id}`, { active: e.target.checked });
+        await load();
+        await refreshGenerationStatus();
+      } catch (err) { toast(err.message); clearGenerationPending(); }
     };
     tr.children[6].appendChild(sw);
 
@@ -115,8 +227,13 @@ function renderUsers() {
     tr.querySelector('[data-act="edit"]').onclick = () => openDialog(u);
     tr.querySelector('[data-act="token"]').onclick = async () => {
       if (!confirm('Generate a new link? The old m3u URL will stop working.')) return;
-      try { await api('POST', `/admin/api/users/${u.id}/token`); toast('New link generated'); await load(); }
-      catch (e) { toast(e.message); }
+      showGenerationPending(`Generating ${u.username}'s new stream`);
+      try {
+        await api('POST', `/admin/api/users/${u.id}/token`);
+        toast('New link generated — stream rebuilding');
+        await load();
+        await refreshGenerationStatus();
+      } catch (e) { toast(e.message); clearGenerationPending(); }
     };
     tr.querySelector('[data-act="del"]').onclick = async () => {
       if (!confirm(`Delete ${u.username}?`)) return;
@@ -151,13 +268,15 @@ $('#dialog-save').onclick = async (e) => {
     active: $('#f-active').checked,
   };
   if (!payload.username) return toast('Username required');
+  showGenerationPending(id ? `Updating ${payload.username}'s stream` : `Creating ${payload.username}'s stream`);
   try {
     if (id) await api('PATCH', `/admin/api/users/${id}`, payload);
     else await api('POST', '/admin/api/users', payload);
     $('#user-dialog').close();
-    toast('Saved');
+    toast('Saved — stream rebuilding');
     await load();
-  } catch (err) { toast(err.message); }
+    await refreshGenerationStatus();
+  } catch (err) { toast(err.message); clearGenerationPending(); }
 };
 $('#dialog-cancel').onclick = () => $('#user-dialog').close();
 
@@ -185,13 +304,15 @@ $('#plan-dialog-save').onclick = async (e) => {
   };
   if (!payload.name) return toast('Plan name required');
   if (!priceText || !Number.isFinite(payload.price_eur) || payload.price_eur < 0) return toast('Valid price required');
+  showGenerationPending('Saving plan and rebuilding streams');
   try {
     if (id) await api('PATCH', `/admin/api/plans/${id}`, payload);
     else await api('POST', '/admin/api/plans', payload);
     $('#plan-dialog').close();
     toast('Plan saved — streams rebuilding');
     await load();
-  } catch (err) { toast(err.message); }
+    await refreshGenerationStatus();
+  } catch (err) { toast(err.message); clearGenerationPending(); }
 };
 $('#plan-dialog-cancel').onclick = () => $('#plan-dialog').close();
 
@@ -199,17 +320,23 @@ $('#plan-dialog-cancel').onclick = () => $('#plan-dialog').close();
 $('#add-user').onclick = () => openDialog(null);
 $('#add-plan').onclick = () => openPlanDialog(null);
 $('#save-settings').onclick = async () => {
+  showGenerationPending('Saving branding and rebuilding streams');
   try {
     await api('PATCH', '/admin/api/settings', {
       brand_name: $('#brand_name').value, tagline: $('#tagline').value,
     });
     toast('Branding saved — streams rebuilding');
-  } catch (e) { toast(e.message); }
+    await refreshGenerationStatus();
+  } catch (e) { toast(e.message); clearGenerationPending(); }
 };
 $('#regen-all').onclick = async () => {
+  showGenerationPending('Rebuilding all channel streams');
   toast('Rebuilding all streams…');
-  try { await api('POST', '/admin/api/regenerate-all'); toast('All streams rebuilt'); }
-  catch (e) { toast(e.message); }
+  try {
+    await api('POST', '/admin/api/regenerate-all');
+    toast('All streams rebuilt');
+    await refreshGenerationStatus();
+  } catch (e) { toast(e.message); clearGenerationPending(); }
 };
 $('#logout').onclick = async () => { await api('POST', '/admin/logout'); location.href = '/admin/login'; };
 
@@ -217,4 +344,7 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-load().catch((e) => toast('Load failed: ' + e.message));
+load()
+  .then(refreshGenerationStatus)
+  .catch((e) => toast('Load failed: ' + e.message));
+setInterval(refreshGenerationStatus, 1500);
