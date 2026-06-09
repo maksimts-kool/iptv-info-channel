@@ -36,9 +36,9 @@ const DATA_DIR = path.isAbsolute(process.env.DATA_DIR || 'data')
 
 export const config = {
   root: ROOT,
-  port: num(process.env.PORT, 8080),
+  port: num(process.env.PORT, 9222),
   timezone: process.env.TZ,
-  publicBaseUrl: (process.env.PUBLIC_BASE_URL || `http://localhost:${num(process.env.PORT, 8080)}`).replace(/\/+$/, ''),
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL || `http://localhost:${num(process.env.PORT, 9222)}`).replace(/\/+$/, ''),
 
   adminPassword: process.env.ADMIN_PASSWORD || 'changeme',
   sessionSecret: process.env.SESSION_SECRET || 'please-change-this-to-a-long-random-string',
