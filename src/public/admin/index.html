@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin · IPTV Info Channel</title>
+  <link rel="stylesheet" href="/admin/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📺 IPTV Info Channel <span class="muted">· admin</span></div>
+    <div class="topbar-actions">
+      <button id="regen-all" class="btn ghost">Rebuild all streams</button>
+      <button id="logout" class="btn ghost">Log out</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card">
+      <div class="card-head">
+        <h2>Plans &amp; pricing</h2>
+        <div class="card-head-actions">
+          <span class="muted" id="base-url"></span>
+          <button id="add-plan" class="btn">+ Add plan</button>
+        </div>
+      </div>
+      <div id="plans" class="plans-grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Branding</h2>
+      <div class="row">
+        <label>Service name<input id="brand_name" type="text" /></label>
+        <label>Tagline<input id="tagline" type="text" /></label>
+        <button id="save-settings" class="btn">Save branding</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Users</h2>
+        <button id="add-user" class="btn">+ Add user</button>
+      </div>
+      <div class="table-scroll">
+        <table id="users">
+          <thead>
+            <tr>
+              <th>User</th><th>Plan</th><th>Price</th>
+              <th>Expires</th><th>Days left</th><th>Status</th>
+              <th>Active</th><th>Links</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Add/edit user dialog -->
+  <dialog id="user-dialog">
+    <form method="dialog" id="user-form">
+      <h3 id="dialog-title">Add user</h3>
+      <input type="hidden" id="f-id" />
+      <label>Username<input id="f-username" type="text" required /></label>
+      <label>Plan<select id="f-plan"></select></label>
+      <label>Expiration date<input id="f-expires" type="date" /></label>
+      <label class="check"><input id="f-active" type="checkbox" checked /> Active</label>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost" type="button" id="dialog-cancel">Cancel</button>
+        <button value="ok" class="btn" id="dialog-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Add/edit plan dialog -->
+  <dialog id="plan-dialog">
+    <form method="dialog" id="plan-form">
+      <h3 id="plan-dialog-title">Add plan</h3>
+      <input type="hidden" id="plan-id" />
+      <label>Plan name<input id="plan-name" type="text" maxlength="80" required /></label>
+      <label>Price (EUR)<input id="plan-price" type="number" step="0.01" min="0" required /></label>
+      <label>Features, one per line
+        <textarea id="plan-features" rows="7" maxlength="1200" placeholder="Sport channels&#10;Estonian channels"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost" type="button" id="plan-dialog-cancel">Cancel</button>
+        <button value="ok" class="btn" id="plan-dialog-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/admin/static/app.js"></script>
+</body>
+</html>

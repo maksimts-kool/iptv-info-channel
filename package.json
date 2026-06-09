@@ -1,0 +1,23 @@
+{
+  "name": "m3u-playlist-info",
+  "version": "1.0.0",
+  "description": "Multi-user IPTV info channel: per-user looping HLS stream showing plan, price, expiration and account status, with background music and a web admin panel.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node src/seed.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "nanoid": "^5.0.7",
+    "node-cron": "^3.0.3",
+    "sharp": "^0.33.5"
+  }
+}
