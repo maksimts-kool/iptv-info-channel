@@ -51,8 +51,17 @@ export const config = {
 
   channel: {
     duration: num(process.env.CHANNEL_DURATION, 120),
-    width: num(process.env.CHANNEL_WIDTH, 1920),
-    height: num(process.env.CHANNEL_HEIGHT, 1080),
+    width: num(process.env.CHANNEL_WIDTH, 1280),
+    height: num(process.env.CHANNEL_HEIGHT, 720),
+    // The card is essentially a still image, so a high frame rate just burns CPU
+    // re-encoding identical frames. Low rates are visually identical here.
+    fps: num(process.env.CHANNEL_FPS, 12),          // intro path (has a short xfade)
+    stillFps: num(process.env.CHANNEL_STILL_FPS, 4), // plain still-card path
+    // libx264 preset. For a static image the quality cost of `ultrafast` is
+    // irrelevant but the CPU savings are large.
+    preset: process.env.FFMPEG_PRESET || 'ultrafast',
+    // HLS segment length (seconds). Keyframes are forced on these boundaries.
+    hlsTime: num(process.env.HLS_TIME, 6),
     // Serve the per-user stream as an endless LIVE playlist (looped segments,
     // no seek bar, no end) instead of a finite VOD clip. `false` = plain VOD.
     liveLoop: (process.env.CHANNEL_LIVE_LOOP ?? 'true').toLowerCase() !== 'false',

@@ -2,11 +2,14 @@
 // using ffmpeg, and keeps it refreshed daily so "days left" stays accurate.
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import cron from 'node-cron';
 import { config } from './config.js';
 import { Users, Plans, Settings } from './db.js';
-import { renderBodyPng, renderSlidesPng } from './overlay.js';
+import {
+  renderBodyPng, renderSlidesPng, buildBrandSlide1Svg, buildBodySvg,
+} from './overlay.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
@@ -19,7 +22,7 @@ const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 function hlsOutArgs(tmpDir) {
   return [
     '-f', 'hls',
-    '-hls_time', '6',
+    '-hls_time', String(config.channel.hlsTime),
     '-hls_list_size', '0',
     '-hls_flags', 'independent_segments',
     '-hls_playlist_type', 'vod',
@@ -28,11 +31,25 @@ function hlsOutArgs(tmpDir) {
   ];
 }
 
+// Video encoder args shared by both paths. Keyframes are forced exactly on the
+// HLS segment boundaries (not via a fixed GOP) so segments stay clean even at
+// the very low frame rates we use for a static card. `-sc_threshold 0` stops
+// ffmpeg inserting extra keyframes on the (non-existent) scene changes.
+function videoEncodeArgs(fps) {
+  const seg = config.channel.hlsTime;
+  return [
+    '-c:v', 'libx264', '-preset', config.channel.preset, '-tune', 'stillimage',
+    '-pix_fmt', 'yuv420p', '-r', String(fps),
+    '-force_key_frames', `expr:gte(t,n_forced*${seg})`,
+    '-sc_threshold', '0',
+  ];
+}
+
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
 // info card held for the rest of the loop, with background music.
 function introFfmpegArgs(slides, music, tmpDir) {
   const dur = config.channel.duration;
-  const { width: W, height: H } = config.channel;
+  const { width: W, height: H, fps } = config.channel;
   const XF = 0.8;                 // transition length (s)
   const S = Math.max(XF + 0.5, config.intro.slideSeconds); // brand slide on-screen
   const L2 = Math.max(6, dur - S + XF);                    // card hold length
@@ -41,8 +58,8 @@ function introFfmpegArgs(slides, music, tmpDir) {
   const aOut = Math.max(0, dur - 2).toFixed(2);
 
   const filter =
-    `[0:v]scale=${W}:${H},setsar=1,fps=25,format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
-    `[1:v]scale=${W}:${H},setsar=1,fps=25,format=yuv420p,fade=t=out:st=${fos}:d=0.6[v1];` +
+    `[0:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
+    `[1:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=out:st=${fos}:d=0.6[v1];` +
     `[v0][v1]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o1}[v]`;
 
   return [
@@ -53,8 +70,7 @@ function introFfmpegArgs(slides, music, tmpDir) {
     '-filter_complex', filter,
     '-map', '[v]', '-map', '2:a',
     '-af', `afade=t=in:d=1,afade=t=out:st=${aOut}:d=2`,
-    '-c:v', 'libx264', '-preset', 'veryfast',
-    '-pix_fmt', 'yuv420p', '-r', '25', '-g', '50',
+    ...videoEncodeArgs(fps),
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
     '-shortest',
     ...hlsOutArgs(tmpDir),
@@ -69,8 +85,7 @@ function stillFfmpegArgs(cardPng, music, tmpDir) {
     '-stream_loop', '-1', '-i', music,
     '-t', String(config.channel.duration),
     '-map', '0:v', '-map', '1:a',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage',
-    '-pix_fmt', 'yuv420p', '-r', '25', '-g', '50',
+    ...videoEncodeArgs(config.channel.stillFps),
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
     ...hlsOutArgs(tmpDir),
   ];
@@ -143,6 +158,39 @@ export function userHlsDir(userId) {
   return path.join(config.hlsDir, String(userId));
 }
 
+// A fingerprint of everything that affects a user's rendered stream. Hashing the
+// actual SVG content (which already encodes username, plan, price, status,
+// days-left and the footer date) plus the encode parameters lets us skip a fresh
+// 1-vCPU encode when nothing has changed since the last successful generation —
+// e.g. startup pre-gen followed by a manual "regenerate", or rapid double-clicks.
+const SIG_FILE = 'sig';
+function streamSignature(user, settings, plans, music) {
+  let musicMtime = 0;
+  try { musicMtime = fs.statSync(music).mtimeMs; } catch { /* fall back to 0 */ }
+  const c = config.channel;
+  const svgs = config.intro.enabled
+    ? [buildBrandSlide1Svg(settings), buildBodySvg(user, plans, settings)]
+    : [buildBodySvg(user, plans, settings)];
+  const payload = JSON.stringify({
+    v: 1,
+    svgs,
+    enc: {
+      W: c.width, H: c.height, fps: c.fps, stillFps: c.stillFps,
+      preset: c.preset, duration: c.duration, hlsTime: c.hlsTime, liveLoop: c.liveLoop,
+      intro: config.intro.enabled
+        ? { slide: config.intro.slideSeconds, transition: config.intro.transition }
+        : false,
+    },
+    musicMtime,
+  });
+  return crypto.createHash('sha1').update(payload).digest('hex');
+}
+
+function readSig(dir) {
+  try { return fs.readFileSync(path.join(dir, SIG_FILE), 'utf8').trim(); }
+  catch { return null; }
+}
+
 export function playlistPath(userId) {
   return path.join(userHlsDir(userId), 'index.m3u8');
 }
@@ -173,7 +221,7 @@ export function generationStatus() {
   };
 }
 
-export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
+export function generateForUser(userOrId, { reason = 'unspecified', force = false } = {}) {
   const user = typeof userOrId === 'object' ? userOrId : Users.get(userOrId);
   if (!user) throw new Error('user not found');
   if (inFlight.has(user.id)) return inFlight.get(user.id);
@@ -190,13 +238,25 @@ export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
     const settings = Settings.all();
     const plans = Plans.all();
     const music = await ensureMusic();
+
+    const finalDir = userHlsDir(user.id);
+    const signature = streamSignature(user, settings, plans, music);
+    // Skip the encode entirely when the existing stream already matches.
+    if (!force && fs.existsSync(playlistPath(user.id)) && readSig(finalDir) === signature) {
+      log.info('channel', 'stream up to date; skipping encode', {
+        user_id: user.id,
+        username: user.username,
+        reason,
+      });
+      return playlistPath(user.id);
+    }
+
     log.info('channel', 'generating stream', {
       user_id: user.id,
       username: user.username,
       reason,
     });
 
-    const finalDir = userHlsDir(user.id);
     const previousPosition = config.channel.liveLoop
       ? currentLoopPosition(finalDir)
       : null;
@@ -234,6 +294,10 @@ export function generateForUser(userOrId, { reason = 'unspecified' } = {}) {
           : 0,
       });
     }
+
+    // Record the fingerprint alongside the segments so the next run can skip an
+    // identical re-encode.
+    fs.writeFileSync(path.join(tmpDir, SIG_FILE), signature);
 
     // Atomic-ish swap: replace the live dir with the freshly generated one.
     const segmentCount = fs.readdirSync(tmpDir).filter((file) => file.endsWith('.ts')).length;
