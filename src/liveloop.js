@@ -1,11 +1,9 @@
-// Presents a pre-generated VOD HLS asset as an endless, wall-clock-paced live
-// channel. The playlist is a trailing window, so clients cannot race through
-// already-generated segments and then stall waiting for time to catch up.
+// Presents a pre-generated VOD HLS asset as an endless live channel.
 import fs from 'node:fs';
 import path from 'node:path';
 
 export const LIVE_WINDOW_SEGMENTS = 4;
-export const INTRO_STARTUP_SEGMENTS = 3;
+export const INTRO_LOOKAHEAD_SEGMENTS = 3;
 
 const STATE_FILE = 'loop.json';
 const metaCache = new Map();
@@ -165,20 +163,16 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
   const playbackState = introSession || state;
   const current = position(meta, playbackState, now);
   const firstSequence = introSession
-    ? Math.max(
-      playbackState.baseSeq,
-      current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1,
-    )
+    ? playbackState.baseSeq
     : Math.max(state.baseSeq, current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1);
   const playbackOffset = firstSequence - playbackState.baseSeq;
   const discontinuitySequence =
     playbackState.baseDiscontinuity + Math.floor(playbackOffset / meta.segments.length);
   const availableSegmentCount = current.mediaSequence - firstSequence + 1;
   const segmentCount = introSession
-    ? Math.min(
-      meta.segments.length,
-      Math.max(INTRO_STARTUP_SEGMENTS, availableSegmentCount),
-    )
+    // EVENT playlists begin at the intro and only append. Keep multiple fully
+    // generated segments ahead so OTT-play never catches the synthetic edge.
+    ? availableSegmentCount + INTRO_LOOKAHEAD_SEGMENTS
     : availableSegmentCount;
   const advertisedDuration = Array.from({ length: segmentCount }, (_, index) => {
     const offset = playbackOffset + index;
@@ -189,6 +183,7 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
     '#EXTM3U',
     '#EXT-X-VERSION:3',
     '#EXT-X-INDEPENDENT-SEGMENTS',
+    ...(introSession ? ['#EXT-X-PLAYLIST-TYPE:EVENT'] : []),
     `#EXT-X-TARGETDURATION:${meta.targetDuration}`,
     `#EXT-X-MEDIA-SEQUENCE:${firstSequence}`,
     `#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitySequence}`,
@@ -205,7 +200,9 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
 
     if (offset > 0 && localIndex === 0) lines.push('#EXT-X-DISCONTINUITY');
     lines.push(`#EXTINF:${segment.duration.toFixed(6)},`);
-    lines.push(`${segment.file}?v=${encodeURIComponent(playbackState.version)}`);
+    lines.push(
+      `${segment.file}?v=${encodeURIComponent(playbackState.version)}&s=${sequence}`,
+    );
   }
   lines.push('');
   return lines.join('\n');

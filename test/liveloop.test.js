@@ -30,8 +30,8 @@ test('serves a trailing live window without an end marker', (t) => {
 
   const playlist = buildLivePlaylist(dir, 106_000);
   assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:1/);
-  assert.match(playlist, /seg_001\.ts\?v=one/);
-  assert.match(playlist, /seg_004\.ts\?v=one/);
+  assert.match(playlist, /seg_001\.ts\?v=one&s=1/);
+  assert.match(playlist, /seg_004\.ts\?v=one&s=4/);
   assert.doesNotMatch(playlist, /#EXT-X-ENDLIST/);
 });
 
@@ -44,7 +44,7 @@ test('advances through a loop with a discontinuity and monotonic sequence', (t) 
   assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:3/);
   assert.match(
     playlist,
-    /seg_004\.ts\?v=one\n#EXT-X-DISCONTINUITY\n#EXTINF:6\.000000,\nseg_000\.ts\?v=one/,
+    /seg_004\.ts\?v=one&s=4\n#EXT-X-DISCONTINUITY\n#EXTINF:6\.000000,\nseg_000\.ts\?v=one&s=5/,
   );
   assert.deepEqual(currentLoopPosition(dir, 118_000), {
     mediaSequence: 6,
@@ -69,7 +69,7 @@ test('a rebuilt generation can continue counters with a new segment version', (t
   const playlist = buildLivePlaylist(newDir, 112_000);
   assert.match(playlist, /#EXT-X-MEDIA-SEQUENCE:9/);
   assert.match(playlist, /#EXT-X-DISCONTINUITY-SEQUENCE:2/);
-  assert.match(playlist, /seg_000\.ts\?v=new/);
+  assert.match(playlist, /seg_000\.ts\?v=new&s=9/);
   assert.doesNotMatch(playlist, /\?v=old/);
 });
 
@@ -81,14 +81,30 @@ test('a new channel entry starts at the intro and then advances', (t) => {
   const session = createIntroSession(dir, 112_000);
   const first = buildLivePlaylist(dir, 112_000, session);
   assert.match(first, /#EXT-X-INDEPENDENT-SEGMENTS/);
+  assert.match(first, /#EXT-X-PLAYLIST-TYPE:EVENT/);
   assert.match(first, /#EXT-X-START:TIME-OFFSET=0\.000,PRECISE=YES/);
-  assert.match(first, /seg_000\.ts\?v=intro/);
-  assert.match(first, /seg_001\.ts\?v=intro/);
-  assert.match(first, /seg_002\.ts\?v=intro/);
-  assert.doesNotMatch(first, /seg_003\.ts\?v=intro/);
+  assert.match(first, /seg_000\.ts\?v=intro&s=\d+/);
+  assert.match(first, /seg_001\.ts\?v=intro&s=\d+/);
+  assert.match(first, /seg_002\.ts\?v=intro&s=\d+/);
+  assert.match(first, /seg_003\.ts\?v=intro&s=\d+/);
+  assert.doesNotMatch(first, /seg_004\.ts\?v=intro/);
 
   const later = buildLivePlaylist(dir, 118_000, session);
-  assert.match(later, /seg_000\.ts\?v=intro/);
-  assert.match(later, /seg_001\.ts\?v=intro/);
-  assert.match(later, /seg_002\.ts\?v=intro/);
+  assert.match(later, /seg_000\.ts\?v=intro&s=\d+/);
+  assert.match(later, /seg_001\.ts\?v=intro&s=\d+/);
+  assert.match(later, /seg_002\.ts\?v=intro&s=\d+/);
+  assert.match(later, /seg_003\.ts\?v=intro&s=\d+/);
+  assert.match(later, /seg_004\.ts\?v=intro&s=\d+/);
+});
+
+test('event timeline keeps appending unique loop segment URLs', (t) => {
+  const dir = fixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writeLoopState(dir, { version: 'event' }, 100_000);
+
+  const session = createIntroSession(dir, 100_000);
+  const afterOneLoop = buildLivePlaylist(dir, 130_000, session);
+  assert.match(afterOneLoop, /seg_000\.ts\?v=event&s=\d+/);
+  assert.match(afterOneLoop, /seg_000\.ts\?v=event&s=\d+[\s\S]+seg_000\.ts\?v=event&s=\d+/);
+  assert.match(afterOneLoop, /#EXT-X-DISCONTINUITY/);
 });
