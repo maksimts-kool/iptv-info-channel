@@ -26,5 +26,3 @@ services:
     volumes:
       # Persist database + generated HLS across restarts.
       - ./data:/app/data
-      # Mount your own background music here (drop a background.mp3 in assets/music).
-      - ./assets/music:/app/assets/music

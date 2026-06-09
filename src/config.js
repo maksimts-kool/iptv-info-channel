@@ -33,6 +33,12 @@ const num = (v, d) => (v !== undefined && v !== '' && !Number.isNaN(Number(v)) ?
 const DATA_DIR = path.isAbsolute(process.env.DATA_DIR || 'data')
   ? process.env.DATA_DIR
   : path.join(ROOT, process.env.DATA_DIR || 'data');
+const DEFAULT_MUSIC_FILE = path.join(ROOT, 'assets/music/background.mp3');
+const configuredMusicFile = process.env.MUSIC_FILE
+  ? (path.isAbsolute(process.env.MUSIC_FILE)
+      ? process.env.MUSIC_FILE
+      : path.join(ROOT, process.env.MUSIC_FILE))
+  : DEFAULT_MUSIC_FILE;
 
 export const config = {
   root: ROOT,
@@ -62,9 +68,8 @@ export const config = {
   dataDir: DATA_DIR,
   dbPath: path.join(DATA_DIR, 'app.db'),
   hlsDir: path.join(DATA_DIR, 'hls'),
-  musicFile: path.isAbsolute(process.env.MUSIC_FILE || '')
-    ? process.env.MUSIC_FILE
-    : path.join(ROOT, process.env.MUSIC_FILE || 'assets/music/background.mp3'),
+  musicFile: configuredMusicFile,
+  defaultMusicFile: DEFAULT_MUSIC_FILE,
 };
 
 // Ensure runtime directories exist.

@@ -17,7 +17,7 @@ change expiration dates and edit plan prices, and ships as a **Docker** image.
 - **Expired-account offer slide** — expired users see the available plans in an automatic 2-, 3- or 4-column grid, including each plan's features.
 - **Looping HLS channel** generated per user with ffmpeg (1920×1080, h264 + AAC).
 - **Branding intro animation** — an animated brand slide plays on every channel open, then transitions into the user's account details. Configurable (`INTRO_*`) or disablable.
-- **Background music** — drop in your own track, or a soft placeholder is synthesized automatically.
+- **Background music** — includes `assets/music/background.mp3` by default and supports a custom track.
 - **Web admin** (`/admin`) — manage users and plans, change expiry, rebuild streams, and copy m3u links.
 - **Docker** — one container (Node + ffmpeg), data persisted in a volume.
 - **Daily auto‑refresh** so the "days left" counter and status stay accurate.
@@ -80,11 +80,11 @@ to another plan.
 
 ## Background music
 
-Put your track at `assets/music/background.mp3` (path configurable via
-`MUSIC_FILE`). Any ffmpeg‑readable format works and is looped to fill the
-channel. If no file is present, a quiet ambient placeholder is generated on
-first run so the channel always has audio. Replace it with a licensed track for
-production.
+The bundled `assets/music/background.mp3` plays by default and is copied into
+the Docker image. To use another track, set `MUSIC_FILE` to its path and make
+that file available inside the container. Any ffmpeg-readable format works and
+is looped to fill the channel. If a configured custom file is missing, the app
+falls back to the bundled track.
 
 ## Configuration (`.env`)
 

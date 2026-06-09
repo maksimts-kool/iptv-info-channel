@@ -96,13 +96,25 @@ function run(cmd, args, label = cmd) {
   });
 }
 
-// Synthesize a soft ambient placeholder track if the user hasn't supplied music.
+// Prefer the configured track, then the bundled asset, with synthesis as a
+// last resort so stream generation can still proceed after a broken install.
 let musicReady = null;
 export async function ensureMusic() {
   if (musicReady) return musicReady;
   musicReady = (async () => {
     if (fs.existsSync(config.musicFile) && fs.statSync(config.musicFile).size > 0) {
       return config.musicFile;
+    }
+    if (
+      config.musicFile !== config.defaultMusicFile
+      && fs.existsSync(config.defaultMusicFile)
+      && fs.statSync(config.defaultMusicFile).size > 0
+    ) {
+      log.warn('music', 'configured background track missing; using bundled track', {
+        configured_file: config.musicFile,
+        fallback_file: config.defaultMusicFile,
+      });
+      return config.defaultMusicFile;
     }
     log.warn('music', 'background track missing; synthesizing placeholder', {
       file: config.musicFile,

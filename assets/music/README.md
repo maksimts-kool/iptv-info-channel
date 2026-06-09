@@ -1,11 +1,10 @@
 # Background music
 
-Drop your background track here as `background.mp3` (the filename is set by
-`MUSIC_FILE` in `.env`, default `assets/music/background.mp3`).
+The bundled `background.mp3` is the default channel soundtrack.
 
-If no file is present, the server **synthesizes a soft ambient placeholder**
-automatically on first run, so the channel always has audio. Replace it with
-your own royalty-free / licensed track for production use.
+Set `MUSIC_FILE` to use another royalty-free or licensed track. If that custom
+path is missing, the server falls back to this bundled file. A soft ambient
+placeholder is synthesized only if neither file is available.
 
 Supported: anything ffmpeg can read (mp3, m4a, aac, wav, ogg…). It is looped
 to fill the channel duration automatically.
