@@ -15,6 +15,11 @@ const router = express.Router();
 const SAFE_FILE = /^(index\.m3u8|seg_\d{3,}\.ts)$/;
 const ENTRY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENTRY_TTL_MS = 6 * 60 * 60 * 1000;
+// Players handed the raw HLS URL (Televizo's "HLS link", OTT Play) carry no
+// per-open `entry` id, so they share one implicit per-token session. A short
+// idle TTL lets continuous playlist refreshes (~every targetduration) keep that
+// session alive while a genuine rejoin replays the intro.
+const IMPLICIT_ENTRY_TTL_MS = 30 * 1000;
 const entrySessions = new Map();
 
 // Build the .m3u a player loads. token via path or query.
@@ -86,15 +91,19 @@ router.get('/hls/:token/:file', async (req, res) => {
   if (file === 'index.m3u8' && config.channel.liveLoop) {
     const now = Date.now();
     const requestedEntry = String(req.query.entry || '');
-    const entry = ENTRY_ID.test(requestedEntry) ? requestedEntry : '';
-    const entryKey = entry ? `${token}:${entry}` : null;
-    let introSession = entryKey ? entrySessions.get(entryKey)?.session : null;
+    const validEntry = ENTRY_ID.test(requestedEntry);
+    // `.m3u` players get a per-open `entry`; raw-HLS players fall back to a
+    // per-token implicit session so the channel still opens on the brand intro.
+    const entryKey = validEntry ? `${token}:${requestedEntry}` : `${token}:direct`;
+    const sessionTtl = validEntry ? ENTRY_TTL_MS : IMPLICIT_ENTRY_TTL_MS;
 
-    if (entryKey && !introSession) {
+    const tracked = entrySessions.get(entryKey);
+    let introSession = tracked && now - tracked.touchedAt <= sessionTtl ? tracked.session : null;
+    if (introSession) {
+      tracked.touchedAt = now;
+    } else {
       introSession = createIntroSession(dir, now);
       if (introSession) entrySessions.set(entryKey, { session: introSession, touchedAt: now });
-    } else if (entryKey) {
-      entrySessions.get(entryKey).touchedAt = now;
     }
 
     // Opportunistic cleanup keeps abandoned tune-in sessions bounded.
