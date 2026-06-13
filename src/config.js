@@ -78,7 +78,6 @@ export const config = {
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),
 
   dataDir: DATA_DIR,
-  dbPath: path.join(DATA_DIR, 'app.db'),
   hlsDir: path.join(DATA_DIR, 'hls'),
   musicFile: configuredMusicFile,
   defaultMusicFile: DEFAULT_MUSIC_FILE,
