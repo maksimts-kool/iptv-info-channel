@@ -56,8 +56,12 @@ Request/data flow, entry point [src/server.js](src/server.js):
    (`buildStatusSlideSvg`, fed by `statusSummary()` in
    [src/status.js](src/status.js)). In the final days before expiry the card
    swaps its lower half for a compact "продлите подписку" plan strip
-   (`buildRenewingCardSvg`); healthy cards are unchanged. All SVGs use a fixed
-   1280×720 viewBox scaled to the configured output resolution.
+   (`buildRenewingCardSvg`); healthy cards are unchanged. On the **final valid
+   day** (and once expired) the body becomes the full plans grid instead — same
+   `buildExpiredPlansSvg`, with a `variant: 'lastDay'` orange "ПОСЛЕДНИЙ ДЕНЬ"
+   header vs. the red "ПОДПИСКА ИСТЕКЛА" one. `buildBodySvg` owns this routing.
+   All SVGs use a fixed 1280×720 viewBox scaled to the configured output
+   resolution.
 
 3. **Encode** — [src/channel.js](src/channel.js) spawns **ffmpeg** to turn the
    PNG(s) + looped music into HLS segments. Two paths: an intro path
@@ -66,7 +70,13 @@ Request/data flow, entry point [src/server.js](src/server.js):
    gains a **third frame** (intro: a chained `xfade` into the status board;
    still: a `concat` card → status) — the frame durations are sized so the loop
    total stays ≈ `CHANNEL_DURATION` and still tiles onto `hlsTime` boundaries
-   with no runt segment. Key behaviors to preserve:
+   with no runt segment. A bottom-right "Далее через N" countdown to the next
+   slide change is baked in via `drawtext` (`slideTimerFilters`, toggle
+   `SLIDE_TIMER_ENABLED`); it needs a font ffmpeg can resolve — fontconfig
+   `Inter` by default (the image installs `fonts-inter`), or `TIMER_FONT_FILE`.
+   Note the drawtext escaping: colons inside `%{eif:…:d}` must be `\:` because
+   ffmpeg strips the surrounding quotes before splitting options on `:`. Key
+   behaviors to preserve:
    - **Content-hash skip**: `streamSignature()` hashes the SVG content + encode
      params + music mtime; an unchanged stream is *not* re-encoded. Pass
      `{ force: true }` to override.

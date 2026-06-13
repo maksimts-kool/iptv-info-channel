@@ -47,6 +47,35 @@ function videoEncodeArgs(fps) {
   ];
 }
 
+// Bottom-right "next slide in N" countdown, baked in with drawtext. `boundaries`
+// is the sorted list of times (s) at which the visible slide changes, ending
+// with the loop total. Each segment counts whole seconds down to its boundary.
+// Escaping: single quotes protect spaces/commas at the filtergraph level, but
+// ffmpeg strips them before splitting options on ':', so the colons inside
+// %{eif:…:d} must additionally be backslash-escaped to survive that split.
+function slideTimerFilters(boundaries) {
+  const cfg = config.channel.slideTimer;
+  if (!cfg.enabled || boundaries.length < 1) return null;
+  const font = cfg.fontFile ? `fontfile='${cfg.fontFile}'` : 'font=Inter';
+  let prev = 0;
+  return boundaries.map((b) => {
+    const start = Number(prev).toFixed(2);
+    const end = Number(b).toFixed(2);
+    prev = Number(b);
+    return `drawtext=${font}:text='Далее через %{eif\\:ceil(${end}-t)\\:d}'`
+      + ':fontcolor=white:fontsize=28:box=1:boxcolor=0x0f1830@0.85:boxborderw=18'
+      + `:x=w-tw-40:y=h-th-34:enable='between(t,${start},${end})'`;
+  }).join(',');
+}
+
+// Append the countdown drawtext to a base filter chain that ends by producing
+// the [v] label. No-op when the timer is disabled or has no boundaries.
+function withSlideTimer(filter, boundaries) {
+  const timer = slideTimerFilters(boundaries);
+  if (!timer) return filter;
+  return `${filter.replace(/\[v\]$/, '[vbase]')};[vbase]${timer}[v]`;
+}
+
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
 // info card held for the rest of the loop, with background music. When a status
 // slide is present the loop becomes slide -> card -> status (a chained xfade).
@@ -66,10 +95,12 @@ function introCardOnlyArgs(slides, music, tmpDir) {
   const fos = (L2 - 0.6).toFixed(2);                       // card fade-out start
   const aOut = Math.max(0, dur - 2).toFixed(2);
 
-  const filter =
+  const baseFilter =
     `[0:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
     `[1:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=out:st=${fos}:d=0.6[v1];` +
     `[v0][v1]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o1}[v]`;
+  // Slide -> card transition starts at o1; loop restarts at total (= dur).
+  const filter = withSlideTimer(baseFilter, [S - XF, S + L2 - XF]);
 
   return [
     '-y',
@@ -101,12 +132,14 @@ function introWithStatusArgs(slides, music, tmpDir) {
   const total = S + Lc + Ls - 2 * XF;
   const aOut = Math.max(0, total - 2).toFixed(2);
 
-  const filter =
+  const baseFilter =
     `[0:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
     `[1:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p[v1];` +
     `[2:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=out:st=${fos}:d=0.6[v2];` +
     `[v0][v1]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o1}[vx];` +
     `[vx][v2]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o2}[v]`;
+  // Transitions start at o1 (slide->card) and o2 (card->status); loop at total.
+  const filter = withSlideTimer(baseFilter, [S - XF, S + Lc - 2 * XF, total]);
 
   return [
     '-y',
@@ -143,10 +176,12 @@ function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
 
   const Ls = Math.max(2, config.statusSlide.seconds);
   const Lc = Math.max(6, dur - Ls);
-  const filter =
+  const baseFilter =
     `[0:v]fps=${fps},format=yuv420p,setsar=1[c0];` +
     `[1:v]fps=${fps},format=yuv420p,setsar=1[c1];` +
     `[c0][c1]concat=n=2:v=1:a=0[v]`;
+  // Hard cut card -> status at Lc; loop restarts at Lc + Ls.
+  const filter = withSlideTimer(baseFilter, [Lc, Lc + Ls]);
 
   return [
     '-y',
@@ -256,6 +291,7 @@ function streamSignature(user, settings, plans, music, summary) {
     enc: {
       W: c.width, H: c.height, fps: c.fps, stillFps: c.stillFps,
       preset: c.preset, duration: c.duration, hlsTime: c.hlsTime, liveLoop: c.liveLoop,
+      slideTimer: c.slideTimer,
       intro: config.intro.enabled
         ? { slide: config.intro.slideSeconds, transition: config.intro.transition }
         : false,

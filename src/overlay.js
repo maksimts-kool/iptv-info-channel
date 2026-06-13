@@ -228,9 +228,29 @@ function planGridLayout(count) {
   return { columns: 4, rows: Math.ceil(count / 4) };
 }
 
-// Expired accounts see the currently available plans instead of the regular
-// details card. The common 2/3/4-plan cases are a single centered row.
-export function buildExpiredPlansSvg(user, plans = [], settings = {}) {
+// Header variants for the full plans grid: the red "expired" framing and the
+// orange "last valid day" framing (account still works today, so we nudge
+// rather than declare it dead).
+const PLANS_HEADER = {
+  expired: {
+    badge: 'ПОДПИСКА ИСТЕКЛА',
+    badgeColor: '#dc2626',
+    heading: (name) => `${name}, выберите новый тариф`,
+    sub: 'Доступные планы для продления подписки',
+  },
+  lastDay: {
+    badge: 'ПОСЛЕДНИЙ ДЕНЬ',
+    badgeColor: '#d97706',
+    heading: (name) => `${name}, продлите подписку`,
+    sub: 'Подписка истекает сегодня — выберите тариф, чтобы не потерять доступ',
+  },
+};
+
+// Expired accounts (and, with variant: 'lastDay', accounts on their final valid
+// day) see the currently available plans instead of the regular details card.
+// The common 2/3/4-plan cases are a single centered row.
+export function buildExpiredPlansSvg(user, plans = [], settings = {}, { variant = 'expired' } = {}) {
+  const head = PLANS_HEADER[variant] || PLANS_HEADER.expired;
   const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
   const visiblePlans = plans.slice(0, 12);
   const { columns, rows } = planGridLayout(visiblePlans.length);
@@ -291,12 +311,14 @@ export function buildExpiredPlansSvg(user, plans = [], settings = {}) {
     <text x="640" y="415" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">Свяжитесь с администратором для продления</text>`;
 
   const extraCount = Math.max(0, plans.length - visiblePlans.length);
+  const badgeWidth = 40 + head.badge.length * 15;
+  const badgeX = 1216 - badgeWidth;
   return svgDoc(`
     <text x="64" y="76" fill="#ffffff" font-family="Inter, sans-serif" font-size="34" font-weight="700" letter-spacing="-0.5">${brand}</text>
-    <rect x="935" y="42" width="281" height="55" rx="14" fill="#dc2626"/>
-    <text x="1075" y="79" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="24" font-weight="800">ПОДПИСКА ИСТЕКЛА</text>
-    <text x="64" y="146" fill="#ffffff" font-family="Inter, sans-serif" font-size="42" font-weight="800" letter-spacing="-0.8">${esc(clipText(user.username, 34))}, выберите новый тариф</text>
-    <text x="64" y="184" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">Доступные планы для продления подписки</text>
+    <rect x="${badgeX}" y="42" width="${badgeWidth}" height="55" rx="14" fill="${head.badgeColor}"/>
+    <text x="${badgeX + badgeWidth / 2}" y="79" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="24" font-weight="800">${head.badge}</text>
+    <text x="64" y="146" fill="#ffffff" font-family="Inter, sans-serif" font-size="42" font-weight="800" letter-spacing="-0.8">${esc(head.heading(clipText(user.username, 34)))}</text>
+    <text x="64" y="184" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">${esc(head.sub)}</text>
     ${cards}
     ${emptyState}
     <text x="64" y="684" fill="#6f83a6" font-family="Inter, sans-serif" font-size="18">Свяжитесь с администратором, чтобы активировать выбранный тариф${extraCount ? ` · Ещё тарифов: ${extraCount}` : ''}</text>`);
@@ -396,9 +418,13 @@ export async function renderStatusPng(summary, settings, outPath) {
 
 export function buildBodySvg(user, plans = [], settings = {}) {
   const status = accountStatus(user, config.expiringThresholdDays);
-  return status === 'expired'
-    ? buildExpiredPlansSvg(user, plans, settings)
-    : buildCardSvg(user, settings, plans);
+  if (status === 'expired') return buildExpiredPlansSvg(user, plans, settings);
+  // On the final valid day, surface the full plans grid (with renew framing)
+  // instead of the compact renewal strip embedded in the details card.
+  if (status === 'expiring' && daysLeft(user.expires_at) === 0) {
+    return buildExpiredPlansSvg(user, plans, settings, { variant: 'lastDay' });
+  }
+  return buildCardSvg(user, settings, plans);
 }
 
 export async function renderBodyPng(user, settings, outPath, plans = []) {
