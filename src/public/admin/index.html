@@ -50,6 +50,18 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>Статус сервиса · status board</h2>
+        <div class="card-head-actions">
+          <span id="status-summary" class="status-headline"></span>
+          <button id="add-incident" class="btn">+ Add incident</button>
+        </div>
+      </div>
+      <div id="status-strip" class="status-strip" title="Последние 90 дней"></div>
+      <div id="incidents" class="incidents-list"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>Users</h2>
         <button id="add-user" class="btn">+ Add user</button>
       </div>
@@ -104,6 +116,28 @@
       <div class="dialog-actions">
         <button value="cancel" class="btn ghost" type="button" id="plan-dialog-cancel">Cancel</button>
         <button value="ok" class="btn" id="plan-dialog-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Add/edit incident dialog -->
+  <dialog id="incident-dialog">
+    <form method="dialog" id="incident-form">
+      <h3 id="incident-dialog-title">Add incident</h3>
+      <input type="hidden" id="incident-id" />
+      <label>Title<input id="incident-title" type="text" maxlength="100" required /></label>
+      <label>Severity
+        <select id="incident-severity">
+          <option value="degraded">Деградация (жёлтый)</option>
+          <option value="outage">Сбой (красный)</option>
+        </select>
+      </label>
+      <label>Start date<input id="incident-start" type="date" required /></label>
+      <label>End date — blank = ongoing<input id="incident-end" type="date" /></label>
+      <label>Note (optional)<textarea id="incident-note" rows="3" maxlength="280" placeholder="Короткое описание"></textarea></label>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost" type="button" id="incident-dialog-cancel">Cancel</button>
+        <button value="ok" class="btn" id="incident-dialog-save">Save</button>
       </div>
     </form>
   </dialog>

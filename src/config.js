@@ -65,6 +65,14 @@ export const config = {
     // Serve the per-user stream as an endless LIVE playlist (looped segments,
     // no seek bar, no end) instead of a finite VOD clip. `false` = plain VOD.
     liveLoop: (process.env.CHANNEL_LIVE_LOOP ?? 'true').toLowerCase() !== 'false',
+    // Bottom-right "next slide in N" countdown, baked in via ffmpeg drawtext.
+    // Needs a font ffmpeg can resolve: fontconfig name `Inter` by default (the
+    // Docker image installs fonts-inter), or set TIMER_FONT_FILE to a TTF path
+    // (forward slashes) on systems without fontconfig.
+    slideTimer: {
+      enabled: (process.env.SLIDE_TIMER_ENABLED ?? 'true').toLowerCase() !== 'false',
+      fontFile: process.env.TIMER_FONT_FILE || '',
+    },
   },
   intro: {
     // Animated brand intro (slide 1 -> slide 2) before the user-details card.
@@ -74,6 +82,12 @@ export const config = {
     // ffmpeg xfade transition used between the two brand slides (e.g. slideleft,
     // fade, wipeleft, dissolve, smoothleft).
     transition: process.env.INTRO_TRANSITION || 'slideleft',
+  },
+  statusSlide: {
+    // Better Stack–style service-status frame appended to the channel loop.
+    enabled: (process.env.STATUS_SLIDE_ENABLED ?? 'true').toLowerCase() !== 'false',
+    // Seconds the status board is held on screen each loop.
+    seconds: num(process.env.STATUS_SLIDE_SECONDS, 12),
   },
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),
 

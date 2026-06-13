@@ -3,10 +3,11 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
-import { Users, Plans, Settings } from '../db.js';
+import { Users, Plans, Settings, Incidents } from '../db.js';
 import {
   daysLeft, accountStatus, formatPrice, formatDate, STATUS_META,
 } from '../util.js';
+import { statusSummary } from '../status.js';
 import {
   generateForUser, generateAll, generationStatus, removeUserHls,
 } from '../channel.js';
@@ -32,6 +33,22 @@ function regenAll(reason) {
 }
 
 const VALID_PERIODS = ['', 'month', 'year'];
+const INCIDENT_SEVERITIES = ['degraded', 'outage'];
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function incidentJson(i) {
+  return {
+    id: i.id,
+    title: i.title,
+    severity: i.severity,
+    starts_on: i.starts_on,
+    ends_on: i.ends_on || null,
+    starts_pretty: formatDate(i.starts_on),
+    ends_pretty: i.ends_on ? formatDate(i.ends_on) : null,
+    ongoing: !i.ends_on,
+    note: i.note || '',
+  };
+}
 
 function planJson(plan) {
   return {
@@ -112,12 +129,16 @@ router.use('/static', express.static(ADMIN_PUBLIC));
 router.use('/api', requireAuth, express.json());
 
 router.get('/api/state', (req, res) => {
+  const incidents = Incidents.all();
   res.json({
     publicBaseUrl: config.publicBaseUrl,
     expiringThresholdDays: config.expiringThresholdDays,
+    statusSlideEnabled: config.statusSlide.enabled,
     settings: Settings.all(),
     plans: Plans.all().map(planJson),
     users: Users.all().map(decorateUser),
+    incidents: incidents.map(incidentJson),
+    status: statusSummary(incidents, { tz: config.timezone }),
   });
 });
 
@@ -277,6 +298,79 @@ router.patch('/api/settings', (req, res) => {
   });
   regenAll('admin branding updated');
   res.json(Settings.all());
+});
+
+// ---------- Status board incidents ----------
+// Shared field validation; returns { error } or { value } for a create/patch.
+function validateIncident(body, { partial = false } = {}) {
+  const out = {};
+  const has = (k) => body[k] !== undefined;
+
+  if (!partial || has('title')) {
+    const title = String(body.title || '').trim();
+    if (!title) return { error: 'incident title required' };
+    if (title.length > 100) return { error: 'title must be 100 characters or less' };
+    out.title = title;
+  }
+  if (!partial || has('severity')) {
+    if (!INCIDENT_SEVERITIES.includes(body.severity)) return { error: 'bad severity' };
+    out.severity = body.severity;
+  }
+  if (!partial || has('starts_on')) {
+    if (!DATE_RE.test(body.starts_on || '')) return { error: 'bad starts_on (YYYY-MM-DD)' };
+    out.starts_on = body.starts_on;
+  }
+  if (has('ends_on')) {
+    const end = body.ends_on ? String(body.ends_on) : null;
+    if (end && !DATE_RE.test(end)) return { error: 'bad ends_on (YYYY-MM-DD)' };
+    out.ends_on = end;
+  } else if (!partial) {
+    out.ends_on = null;
+  }
+  if (has('note')) {
+    const note = String(body.note || '').trim();
+    if (note.length > 280) return { error: 'note must be 280 characters or less' };
+    out.note = note;
+  } else if (!partial) {
+    out.note = '';
+  }
+  return { value: out };
+}
+
+router.post('/api/incidents', (req, res) => {
+  const { error, value } = validateIncident(req.body || {});
+  if (error) return res.status(400).json({ error });
+  if (value.ends_on && value.ends_on < value.starts_on) {
+    return res.status(400).json({ error: 'ends_on cannot be before starts_on' });
+  }
+  const inc = Incidents.create(value);
+  log.info('admin', 'incident created', { incident_id: inc.id, severity: inc.severity });
+  regenAll('admin incident created');
+  res.status(201).json(incidentJson(inc));
+});
+
+router.patch('/api/incidents/:id', (req, res) => {
+  const existing = Incidents.get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const { error, value } = validateIncident(req.body || {}, { partial: true });
+  if (error) return res.status(400).json({ error });
+  const effStart = value.starts_on ?? existing.starts_on;
+  const effEnd = value.ends_on !== undefined ? value.ends_on : existing.ends_on;
+  if (effEnd && effStart && effEnd < effStart) {
+    return res.status(400).json({ error: 'ends_on cannot be before starts_on' });
+  }
+  const inc = Incidents.update(req.params.id, value);
+  log.info('admin', 'incident updated', { incident_id: inc.id, fields: Object.keys(value) });
+  regenAll('admin incident updated');
+  res.json(incidentJson(inc));
+});
+
+router.delete('/api/incidents/:id', (req, res) => {
+  if (!Incidents.get(req.params.id)) return res.status(404).json({ error: 'not found' });
+  Incidents.remove(req.params.id);
+  log.info('admin', 'incident deleted', { incident_id: req.params.id });
+  regenAll('admin incident deleted');
+  res.json({ ok: true });
 });
 
 // Rebuild all streams

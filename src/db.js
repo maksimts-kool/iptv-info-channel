@@ -10,6 +10,7 @@ const DB_FILE = path.join(config.dataDir, 'db.json');
 
 // URL-safe token without ambiguous characters.
 const makeToken = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz', 16);
+const makeIncidentId = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz', 10);
 
 function nowIso() {
   return new Date().toISOString().slice(0, 19).replace('T', ' ');
@@ -37,6 +38,7 @@ function defaultData() {
       },
     ],
     users: [],
+    incidents: [],
     settings: { brand_name: 'Мой IPTV-сервис', tagline: 'Информационный канал аккаунта' },
   };
 }
@@ -63,6 +65,7 @@ function load() {
   // Ensure defaults exist after upgrades.
   data.plans ||= [];
   data.users ||= [];
+  data.incidents ||= [];
   data.seq ||= 0;
   data.settings ||= {};
   if (data.settings.brand_name === undefined) data.settings.brand_name = 'Мой IPTV-сервис';
@@ -206,6 +209,60 @@ export const Users = {
   },
 };
 
+// ---- Incidents (drive the status-board slide) ----
+const INCIDENT_SEVERITIES = ['degraded', 'outage'];
+
+function cleanIncidentFields(fields) {
+  const out = {};
+  if (fields.title !== undefined) out.title = String(fields.title).trim();
+  if (fields.severity !== undefined && INCIDENT_SEVERITIES.includes(fields.severity)) {
+    out.severity = fields.severity;
+  }
+  if (fields.starts_on !== undefined) out.starts_on = fields.starts_on || null;
+  if (fields.ends_on !== undefined) out.ends_on = fields.ends_on || null;
+  if (fields.note !== undefined) out.note = String(fields.note || '').trim();
+  return out;
+}
+
+export const Incidents = {
+  // Newest first by start date, then most recently created.
+  all: () => [...data.incidents].sort(
+    (a, b) => String(b.starts_on).localeCompare(String(a.starts_on))
+      || String(b.created_at).localeCompare(String(a.created_at)),
+  ),
+  get: (id) => data.incidents.find((i) => i.id === id) || null,
+  create: ({ title, severity, starts_on, ends_on = null, note = '' }) => {
+    const i = {
+      id: makeIncidentId(),
+      title: String(title).trim(),
+      severity: INCIDENT_SEVERITIES.includes(severity) ? severity : 'degraded',
+      starts_on: starts_on || null,
+      ends_on: ends_on || null,
+      note: String(note || '').trim(),
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    data.incidents.push(i);
+    save();
+    return i;
+  },
+  update: (id, fields) => {
+    const i = data.incidents.find((x) => x.id === id);
+    if (!i) return null;
+    Object.assign(i, cleanIncidentFields(fields));
+    i.updated_at = nowIso();
+    save();
+    return i;
+  },
+  remove: (id) => {
+    const index = data.incidents.findIndex((i) => i.id === id);
+    if (index === -1) return false;
+    data.incidents.splice(index, 1);
+    save();
+    return true;
+  },
+};
+
 // ---- Settings ----
 export const Settings = {
   all: () => ({ ...data.settings }),
@@ -213,4 +270,4 @@ export const Settings = {
   set: (key, value) => { data.settings[key] = value; save(); },
 };
 
-export default { Plans, Users, Settings };
+export default { Plans, Users, Incidents, Settings };

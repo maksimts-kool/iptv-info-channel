@@ -1,6 +1,21 @@
 // Admin panel logic (vanilla JS). Talks to /admin/api/*.
 const $ = (sel) => document.querySelector(sel);
-let STATE = { users: [], plans: [], settings: {}, publicBaseUrl: '' };
+let STATE = { users: [], plans: [], settings: {}, incidents: [], status: null, publicBaseUrl: '' };
+
+// Incident severities mirror SEVERITY in src/status.js.
+const SEV = {
+  degraded: { label: 'Деградация', color: '#d97706' },
+  outage: { label: 'Сбой', color: '#dc2626' },
+};
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatPct(pct) {
+  return Number.isInteger(pct) ? `${pct}%` : `${String(pct).replace('.', ',')}%`;
+}
 let generationStatusLoading = false;
 let generationInProgress = false;
 let generationCompleteTimer;
@@ -139,6 +154,79 @@ async function load() {
   $('#tagline').value = STATE.settings.tagline || '';
   renderPlans();
   renderUsers();
+  renderStatus();
+  renderIncidents();
+}
+
+function renderStatus() {
+  const headline = $('#status-summary');
+  const strip = $('#status-strip');
+  const s = STATE.status;
+  if (!s) { headline.textContent = ''; strip.innerHTML = ''; return; }
+  headline.innerHTML = `<span class="status-dot" style="background:${s.color}"></span>${escapeHtml(s.label)} · ${formatPct(s.uptimePct)} аптайм`;
+  strip.innerHTML = (s.days || [])
+    .map((d) => `<span class="ubar" style="background:${d.color}" title="${escapeHtml(d.date)}"></span>`)
+    .join('');
+}
+
+function incidentRangeText(inc) {
+  if (inc.ongoing) return `с ${inc.starts_pretty} · идёт`;
+  if (inc.ends_pretty && inc.ends_pretty !== inc.starts_pretty) {
+    return `${inc.starts_pretty} — ${inc.ends_pretty}`;
+  }
+  return inc.starts_pretty;
+}
+
+function renderIncidents() {
+  const wrap = $('#incidents');
+  wrap.innerHTML = '';
+  if (!STATE.incidents.length) {
+    wrap.innerHTML = '<div class="empty-state muted">Активных инцидентов нет. Добавьте инцидент — он появится на слайде статуса и в полосе аптайма.</div>';
+    return;
+  }
+  for (const inc of STATE.incidents) {
+    const sev = SEV[inc.severity] || SEV.degraded;
+    const div = document.createElement('div');
+    div.className = 'incident';
+    div.innerHTML = `
+      <div class="incident-main">
+        <span class="pill" style="background:${sev.color}">${sev.label}</span>
+        <div class="incident-text">
+          <div class="incident-title">${escapeHtml(inc.title)}</div>
+          <div class="muted incident-range">${escapeHtml(incidentRangeText(inc))}${inc.note ? ` · ${escapeHtml(inc.note)}` : ''}</div>
+        </div>
+      </div>
+      <div class="actions">
+        ${inc.ongoing ? '<button class="btn tiny ghost" data-act="resolve">Resolve</button>' : ''}
+        <button class="btn tiny ghost" data-act="edit">Edit</button>
+        <button class="btn tiny danger" data-act="delete">Delete</button>
+      </div>`;
+
+    const resolveBtn = div.querySelector('[data-act="resolve"]');
+    if (resolveBtn) {
+      resolveBtn.onclick = async () => {
+        showGenerationPending('Resolving incident and rebuilding streams');
+        try {
+          await api('PATCH', `/admin/api/incidents/${inc.id}`, { ends_on: todayISO() });
+          toast('Incident resolved — streams rebuilding');
+          await load();
+          await refreshGenerationStatus();
+        } catch (e) { toast(e.message); clearGenerationPending(); }
+      };
+    }
+    div.querySelector('[data-act="edit"]').onclick = () => openIncidentDialog(inc);
+    div.querySelector('[data-act="delete"]').onclick = async () => {
+      if (!confirm(`Delete incident "${inc.title}"?`)) return;
+      showGenerationPending('Deleting incident and rebuilding streams');
+      try {
+        await api('DELETE', `/admin/api/incidents/${inc.id}`);
+        toast('Incident deleted — streams rebuilding');
+        await load();
+        await refreshGenerationStatus();
+      } catch (e) { toast(e.message); clearGenerationPending(); }
+    };
+    wrap.appendChild(div);
+  }
 }
 
 function renderPlans() {
@@ -321,9 +409,47 @@ $('#plan-dialog-save').onclick = async (e) => {
 };
 $('#plan-dialog-cancel').onclick = () => $('#plan-dialog').close();
 
+// ---- incident dialog ----
+function openIncidentDialog(inc) {
+  $('#incident-dialog-title').textContent = inc ? 'Edit incident' : 'Add incident';
+  $('#incident-id').value = inc?.id || '';
+  $('#incident-title').value = inc?.title || '';
+  $('#incident-severity').value = inc?.severity || 'degraded';
+  $('#incident-start').value = inc?.starts_on || todayISO();
+  $('#incident-end').value = inc?.ends_on || '';
+  $('#incident-note').value = inc?.note || '';
+  $('#incident-dialog').showModal();
+}
+
+$('#incident-dialog-save').onclick = async (e) => {
+  e.preventDefault();
+  const id = $('#incident-id').value;
+  const payload = {
+    title: $('#incident-title').value.trim(),
+    severity: $('#incident-severity').value,
+    starts_on: $('#incident-start').value || null,
+    ends_on: $('#incident-end').value || null,
+    note: $('#incident-note').value.trim(),
+  };
+  if (!payload.title) return toast('Title required');
+  if (!payload.starts_on) return toast('Start date required');
+  if (payload.ends_on && payload.ends_on < payload.starts_on) return toast('End date is before start date');
+  showGenerationPending('Saving incident and rebuilding streams');
+  try {
+    if (id) await api('PATCH', `/admin/api/incidents/${id}`, payload);
+    else await api('POST', '/admin/api/incidents', payload);
+    $('#incident-dialog').close();
+    toast('Incident saved — streams rebuilding');
+    await load();
+    await refreshGenerationStatus();
+  } catch (err) { toast(err.message); clearGenerationPending(); }
+};
+$('#incident-dialog-cancel').onclick = () => $('#incident-dialog').close();
+
 // ---- top-level actions ----
 $('#add-user').onclick = () => openDialog(null);
 $('#add-plan').onclick = () => openPlanDialog(null);
+$('#add-incident').onclick = () => openIncidentDialog(null);
 $('#save-settings').onclick = async () => {
   showGenerationPending('Saving branding and rebuilding streams');
   try {

@@ -6,6 +6,7 @@ import { config } from './config.js';
 import {
   formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays, localDateString,
 } from './util.js';
+import { SEVERITY, formatUptime } from './status.js';
 
 function esc(s) {
   return String(s ?? '')
@@ -68,7 +69,7 @@ export function buildBrandSlide1Svg(settings = {}) {
 }
 
 // ---- The looping info card (user details) ----
-export function buildCardSvg(user, settings = {}) {
+export function buildCardSvg(user, settings = {}, plans = []) {
   const status = accountStatus(user, config.expiringThresholdDays);
   const meta = STATUS_META[status];
   const d = daysLeft(user.expires_at);
@@ -82,6 +83,15 @@ export function buildCardSvg(user, settings = {}) {
   const price = formatPrice(user.price_cents, user.currency);
   const period = periodLabel(user.billing_period);
   const statusFontSize = meta.label.length > 10 ? 27 : 32;
+
+  // In the final days the card swaps its lower half for a renewal strip that
+  // surfaces the available plans (see buildRenewingCardSvg). Healthy accounts
+  // keep the original layout untouched.
+  if (status === 'expiring') {
+    return buildRenewingCardSvg(user, plans, settings, {
+      meta, daysLeftValue: d, brand, tagline, price, period, statusFontSize,
+    });
+  }
 
   return svgDoc(`
   <!-- Header -->
@@ -120,6 +130,90 @@ export function buildCardSvg(user, settings = {}) {
 
   <!-- Footer -->
   <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${esc(formatDate(localDateString()))} · Канал обновляется ежедневно</text>`);
+}
+
+// A compact plan chip used in the renewal strip: name + price, current plan
+// highlighted with the accent stroke and a "ВАШ ТАРИФ" tag.
+function compactPlanChip(plan, x, y, w, h, isCurrent) {
+  const nameChars = Math.max(8, Math.floor((w - 28) / 13));
+  const periodSuffix = periodLabel(plan.billing_period);
+  return `
+    <g font-family="Inter, sans-serif">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="14" fill="#131f3d" stroke="${isCurrent ? '#38bdf8' : '#2b3d68'}" stroke-width="${isCurrent ? 2.5 : 1.5}"/>
+      <text x="${x + 18}" y="${y + 30}" fill="#ffffff" font-size="21" font-weight="700">${esc(clipText(plan.name, nameChars))}</text>
+      <text x="${x + 18}" y="${y + 60}" fill="#7dd3fc" font-size="27" font-weight="800">${esc(formatPrice(plan.price_cents, plan.currency))}${periodSuffix ? `<tspan font-size="17" font-weight="600">${esc(periodSuffix)}</tspan>` : ''}</text>
+      ${isCurrent ? `<text x="${x + w - 16}" y="${y + 26}" text-anchor="end" fill="#38bdf8" font-size="14" font-weight="700" letter-spacing="1">ВАШ ТАРИФ</text>` : ''}
+    </g>`;
+}
+
+// Card variant for accounts in their final days: a condensed info row plus a
+// "продлите подписку" strip of plan chips. The day-counter turns urgent and the
+// very last day reads "Последний день".
+function buildRenewingCardSvg(user, plans, settings, ctx) {
+  const { meta, daysLeftValue: d, brand, tagline } = ctx;
+  const urgentDays = d === 0 ? 'Последний день' : `${d} ${pluralDays(d)}`;
+
+  const visiblePlans = (plans || []).slice(0, 4);
+  const gridX = 104;
+  const gridRight = 1176;
+  const gridWidth = gridRight - gridX;
+  const chipHeight = 74;
+  const chipY = 548;
+  const chipGap = 16;
+  const n = visiblePlans.length;
+  const chipWidth = n ? (gridWidth - chipGap * (n - 1)) / n : gridWidth;
+  const chips = visiblePlans
+    .map((plan, i) => compactPlanChip(
+      plan,
+      gridX + i * (chipWidth + chipGap),
+      chipY,
+      chipWidth,
+      chipHeight,
+      plan.id === user.plan_id,
+    ))
+    .join('');
+  const chipsOrFallback = n
+    ? chips
+    : `<text x="${gridX}" y="${chipY + 44}" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">Свяжитесь с администратором для продления подписки</text>`;
+
+  return svgDoc(`
+  <!-- Header -->
+  <text x="80" y="92" fill="#ffffff" font-family="Inter, sans-serif" font-size="40" font-weight="700" letter-spacing="-0.5">${brand}</text>
+  <text x="80" y="130" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">${tagline}</text>
+
+  <!-- Card panel -->
+  <rect x="64" y="170" width="1152" height="470" rx="24" fill="#0f1830" stroke="#24345f" stroke-width="1.5" filter="url(#soft)"/>
+
+  <!-- Account -->
+  <text x="104" y="232" fill="#7f93b5" font-family="Inter, sans-serif" font-size="22" letter-spacing="2">АККАУНТ</text>
+  <text x="104" y="294" fill="#ffffff" font-family="Inter, sans-serif" font-size="54" font-weight="700" letter-spacing="-1">${esc(clipText(user.username, 22))}</text>
+
+  <!-- Status banner -->
+  <rect x="820" y="200" width="356" height="86" rx="16" fill="${meta.color}"/>
+  <circle cx="860" cy="243" r="12" fill="#ffffff" opacity="0.9"/>
+  <text x="888" y="253" fill="#ffffff" font-family="Inter, sans-serif" font-size="${ctx.statusFontSize}" font-weight="800">${meta.label}</text>
+
+  <!-- Divider -->
+  <line x1="104" y1="338" x2="1176" y2="338" stroke="#24345f" stroke-width="1.5"/>
+
+  <!-- Condensed info row -->
+  <g font-family="Inter, sans-serif">
+    <text x="104" y="386" fill="#7f93b5" font-size="20" letter-spacing="2">ТАРИФ</text>
+    <text x="104" y="434" fill="#ffffff" font-size="38" font-weight="700">${esc(clipText(user.plan_name, 16))}</text>
+
+    <text x="520" y="386" fill="#7f93b5" font-size="20" letter-spacing="2">ИСТЕКАЕТ</text>
+    <text x="520" y="434" fill="#ffffff" font-size="38" font-weight="700">${esc(formatDate(user.expires_at))}</text>
+
+    <text x="880" y="386" fill="#7f93b5" font-size="20" letter-spacing="2">ОСТАЛОСЬ</text>
+    <text x="880" y="434" fill="${meta.color}" font-size="38" font-weight="800">${esc(urgentDays)}</text>
+  </g>
+
+  <!-- Renewal strip -->
+  <text x="104" y="510" fill="#38bdf8" font-family="Inter, sans-serif" font-size="24" font-weight="800" letter-spacing="1">ПРОДЛИТЕ ПОДПИСКУ</text>
+  ${chipsOrFallback}
+
+  <!-- Footer -->
+  <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${esc(formatDate(localDateString()))} · Свяжитесь с администратором, чтобы продлить</text>`);
 }
 
 function clipText(value, maxLength) {
@@ -211,36 +305,121 @@ export function buildExpiredPlansSvg(user, plans = [], settings = {}) {
 // Backwards-compatible alias (older callers used buildSvg for the card).
 export const buildSvg = buildCardSvg;
 
+// ---- Status board slide (Better Stack–style service status) ----
+
+// A green check (operational) or white exclamation (incident) inside a state-
+// coloured disc.
+function statusIcon(state, cx, cy, r) {
+  const color = SEVERITY[state].color;
+  if (state === 'operational') {
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}"/>
+      <path d="M${cx - 16} ${cy} L${cx - 5} ${cy + 12} L${cx + 17} ${cy - 13}" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}"/>
+    <rect x="${cx - 3}" y="${cy - 17}" width="6" height="22" rx="3" fill="#ffffff"/>
+    <circle cx="${cx}" cy="${cy + 14}" r="4" fill="#ffffff"/>`;
+}
+
+function incidentRange(inc) {
+  const start = formatDate(inc.starts_on);
+  if (!inc.ends_on) return `с ${start}`;
+  if (inc.ends_on === inc.starts_on) return start;
+  return `${start} — ${formatDate(inc.ends_on)}`;
+}
+
+// Builds the status slide from a statusSummary() result (see status.js).
+export function buildStatusSlideSvg(summary, settings = {}) {
+  const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
+  const headline = esc(summary.label);
+  const dateStr = esc(formatDate(localDateString()));
+  const uptime = esc(formatUptime(summary.uptimePct));
+  const pill = SEVERITY[summary.state];
+  const pillW = 64 + pill.label.length * 15;
+  const pillX = 1176 - pillW;
+
+  const x0 = 104;
+  const stripWidth = 1072;
+  const n = summary.days.length || 1;
+  const gap = 2;
+  const barWidth = (stripWidth - gap * (n - 1)) / n;
+  const barY = 448;
+  const barHeight = 58;
+  const bars = summary.days.map((day, i) => {
+    const x = x0 + i * (barWidth + gap);
+    return `<rect x="${x.toFixed(2)}" y="${barY}" width="${barWidth.toFixed(2)}" height="${barHeight}" rx="2" fill="${day.color}"/>`;
+  }).join('');
+
+  const active = summary.activeIncidents || [];
+  const banner = active.length
+    ? (() => {
+      const inc = [...active].sort((a, b) => SEVERITY[b.severity].rank - SEVERITY[a.severity].rank)[0];
+      const extra = active.length > 1 ? ` (+${active.length - 1})` : '';
+      return `<rect x="104" y="576" width="1072" height="46" rx="12" fill="#131f3d" stroke="${SEVERITY[inc.severity].color}" stroke-width="1.5"/>
+        <circle cx="128" cy="599" r="7" fill="${SEVERITY[inc.severity].color}"/>
+        <text x="148" y="606" fill="#e8eefb" font-family="Inter, sans-serif" font-size="20">${esc(clipText(inc.title, 64))} · ${esc(incidentRange(inc))}${extra}</text>`;
+    })()
+    : '<text x="104" y="606" fill="#5c6e91" font-family="Inter, sans-serif" font-size="20">Активных инцидентов нет</text>';
+
+  return svgDoc(`
+    ${statusIcon(summary.state, 640, 150, 36)}
+    <text x="640" y="246" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="50" font-weight="800" letter-spacing="-0.5">${headline}</text>
+    <text x="640" y="290" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">Аптайм ${uptime} за 90 дней · обновлено ${dateStr}</text>
+
+    <rect x="64" y="340" width="1152" height="300" rx="24" fill="#0f1830" stroke="#24345f" stroke-width="1.5" filter="url(#soft)"/>
+    <text x="104" y="404" fill="#ffffff" font-family="Inter, sans-serif" font-size="30" font-weight="700">${brand}</text>
+    <rect x="${pillX}" y="378" width="${pillW}" height="44" rx="12" fill="${pill.color}"/>
+    <circle cx="${pillX + 24}" cy="400" r="8" fill="#ffffff" opacity="0.9"/>
+    <text x="${pillX + 42}" y="408" fill="#ffffff" font-family="Inter, sans-serif" font-size="22" font-weight="700">${esc(pill.label)}</text>
+
+    ${bars}
+    <text x="104" y="540" fill="#6f83a6" font-family="Inter, sans-serif" font-size="18">90 дней назад</text>
+    <text x="1176" y="540" text-anchor="end" fill="#6f83a6" font-family="Inter, sans-serif" font-size="18">Сегодня</text>
+
+    ${banner}
+
+    <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Состояние сервиса · обновляется ежедневно</text>`);
+}
+
 async function svgToPng(svg, outPath) {
   await sharp(Buffer.from(svg)).png().toFile(outPath);
   return outPath;
 }
 
 // Render just the info card (used when the intro is disabled).
-export async function renderCardPng(user, settings, outPath) {
-  return svgToPng(buildCardSvg(user, settings), outPath);
+export async function renderCardPng(user, settings, outPath, plans = []) {
+  return svgToPng(buildCardSvg(user, settings, plans), outPath);
+}
+
+export async function renderStatusPng(summary, settings, outPath) {
+  return svgToPng(buildStatusSlideSvg(summary, settings), outPath);
 }
 
 export function buildBodySvg(user, plans = [], settings = {}) {
   const status = accountStatus(user, config.expiringThresholdDays);
   return status === 'expired'
     ? buildExpiredPlansSvg(user, plans, settings)
-    : buildCardSvg(user, settings);
+    : buildCardSvg(user, settings, plans);
 }
 
 export async function renderBodyPng(user, settings, outPath, plans = []) {
   return svgToPng(buildBodySvg(user, plans, settings), outPath);
 }
 
-// Render the intro frames into dir. Returns { slide1, card } paths.
-export async function renderSlidesPng(user, settings, dir, plans = []) {
+// Render the loop frames into dir. Returns { slide1, card, status? } paths;
+// `status.png` is rendered only when a status summary is supplied.
+export async function renderSlidesPng(user, settings, dir, plans = [], summary = null) {
   const out = {
     slide1: path.join(dir, 'slide1.png'),
     card: path.join(dir, 'card.png'),
   };
-  await Promise.all([
+  const jobs = [
     svgToPng(buildBrandSlide1Svg(settings), out.slide1),
     renderBodyPng(user, settings, out.card, plans),
-  ]);
+  ];
+  if (summary) {
+    out.status = path.join(dir, 'status.png');
+    jobs.push(renderStatusPng(summary, settings, out.status));
+  }
+  await Promise.all(jobs);
   return out;
 }

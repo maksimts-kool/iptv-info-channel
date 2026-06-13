@@ -6,10 +6,12 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import cron from 'node-cron';
 import { config } from './config.js';
-import { Users, Plans, Settings } from './db.js';
+import { Users, Plans, Settings, Incidents } from './db.js';
 import {
-  renderBodyPng, renderSlidesPng, buildBrandSlide1Svg, buildBodySvg,
+  renderBodyPng, renderSlidesPng, renderStatusPng,
+  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
 } from './overlay.js';
+import { statusSummary } from './status.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
@@ -46,8 +48,15 @@ function videoEncodeArgs(fps) {
 }
 
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
-// info card held for the rest of the loop, with background music.
+// info card held for the rest of the loop, with background music. When a status
+// slide is present the loop becomes slide -> card -> status (a chained xfade).
 function introFfmpegArgs(slides, music, tmpDir) {
+  return slides.status
+    ? introWithStatusArgs(slides, music, tmpDir)
+    : introCardOnlyArgs(slides, music, tmpDir);
+}
+
+function introCardOnlyArgs(slides, music, tmpDir) {
   const dur = config.channel.duration;
   const { width: W, height: H, fps } = config.channel;
   const XF = 0.8;                 // transition length (s)
@@ -77,16 +86,78 @@ function introFfmpegArgs(slides, music, tmpDir) {
   ];
 }
 
-// ffmpeg args for a plain still-card loop (intro disabled).
-function stillFfmpegArgs(cardPng, music, tmpDir) {
+// slide -> card -> status, chained xfades. Total length ≈ config.channel.duration
+// so the looped VOD still tiles cleanly onto hlsTime segment boundaries.
+function introWithStatusArgs(slides, music, tmpDir) {
+  const dur = config.channel.duration;
+  const { width: W, height: H, fps } = config.channel;
+  const XF = 0.8;                                          // transition length (s)
+  const S = Math.max(XF + 0.5, config.intro.slideSeconds); // brand slide on-screen
+  const Ls = Math.max(XF + 1, config.statusSlide.seconds); // status slide on-screen
+  const Lc = Math.max(6, dur - S - Ls + 2 * XF);           // card hold length
+  const o1 = (S - XF).toFixed(2);                          // slide -> card offset
+  const o2 = (S + Lc - 2 * XF).toFixed(2);                 // card -> status offset
+  const fos = (Ls - 0.6).toFixed(2);                       // status fade-out start
+  const total = S + Lc + Ls - 2 * XF;
+  const aOut = Math.max(0, total - 2).toFixed(2);
+
+  const filter =
+    `[0:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
+    `[1:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p[v1];` +
+    `[2:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=out:st=${fos}:d=0.6[v2];` +
+    `[v0][v1]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o1}[vx];` +
+    `[vx][v2]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o2}[v]`;
+
   return [
     '-y',
-    '-loop', '1', '-i', cardPng,
+    '-loop', '1', '-t', String(S), '-i', slides.slide1,
+    '-loop', '1', '-t', Lc.toFixed(2), '-i', slides.card,
+    '-loop', '1', '-t', Ls.toFixed(2), '-i', slides.status,
     '-stream_loop', '-1', '-i', music,
-    '-t', String(config.channel.duration),
-    '-map', '0:v', '-map', '1:a',
-    ...videoEncodeArgs(config.channel.stillFps),
+    '-filter_complex', filter,
+    '-map', '[v]', '-map', '3:a',
+    '-af', `afade=t=in:d=1,afade=t=out:st=${aOut}:d=2`,
+    ...videoEncodeArgs(fps),
     '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
+    '-shortest',
+    ...hlsOutArgs(tmpDir),
+  ];
+}
+
+// ffmpeg args for a plain still loop (intro disabled). With a status slide the
+// loop concatenates card -> status (no transition) at the low still frame rate.
+function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
+  const { stillFps: fps, duration: dur } = config.channel;
+  if (!statusPng) {
+    return [
+      '-y',
+      '-loop', '1', '-i', cardPng,
+      '-stream_loop', '-1', '-i', music,
+      '-t', String(dur),
+      '-map', '0:v', '-map', '1:a',
+      ...videoEncodeArgs(fps),
+      '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
+      ...hlsOutArgs(tmpDir),
+    ];
+  }
+
+  const Ls = Math.max(2, config.statusSlide.seconds);
+  const Lc = Math.max(6, dur - Ls);
+  const filter =
+    `[0:v]fps=${fps},format=yuv420p,setsar=1[c0];` +
+    `[1:v]fps=${fps},format=yuv420p,setsar=1[c1];` +
+    `[c0][c1]concat=n=2:v=1:a=0[v]`;
+
+  return [
+    '-y',
+    '-loop', '1', '-t', Lc.toFixed(2), '-i', cardPng,
+    '-loop', '1', '-t', Ls.toFixed(2), '-i', statusPng,
+    '-stream_loop', '-1', '-i', music,
+    '-filter_complex', filter,
+    '-map', '[v]', '-map', '2:a',
+    ...videoEncodeArgs(fps),
+    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
+    '-shortest',
     ...hlsOutArgs(tmpDir),
   ];
 }
@@ -169,13 +240,16 @@ export function userHlsDir(userId) {
 // 1-vCPU encode when nothing has changed since the last successful generation —
 // e.g. startup pre-gen followed by a manual "regenerate", or rapid double-clicks.
 const SIG_FILE = 'sig';
-function streamSignature(user, settings, plans, music) {
+function streamSignature(user, settings, plans, music, summary) {
   let musicMtime = 0;
   try { musicMtime = fs.statSync(music).mtimeMs; } catch { /* fall back to 0 */ }
   const c = config.channel;
   const svgs = config.intro.enabled
     ? [buildBrandSlide1Svg(settings), buildBodySvg(user, plans, settings)]
     : [buildBodySvg(user, plans, settings)];
+  // The (global) status slide depends on incidents + today's date, so hashing it
+  // here makes incident edits and the daily date roll bust the encode-skip cache.
+  if (summary) svgs.push(buildStatusSlideSvg(summary, settings));
   const payload = JSON.stringify({
     v: 1,
     svgs,
@@ -184,6 +258,9 @@ function streamSignature(user, settings, plans, music) {
       preset: c.preset, duration: c.duration, hlsTime: c.hlsTime, liveLoop: c.liveLoop,
       intro: config.intro.enabled
         ? { slide: config.intro.slideSeconds, transition: config.intro.transition }
+        : false,
+      status: summary
+        ? { seconds: config.statusSlide.seconds }
         : false,
     },
     musicMtime,
@@ -253,9 +330,13 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const settings = Settings.all();
     const plans = Plans.all();
     const music = await ensureMusic();
+    // Global Better Stack–style status board (null when the slide is disabled).
+    const summary = config.statusSlide.enabled
+      ? statusSummary(Incidents.all(), { tz: config.timezone })
+      : null;
 
     const finalDir = userHlsDir(freshUser.id);
-    const signature = streamSignature(freshUser, settings, plans, music);
+    const signature = streamSignature(freshUser, settings, plans, music, summary);
     // Skip the encode entirely when the existing stream already matches.
     if (!force && fs.existsSync(playlistPath(freshUser.id)) && readSig(finalDir) === signature) {
       log.info('channel', 'stream up to date; skipping encode', {
@@ -283,7 +364,7 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, `.build-${freshUser.id}-`));
     try {
       if (config.intro.enabled) {
-        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans);
+        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary);
         await run(
           FFMPEG,
           introFfmpegArgs(slides, music, tmpDir),
@@ -293,9 +374,14 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
       } else {
         const cardPng = path.join(tmpDir, 'card.png');
         await renderBodyPng(freshUser, settings, cardPng, plans);
+        let statusPng = null;
+        if (summary) {
+          statusPng = path.join(tmpDir, 'status.png');
+          await renderStatusPng(summary, settings, statusPng);
+        }
         await run(
           FFMPEG,
-          stillFfmpegArgs(cardPng, music, tmpDir),
+          stillFfmpegArgs(cardPng, statusPng, music, tmpDir),
           `HLS encode for user ${freshUser.id}`,
           signal,
         );

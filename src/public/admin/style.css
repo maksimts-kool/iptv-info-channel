@@ -129,6 +129,21 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color:
 .btn.danger { background: transparent; color: #fca5a5; border: 1px solid #7f1d1d; }
 .btn.danger:hover { background: rgba(127,29,29,.25); }
 
+/* Status board */
+.status-headline { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.status-strip { display: flex; gap: 2px; align-items: stretch; height: 34px; margin-bottom: 16px; }
+.status-strip .ubar { flex: 1 1 0; min-width: 0; border-radius: 2px; }
+.incidents-list { display: grid; gap: 10px; }
+.incident {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+}
+.incident-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.incident-text { min-width: 0; }
+.incident-title { font-weight: 700; font-size: 14px; }
+.incident-range { font-size: 12px; margin-top: 2px; white-space: normal; }
+
 /* Table */
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -154,8 +169,9 @@ dialog {
   border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 360px;
 }
 dialog::backdrop { background: rgba(2,6,18,0.6); }
-#user-form, #plan-form { display: grid; gap: 14px; }
-#user-form h3, #plan-form h3 { margin: 0; }
+#user-form, #plan-form, #incident-form { display: grid; gap: 14px; }
+#user-form h3, #plan-form h3, #incident-form h3 { margin: 0; }
+#incident-form textarea { min-height: 64px; }
 .check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 

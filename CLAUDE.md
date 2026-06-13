@@ -41,22 +41,32 @@ Request/data flow, entry point [src/server.js](src/server.js):
 
 1. **Data** — [src/db.js](src/db.js) is a JSON-file store, **not** a real
    database (the project predates this and some history/comments still say
-   "SQLite"). State lives in `DATA_DIR/db.json` (`plans`, `users`, `settings`)
-   with atomic writes (tmp + rename) and a corrupt-file backup-and-reset path. Users
+   "SQLite"). State lives in `DATA_DIR/db.json` (`plans`, `users`, `incidents`,
+   `settings`) with atomic writes (tmp + rename) and a corrupt-file
+   backup-and-reset path. Users
    are decorated with their plan's fields on read (mimics an old SQL join).
    Access tokens are unguessable nanoid strings; there is no user login, only
    the per-user URL token and the single admin password.
 
 2. **Render** — [src/overlay.js](src/overlay.js) builds the channel frames as
-   **SVG** and rasterizes to PNG with `sharp`. Two frames: a brand intro slide
-   and a "body" that is either the account card (`buildCardSvg`) or, for expired
-   accounts, an auto-layout plans grid (`buildExpiredPlansSvg`). All SVGs use a
-   fixed 1280×720 viewBox scaled to the configured output resolution.
+   **SVG** and rasterizes to PNG with `sharp`. Frames: a brand intro slide; a
+   "body" that is the account card (`buildCardSvg`) or, for expired accounts, an
+   auto-layout plans grid (`buildExpiredPlansSvg`); and (when
+   `STATUS_SLIDE_ENABLED`) a global Better Stack–style status board
+   (`buildStatusSlideSvg`, fed by `statusSummary()` in
+   [src/status.js](src/status.js)). In the final days before expiry the card
+   swaps its lower half for a compact "продлите подписку" plan strip
+   (`buildRenewingCardSvg`); healthy cards are unchanged. All SVGs use a fixed
+   1280×720 viewBox scaled to the configured output resolution.
 
 3. **Encode** — [src/channel.js](src/channel.js) spawns **ffmpeg** to turn the
    PNG(s) + looped music into HLS segments. Two paths: an intro path
    (slide → `xfade` transition → card, low fps) and a plain still-card path
-   (intro disabled, very low fps). Key behaviors to preserve:
+   (intro disabled, very low fps). When the status slide is enabled each path
+   gains a **third frame** (intro: a chained `xfade` into the status board;
+   still: a `concat` card → status) — the frame durations are sized so the loop
+   total stays ≈ `CHANNEL_DURATION` and still tiles onto `hlsTime` boundaries
+   with no runt segment. Key behaviors to preserve:
    - **Content-hash skip**: `streamSignature()` hashes the SVG content + encode
      params + music mtime; an unchanged stream is *not* re-encoded. Pass
      `{ force: true }` to override.
@@ -87,8 +97,10 @@ Request/data flow, entry point [src/server.js](src/server.js):
    ([src/middleware/auth.js](src/middleware/auth.js)) is an HMAC of the admin
    password stored in the cookie, so changing `ADMIN_PASSWORD` invalidates all
    sessions. Most mutations trigger **fire-and-forget** regeneration; note that
-   plan and branding edits regenerate **all** users (expired users render every
-   available plan), while user edits regenerate just that user.
+   plan, branding and **incident** edits regenerate **all** users (expired users
+   render every available plan; the status slide is global), while user edits
+   regenerate just that user. Incidents (`/admin/api/incidents`, states
+   `degraded`/`outage`) drive the status board's 90-day uptime strip.
 
 ## Things that bite
 
