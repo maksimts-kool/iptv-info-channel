@@ -10,6 +10,7 @@ import {
   buildFossEpgJson,
   parseMatchRequest,
   buildMatchChannelsResponse,
+  mergeMatchChannelsResponses,
   EMPTY_LOGO_MATCH_RESPONSE,
   buildFossLogoSvg,
   normalizeFossProviderId,
@@ -32,6 +33,7 @@ export function createFossEpgRouter({
   Settings = AppSettings,
   Incidents = AppIncidents,
   now = () => new Date(),
+  fetchImpl = globalThis.fetch,
 } = {}) {
   const router = express.Router();
   const providerId = normalizeFossProviderId(config.epg.foss.providerId);
@@ -60,8 +62,9 @@ export function createFossEpgRouter({
     .status(204)
     .end());
 
-  router.post('/m3u/match-channels', rawBody, (req, res) => {
-    const parsed = parseMatchRequest(req.body?.toString('utf8') || '');
+  router.post('/m3u/match-channels', rawBody, async (req, res) => {
+    const requestBody = req.body?.toString('utf8') || '';
+    const parsed = parseMatchRequest(requestBody);
     if (!parsed) {
       return setPublicHeaders(res).status(400).type('text/plain').send('Bad Request');
     }
@@ -71,12 +74,35 @@ export function createFossEpgRouter({
       const user = findUserByIdHash(users, channel.tvgIdHash);
       return user ? { user, idHash: String(fossIdHash(user)) } : null;
     };
-    const body = buildMatchChannelsResponse(
+    const localBody = buildMatchChannelsResponse(
       parsed.channels,
       resolve,
       providerBaseUrl,
       providerId,
     );
+
+    let body = localBody;
+    const upstreamBase = config.epg.foss.upstreamMatchUrl;
+    if (upstreamBase && typeof fetchImpl === 'function') {
+      try {
+        const upstream = await fetchImpl(`${upstreamBase}/m3u/match-channels`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: requestBody,
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (upstream.ok) {
+          body = mergeMatchChannelsResponses(localBody, await upstream.text());
+        } else {
+          log.warn('foss-epg', 'upstream match server returned an error', {
+            status: upstream.status,
+          });
+        }
+      } catch (error) {
+        log.warn('foss-epg', 'upstream match server unavailable', { error: error.message });
+      }
+    }
+
     return setPublicHeaders(res).status(200).type('text/plain; charset=utf-8').send(body);
   });
 

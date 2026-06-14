@@ -20,7 +20,10 @@ const CONFIG = {
   epg: {
     daysAhead: 2,
     daysBehind: 1,
-    foss: { providerId: 'infochannel' },
+    foss: {
+      providerId: 'infochannel',
+      upstreamMatchUrl: '',
+    },
   },
 };
 
@@ -76,6 +79,95 @@ test('match endpoints return client-compatible envelopes', async (t) => {
   assert.equal(logos.status, 200);
   assertPublicHeaders(logos);
   assert.equal((await logos.text()).split(MATCH_BLOCK_SEP).length, 2);
+});
+
+test('match endpoint merges local and upstream provider results', async (t) => {
+  const config = structuredClone(CONFIG);
+  config.epg.foss.upstreamMatchUrl = 'https://central.example';
+  let forwardedBody = '';
+  const app = express();
+  app.use(createFossEpgRouter({
+    config,
+    Users: {
+      all: () => [USER],
+      getByToken: (token) => (token === USER.token ? USER : null),
+    },
+    Settings: { all: () => ({ brand_name: 'TestIPTV' }) },
+    Incidents: { all: () => [] },
+    now: () => NOW,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, 'https://central.example/m3u/match-channels');
+      forwardedBody = options.body;
+      return new Response([
+        '{}',
+        '7~edem~100',
+        'edem~https://epg.ottp.eu.org/edem/',
+      ].join(MATCH_BLOCK_SEP));
+    },
+  }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  config.publicBaseUrl = base;
+
+  const hash = String(fossIdHash(USER));
+  const requestBody = ['{}', 'http://epg.it999.ru/edem.xml.gz', [
+    `42-${hash}-0-0`,
+    '7-123-456-789',
+  ].join('\n')].join(MATCH_BLOCK_SEP);
+  const response = await fetch(`${base}/m3u/match-channels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: requestBody,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(forwardedBody, requestBody);
+  assert.deepEqual((await response.text()).split(MATCH_BLOCK_SEP), [
+    '{}',
+    `7~edem~100\n42~infochannel~${hash}`,
+    `edem~https://epg.ottp.eu.org/edem/\ninfochannel~${base}/foss-epg/u/abc123/`,
+  ]);
+});
+
+test('local match still succeeds when the upstream matcher is unavailable', async (t) => {
+  const config = structuredClone(CONFIG);
+  config.epg.foss.upstreamMatchUrl = 'https://central.example';
+  const app = express();
+  app.use(createFossEpgRouter({
+    config,
+    Users: {
+      all: () => [USER],
+      getByToken: (token) => (token === USER.token ? USER : null),
+    },
+    Settings: { all: () => ({ brand_name: 'TestIPTV' }) },
+    Incidents: { all: () => [] },
+    now: () => NOW,
+    fetchImpl: async () => {
+      throw new Error('offline');
+    },
+  }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  config.publicBaseUrl = base;
+
+  const hash = String(fossIdHash(USER));
+  const requestBody = ['{}', '', `42-${hash}-0-0`].join(MATCH_BLOCK_SEP);
+  const response = await fetch(`${base}/m3u/match-channels`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: requestBody,
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.text()).split(MATCH_BLOCK_SEP), [
+    '{}',
+    `42~infochannel~${hash}`,
+    `infochannel~${base}/foss-epg/u/abc123/`,
+  ]);
 });
 
 test('direct JSON and logo endpoints form a complete static source', async (t) => {

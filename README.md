@@ -101,7 +101,9 @@ player does not make a separate central logo-match request.
 
 The server additionally exposes compatible fallback endpoints at
 `/m3u/match-channels` and `/m3u/match-logos`, plus
-`/foss-epg/u/<token>/channels.json`.
+`/foss-epg/u/<token>/channels.json`. The channel matcher proxies and merges the
+normal OTT-play matcher response, so using it as `!epg-server` preserves EPG for
+the other channels in a combined playlist.
 
 ## Admin panel
 
@@ -139,6 +141,7 @@ falls back to the bundled track.
 | `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |
 | `EPG_FOSS_ENABLED` | `true` | Advertise the token-scoped static OTT-play FOSS JSON guide. |
 | `EPG_FOSS_PROVIDER_ID` | `infochannel` | Short source name used by the FOSS playlist attributes. |
+| `EPG_FOSS_UPSTREAM_MATCH_URL` | `https://ottp.eu.org` | Normal OTT-play matcher merged into the local fallback response. |
 | `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
 | `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
 | `INTRO_TRANSITION` | `slideleft` | ffmpeg `xfade` transition from the brand slide into the card (`fade`, `wipeleft`, `dissolve`, `smoothleft`, …). |

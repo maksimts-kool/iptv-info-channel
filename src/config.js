@@ -102,6 +102,8 @@ export const config = {
     foss: {
       enabled: (process.env.EPG_FOSS_ENABLED ?? 'true').toLowerCase() !== 'false',
       providerId: process.env.EPG_FOSS_PROVIDER_ID || 'infochannel',
+      upstreamMatchUrl: (process.env.EPG_FOSS_UPSTREAM_MATCH_URL || 'https://ottp.eu.org')
+        .replace(/\/+$/, ''),
     },
   },
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),

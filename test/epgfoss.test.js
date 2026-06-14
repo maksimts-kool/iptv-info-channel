@@ -9,6 +9,7 @@ import {
   buildFossEpgJson,
   parseMatchRequest,
   buildMatchChannelsResponse,
+  mergeMatchChannelsResponses,
   EMPTY_CHANNEL_MATCH_RESPONSE,
   EMPTY_LOGO_MATCH_RESPONSE,
 } from '../src/epgfoss.js';
@@ -101,4 +102,23 @@ test('malformed and unmatched requests stay well formed', () => {
     EMPTY_CHANNEL_MATCH_RESPONSE,
   );
   assert.equal(EMPTY_LOGO_MATCH_RESPONSE.split(MATCH_BLOCK_SEP).length, 2);
+});
+
+test('local matches merge with normal OTT-play matches and win by channel key', () => {
+  const local = [
+    '{}',
+    '42~infochannel~2554912436',
+    'infochannel~https://iptv.example/foss-epg/u/abc123/',
+  ].join(MATCH_BLOCK_SEP);
+  const upstream = [
+    '{}',
+    '7~edem~100\n42~wrong~999',
+    'edem~https://epg.ottp.eu.org/edem/\nwrong~https://example.test/',
+  ].join(MATCH_BLOCK_SEP);
+
+  assert.deepEqual(mergeMatchChannelsResponses(local, upstream).split(MATCH_BLOCK_SEP), [
+    '{}',
+    '7~edem~100\n42~infochannel~2554912436',
+    'edem~https://epg.ottp.eu.org/edem/\ninfochannel~https://iptv.example/foss-epg/u/abc123/',
+  ]);
 });

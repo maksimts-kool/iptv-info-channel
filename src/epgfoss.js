@@ -116,6 +116,53 @@ export const EMPTY_CHANNEL_MATCH_RESPONSE = ['{}', '', ''].join(MATCH_BLOCK_SEP)
 // The shipped client and upstream Go server use two blocks for match-logos.
 export const EMPTY_LOGO_MATCH_RESPONSE = ['{}', ''].join(MATCH_BLOCK_SEP);
 
+export function mergeMatchChannelsResponses(localBody, upstreamBody) {
+  const localBlocks = String(localBody).split(MATCH_BLOCK_SEP);
+  const upstreamBlocks = String(upstreamBody).split(MATCH_BLOCK_SEP);
+  if (localBlocks.length !== 3) return upstreamBlocks.length === 3 ? upstreamBody : localBody;
+  if (upstreamBlocks.length !== 3) return localBody;
+
+  const channels = new Map();
+  const providers = new Map();
+
+  function addChannels(block, overwrite) {
+    for (const line of block.split('\n')) {
+      if (!line) continue;
+      const [key] = line.split('~');
+      if (!key || (!overwrite && channels.has(key))) continue;
+      channels.set(key, line);
+    }
+  }
+
+  function addProviders(block, overwrite) {
+    for (const line of block.split('\n')) {
+      if (!line) continue;
+      const separator = line.indexOf('~');
+      if (separator < 1) continue;
+      const id = line.slice(0, separator);
+      if (!overwrite && providers.has(id)) continue;
+      providers.set(id, line);
+    }
+  }
+
+  addChannels(upstreamBlocks[1], false);
+  addChannels(localBlocks[1], true);
+  addProviders(upstreamBlocks[2], false);
+  addProviders(localBlocks[2], true);
+
+  const usedProviderIds = new Set(
+    [...channels.values()].map((line) => line.split('~')[1]).filter(Boolean),
+  );
+  return [
+    '{}',
+    [...channels.values()].join('\n'),
+    [...providers]
+      .filter(([id]) => usedProviderIds.has(id))
+      .map(([, line]) => line)
+      .join('\n'),
+  ].join(MATCH_BLOCK_SEP);
+}
+
 function xmlEscape(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
