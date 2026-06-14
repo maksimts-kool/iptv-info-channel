@@ -6,30 +6,14 @@ import { config } from '../config.js';
 import { Users, Settings, Incidents } from '../db.js';
 import { userHlsDir, ensureUserStream } from '../channel.js';
 import { buildLivePlaylist } from '../liveloop.js';
-import { buildEpgXml, epgChannelId } from '../epg.js';
+import { buildEpgXml } from '../epg.js';
+import { buildUserPlaylist } from '../playlist.js';
 import { log } from '../logger.js';
 
 const router = express.Router();
 
 // Only allow the playlist file and numbered segments.
 const SAFE_FILE = /^(index\.m3u8|seg_\d{3,}\.ts)$/;
-
-// Build the .m3u a player loads. token via path or query.
-function m3uFor(user, settings) {
-  const brand = settings.brand_name || 'Мой IPTV-сервис';
-  const name = `${brand} — ${user.username}`;
-  const url = `${config.publicBaseUrl}/hls/${user.token}/index.m3u8`;
-  const tvgId = epgChannelId(user);
-  const header = config.epg.enabled
-    ? `#EXTM3U url-tvg="${config.publicBaseUrl}/u/${user.token}/epg.xml"`
-    : '#EXTM3U';
-  return [
-    header,
-    `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${name}" group-title="Аккаунт",${name}`,
-    url,
-    '',
-  ].join('\n');
-}
 
 // Build the per-user XMLTV programme guide (service + account status).
 function epgFor(user) {
@@ -68,7 +52,7 @@ function sendPlaylist(req, res, token) {
     .status(200)
     .type('application/x-mpegurl')
     .set('Content-Disposition', `inline; filename="${user.username}.m3u"`)
-    .send(m3uFor(user, settings));
+    .send(buildUserPlaylist(user, settings, config));
 }
 
 // GET /playlist.m3u?token=XXXX

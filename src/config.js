@@ -97,6 +97,12 @@ export const config = {
     // Calendar days of schedule emitted forward of / behind "today".
     daysAhead: num(process.env.EPG_DAYS_AHEAD, 7),
     daysBehind: num(process.env.EPG_DAYS_BEHIND, 1),
+    // OTT-play FOSS uses its own JSON guide format. Static sources are loaded
+    // directly from this server instead of going through the public matcher.
+    foss: {
+      enabled: (process.env.EPG_FOSS_ENABLED ?? 'true').toLowerCase() !== 'false',
+      providerId: process.env.EPG_FOSS_PROVIDER_ID || 'infochannel',
+    },
   },
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),
 

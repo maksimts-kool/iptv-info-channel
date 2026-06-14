@@ -3,6 +3,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config.js';
 import streamRoutes from './routes/stream.js';
+import fossEpgRoutes from './routes/foss-epg.js';
 import adminRoutes from './routes/admin.js';
 import { ensureMusic, generateAll, startDailyRefresh } from './channel.js';
 import { Users, Plans } from './db.js';
@@ -29,6 +30,7 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 // Admin must be mounted before stream so /admin isn't shadowed.
 app.use('/admin', adminRoutes);
+if (config.epg.enabled && config.epg.foss.enabled) app.use('/', fossEpgRoutes);
 app.use('/', streamRoutes);
 
 const server = app.listen(config.port, async () => {

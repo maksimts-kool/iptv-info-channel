@@ -42,11 +42,20 @@ function tzOffset(instant, tz) {
   return `${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`;
 }
 
+// Local-midnight instant starting `dateStr` in `tz`.
+function dayStart(dateStr, tz) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return localTimeToDate(y, m, d, 0, 0, 0, tz);
+}
+
 // XMLTV timestamp "YYYYMMDDHHMMSS +0300" for local midnight starting `dateStr`.
 function dayStartXmltv(dateStr, tz) {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const instant = localTimeToDate(y, m, d, 0, 0, 0, tz);
-  return `${dateStr.replace(/-/g, '')}000000 ${tzOffset(instant, tz)}`;
+  return `${dateStr.replace(/-/g, '')}000000 ${tzOffset(dayStart(dateStr, tz), tz)}`;
+}
+
+// Unix seconds of local midnight starting `dateStr` in `tz`.
+export function dayStartUnix(dateStr, tz) {
+  return Math.floor(dayStart(dateStr, tz).getTime() / 1000);
 }
 
 // Local-noon instant of a calendar day — a safe sample point for "as of this
@@ -94,11 +103,10 @@ function accountLine(user, instant, tz, expiringThresholdDays) {
   return `Подписка: ${label} · осталось ${left} ${pluralDays(left)}`;
 }
 
-// Build the full XMLTV document for one user.
-export function buildEpgXml(
+// Semantic daily records shared by the XMLTV and OTT-play JSON renderers.
+export function eachEpgDay(
   user,
   {
-    settings = {},
     incidents = [],
     now = new Date(),
     tz = process.env.TZ || 'Europe/Tallinn',
@@ -107,13 +115,51 @@ export function buildEpgXml(
     expiringThresholdDays = 7,
   } = {},
 ) {
-  const brand = settings.brand_name || 'Мой IPTV-сервис';
-  const channelId = epgChannelId(user);
-  const channelName = `${brand} — ${user.username}`;
-
   const summary = statusSummary(incidents, { now, tz });
   const todayStr = summary.days.at(-1).date; // statusSummary's window ends "today"
   const window = dayWindow(todayStr, daysBehind, daysAhead);
+
+  const days = window.map((date) => {
+    const next = nextDay(date);
+    const severity = severityForDay(incidents, date, todayStr);
+    const noon = dayNoon(date, tz);
+    const account = accountLine(user, noon, tz, expiringThresholdDays);
+
+    const incidentLines = incidents
+      .filter((inc) => inc && SEVERITY[inc.severity] && inc.starts_on
+        && inc.starts_on <= date && date <= (inc.ends_on || todayStr))
+      .map((inc) => {
+        const span = inc.ends_on ? `${formatDate(inc.starts_on)}–${formatDate(inc.ends_on)}`
+          : `с ${formatDate(inc.starts_on)}, сейчас`;
+        const note = inc.note ? ` — ${inc.note}` : '';
+        return `${SEVERITY[inc.severity].label} (${span}): ${inc.title}${note}`;
+      });
+
+    return {
+      date,
+      next,
+      severity,
+      title: SERVICE_TITLE[severity],
+      account,
+      uptimeLine: `Доступность за 90 дней: ${formatUptime(summary.uptimePct)}`,
+      incidentLines,
+      startXmltv: dayStartXmltv(date, tz),
+      stopXmltv: dayStartXmltv(next, tz),
+      startUnix: dayStartUnix(date, tz),
+      stopUnix: dayStartUnix(next, tz),
+    };
+  });
+
+  return { summary, todayStr, days };
+}
+
+// Build the full XMLTV document for one user.
+export function buildEpgXml(user, opts = {}) {
+  const { settings = {} } = opts;
+  const brand = settings.brand_name || 'Мой IPTV-сервис';
+  const channelId = epgChannelId(user);
+  const channelName = `${brand} — ${user.username}`;
+  const { days } = eachEpgDay(user, opts);
 
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -124,33 +170,13 @@ export function buildEpgXml(
     '  </channel>',
   ];
 
-  for (const date of window) {
-    const next = nextDay(date);
-    const severity = severityForDay(incidents, date, todayStr);
-    const noon = dayNoon(date, tz);
-    const account = accountLine(user, noon, tz, expiringThresholdDays);
-
-    // Incidents that touch this calendar day, for the description.
-    const dayIncidents = incidents.filter((inc) => inc && SEVERITY[inc.severity]
-      && inc.starts_on && inc.starts_on <= date && date <= (inc.ends_on || todayStr));
-
-    const descParts = [
-      account,
-      `Доступность за 90 дней: ${formatUptime(summary.uptimePct)}`,
-    ];
-    for (const inc of dayIncidents) {
-      const span = inc.ends_on ? `${formatDate(inc.starts_on)}–${formatDate(inc.ends_on)}`
-        : `с ${formatDate(inc.starts_on)}, сейчас`;
-      const sev = SEVERITY[inc.severity].label;
-      const note = inc.note ? ` — ${inc.note}` : '';
-      descParts.push(`${sev} (${span}): ${inc.title}${note}`);
-    }
-
+  for (const day of days) {
+    const desc = [day.account, day.uptimeLine, ...day.incidentLines].join('\n');
     lines.push(
-      `  <programme start="${dayStartXmltv(date, tz)}" stop="${dayStartXmltv(next, tz)}" channel="${xmlEscape(channelId)}">`,
-      `    <title lang="ru">${xmlEscape(SERVICE_TITLE[severity])}</title>`,
-      `    <sub-title lang="ru">${xmlEscape(account)}</sub-title>`,
-      `    <desc lang="ru">${xmlEscape(descParts.join('\n'))}</desc>`,
+      `  <programme start="${day.startXmltv}" stop="${day.stopXmltv}" channel="${xmlEscape(channelId)}">`,
+      `    <title lang="ru">${xmlEscape(day.title)}</title>`,
+      `    <sub-title lang="ru">${xmlEscape(day.account)}</sub-title>`,
+      `    <desc lang="ru">${xmlEscape(desc)}</desc>`,
       '    <category lang="ru">Статус сервиса</category>',
       '  </programme>',
     );

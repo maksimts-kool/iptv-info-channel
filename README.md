@@ -83,6 +83,26 @@ driven by the same incidents that power the on-screen status board. The
 description also carries the account's subscription status (days left) and any
 incident notes. Disable with `EPG_ENABLED=false`.
 
+#### OTT-play FOSS
+
+OTT-play FOSS does not use the raw XMLTV URL for this channel. When
+`EPG_FOSS_ENABLED=true` (the default), the playlist also advertises a static
+FOSS JSON source:
+
+```m3u
+#EXTM3U ... foss-tvg="=infochannel::http://<host>:9222/foss-epg/u/<token>/"
+#EXTINF:-1 tvg-id="account-<token>" tvg-source="=infochannel" ...
+```
+
+The leading `=` is required in both places. It makes OTT-play fetch
+`epg/<xxhash32(tvg-id)>.json` directly from the token-scoped base, bypassing
+the central match service. The channel also includes a `tvg-logo` URL so the
+player does not make a separate central logo-match request.
+
+The server additionally exposes compatible fallback endpoints at
+`/m3u/match-channels` and `/m3u/match-logos`, plus
+`/foss-epg/u/<token>/channels.json`.
+
 ## Admin panel
 
 `http://<host>:9222/admin` — sign in with `ADMIN_PASSWORD`.
@@ -117,6 +137,8 @@ falls back to the bundled track.
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
 | `EPG_ENABLED` | `true` | Advertise a per‑user XMLTV guide (`/u/<token>/epg.xml`) via `url-tvg`. |
 | `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |
+| `EPG_FOSS_ENABLED` | `true` | Advertise the token-scoped static OTT-play FOSS JSON guide. |
+| `EPG_FOSS_PROVIDER_ID` | `infochannel` | Short source name used by the FOSS playlist attributes. |
 | `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
 | `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
 | `INTRO_TRANSITION` | `slideleft` | ffmpeg `xfade` transition from the brand slide into the card (`fade`, `wipeleft`, `dissolve`, `smoothleft`, …). |
