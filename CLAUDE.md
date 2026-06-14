@@ -103,8 +103,26 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `/hls/:token/:file` lazily generates (on first request) and serves the
    `index.m3u8` live playlist + `.ts` segments. Segment requests honor HTTP
    `Range` (strict players probe with `Range:` and stall on a plain 200).
+   `/u/:token/epg.xml` (and `/epg.xml?token=`) return the **XMLTV programme
+   guide** (see EPG below); the `.m3u` header advertises it via `url-tvg` and the
+   `#EXTINF` uses a per-user `tvg-id` (`account-<token>`) matching the EPG
+   `<channel id>`.
 
-6. **Admin** — [src/routes/admin.js](src/routes/admin.js) is a cookie-auth JSON
+6. **EPG** — [src/epg.js](src/epg.js) (`buildEpgXml`) synthesises a per-user
+   XMLTV guide. There's no real schedule (the channel is a looping card), so it
+   emits **one `<programme>` per calendar day** over a window
+   (`EPG_DAYS_BEHIND`..`EPG_DAYS_AHEAD` around "today"). Each day's `<title>` is
+   the service-status headline for that day (✓ operational / ⚠ degraded / ✕
+   outage), derived from incidents via `severityForDay`; `<sub-title>`/`<desc>`
+   carry that user's subscription status "as of" the day (sampled at local noon
+   so it decrements across the guide) plus 90-day uptime and any incident
+   details. Pure logic, unit-tested ([test/epg.test.js](test/epg.test.js)) and
+   built **live on request** (not pre-encoded) so days-left/status stay fresh
+   without regeneration. Timestamps are local-midnight XMLTV
+   (`YYYYMMDDHHMMSS +ZZZZ`) with a DST-correct offset; interpolated text is
+   XML-escaped. Toggle with `EPG_ENABLED` (disabling also drops `url-tvg`).
+
+7. **Admin** — [src/routes/admin.js](src/routes/admin.js) is a cookie-auth JSON
    API under `/admin/api` plus static UI in `src/public/admin/`. Auth
    ([src/middleware/auth.js](src/middleware/auth.js)) is an HMAC of the admin
    password stored in the cookie, so changing `ADMIN_PASSWORD` invalidates all

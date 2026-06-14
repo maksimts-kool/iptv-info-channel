@@ -36,7 +36,7 @@ function calendarWindow(todayStr, days) {
 }
 
 // Worst severity among incidents covering calendar day `dayStr`.
-function severityForDay(incidents, dayStr, todayStr) {
+export function severityForDay(incidents, dayStr, todayStr) {
   let worst = 'operational';
   for (const inc of incidents) {
     const end = inc.ends_on || todayStr; // open-ended incidents run through today

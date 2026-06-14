@@ -67,6 +67,22 @@ Add that URL to any IPTV player (TiviMate, IPTV Smarters, VLC, …) and it plays
 the customer's looping info channel. The underlying stream is at
 `/hls/<token>/index.m3u8`.
 
+### Programme guide (EPG)
+
+The `.m3u` advertises a per-user **XMLTV** guide (via `url-tvg`), so players that
+show an EPG display the current service status right in the channel list and
+info bar:
+
+```
+http://<host>:9222/u/<token>/epg.xml
+```
+
+Each day is one programme whose title is the service status — `✓ Все сервисы
+работают`, `⚠ Частичная деградация сервиса`, or `✕ Сбой в работе сервиса` —
+driven by the same incidents that power the on-screen status board. The
+description also carries the account's subscription status (days left) and any
+incident notes. Disable with `EPG_ENABLED=false`.
+
 ## Admin panel
 
 `http://<host>:9222/admin` — sign in with `ADMIN_PASSWORD`.
@@ -99,6 +115,8 @@ falls back to the bundled track.
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
 | `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
+| `EPG_ENABLED` | `true` | Advertise a per‑user XMLTV guide (`/u/<token>/epg.xml`) via `url-tvg`. |
+| `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |
 | `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
 | `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
 | `INTRO_TRANSITION` | `slideleft` | ffmpeg `xfade` transition from the brand slide into the card (`fade`, `wipeleft`, `dissolve`, `smoothleft`, …). |

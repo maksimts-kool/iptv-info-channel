@@ -3,9 +3,10 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
-import { Users, Settings } from '../db.js';
+import { Users, Settings, Incidents } from '../db.js';
 import { userHlsDir, ensureUserStream } from '../channel.js';
 import { buildLivePlaylist } from '../liveloop.js';
+import { buildEpgXml, epgChannelId } from '../epg.js';
 import { log } from '../logger.js';
 
 const router = express.Router();
@@ -18,12 +19,42 @@ function m3uFor(user, settings) {
   const brand = settings.brand_name || 'Мой IPTV-сервис';
   const name = `${brand} — ${user.username}`;
   const url = `${config.publicBaseUrl}/hls/${user.token}/index.m3u8`;
+  const tvgId = epgChannelId(user);
+  const header = config.epg.enabled
+    ? `#EXTM3U url-tvg="${config.publicBaseUrl}/u/${user.token}/epg.xml"`
+    : '#EXTM3U';
   return [
-    '#EXTM3U',
-    `#EXTINF:-1 tvg-id="account-info" tvg-name="${name}" group-title="Аккаунт",${name}`,
+    header,
+    `#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${name}" group-title="Аккаунт",${name}`,
     url,
     '',
   ].join('\n');
+}
+
+// Build the per-user XMLTV programme guide (service + account status).
+function epgFor(user) {
+  return buildEpgXml(user, {
+    settings: Settings.all(),
+    incidents: Incidents.all(),
+    tz: config.timezone,
+    daysAhead: config.epg.daysAhead,
+    daysBehind: config.epg.daysBehind,
+    expiringThresholdDays: config.expiringThresholdDays,
+  });
+}
+
+function sendEpg(req, res, token) {
+  if (!config.epg.enabled) return res.status(404).type('text/plain').send('EPG disabled');
+  const user = Users.getByToken(token);
+  if (!user) {
+    log.warn('stream', 'EPG requested with unknown token');
+    return res.status(404).type('text/plain').send('Unknown token');
+  }
+  return res
+    .status(200)
+    .set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    .type('application/xml; charset=utf-8')
+    .send(epgFor(user));
 }
 
 function sendPlaylist(req, res, token) {
@@ -49,6 +80,16 @@ router.get('/playlist.m3u', (req, res) => {
 
 // GET /u/:token/playlist.m3u  (clean per-user URL)
 router.get('/u/:token/playlist.m3u', (req, res) => sendPlaylist(req, res, req.params.token));
+
+// GET /epg.xml?token=XXXX  -> XMLTV guide (advertised via url-tvg in the .m3u)
+router.get('/epg.xml', (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) return res.status(400).type('text/plain').send('Missing ?token=');
+  return sendEpg(req, res, token);
+});
+
+// GET /u/:token/epg.xml  (clean per-user URL)
+router.get('/u/:token/epg.xml', (req, res) => sendEpg(req, res, req.params.token));
 
 // GET /hls/:token/:file  -> serve (and lazily generate) the HLS stream.
 router.get('/hls/:token/:file', async (req, res) => {

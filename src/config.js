@@ -89,6 +89,15 @@ export const config = {
     // Seconds the status board is held on screen each loop.
     seconds: num(process.env.STATUS_SLIDE_SECONDS, 12),
   },
+  epg: {
+    // XMLTV programme guide advertised via `url-tvg` in each user's .m3u. The
+    // guide's now/next programmes carry the service-status headline (operational
+    // / degraded / outage) plus the account's own subscription status.
+    enabled: (process.env.EPG_ENABLED ?? 'true').toLowerCase() !== 'false',
+    // Calendar days of schedule emitted forward of / behind "today".
+    daysAhead: num(process.env.EPG_DAYS_AHEAD, 7),
+    daysBehind: num(process.env.EPG_DAYS_BEHIND, 1),
+  },
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),
 
   dataDir: DATA_DIR,

@@ -25,7 +25,7 @@ function datePartsInTimezone(date, timezone) {
 }
 
 // Convert a local wall-clock time in an IANA timezone to a real UTC instant.
-function localTimeToDate(year, month, day, hour, minute, second, timezone) {
+export function localTimeToDate(year, month, day, hour, minute, second, timezone) {
   const wantedAsUtc = Date.UTC(year, month - 1, day, hour, minute, second);
   let result = new Date(wantedAsUtc);
 
