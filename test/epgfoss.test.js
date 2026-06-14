@@ -55,7 +55,7 @@ test('channels.json contains a future top programme and broken-bar metadata', ()
   assert.equal(json.data[idHash][1], 'TestIPTV — ivan');
 });
 
-test('EPG JSON covers the current day and future window in unix seconds', () => {
+test('EPG JSON shows only service status across the current and future window', () => {
   const json = buildFossEpgJson(USER, opts());
   assert.equal(json.epg_data.length, 4);
   assert.ok(json.epg_data.some(
@@ -64,9 +64,27 @@ test('EPG JSON covers the current day and future window in unix seconds', () => 
   ));
   for (const programme of json.epg_data) {
     assert.ok(programme.time_to > programme.time);
-    assert.match(programme.name, /^Подписка: /);
-    assert.match(programme.descr, /Все сервисы работают/);
+    assert.equal(programme.name, '✓ Все сервисы работают');
+    assert.equal(programme.descr, '');
   }
+});
+
+test('FOSS EPG programme name follows outage status without account details', () => {
+  const json = buildFossEpgJson(USER, opts({
+    incidents: [{
+      id: 'outage',
+      severity: 'outage',
+      title: 'CDN outage',
+      starts_on: '2026-06-13',
+      ends_on: null,
+    }],
+  }));
+  const current = json.epg_data.find(
+    (programme) => programme.time <= NOW.getTime() / 1000
+      && programme.time_to > NOW.getTime() / 1000,
+  );
+  assert.equal(current.name, '✕ Сбой в работе сервиса');
+  assert.equal(current.descr, '');
 });
 
 test('match request and response use the exact three-block envelope', () => {

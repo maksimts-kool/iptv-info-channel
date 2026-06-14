@@ -52,8 +52,8 @@ export function buildFossEpgJson(user, opts = {}) {
   const { days } = eachEpgDay(user, opts);
   return {
     epg_data: days.map((day) => ({
-      name: day.account,
-      descr: [day.title, day.uptimeLine, ...day.incidentLines].join('\n'),
+      name: day.title,
+      descr: '',
       time: day.startUnix,
       time_to: day.stopUnix,
     })),
