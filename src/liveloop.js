@@ -6,7 +6,6 @@ import path from 'node:path';
 // headroom behind the synthetic live edge. Too thin (e.g. 4) and they rebuffer
 // at the edge forever even though lenient players (OTT Play) cope.
 export const LIVE_WINDOW_SEGMENTS = 8;
-export const INTRO_LOOKAHEAD_SEGMENTS = 3;
 
 const STATE_FILE = 'loop.json';
 const metaCache = new Map();
@@ -113,23 +112,6 @@ export function currentLoopPosition(dir, now = Date.now()) {
   return position(meta, state, now);
 }
 
-// Give a newly opened player its own timeline beginning at segment 0. Sequence
-// numbers start beyond the shared live window so clients accept the tune-in as
-// fresh content even if they recently watched the same channel.
-export function createIntroSession(dir, now = Date.now()) {
-  const meta = readLoopMeta(dir);
-  const state = readState(dir);
-  if (!meta || !state) return null;
-
-  const current = position(meta, state, now);
-  return {
-    epoch: now,
-    baseSeq: current.mediaSequence + LIVE_WINDOW_SEGMENTS,
-    baseDiscontinuity: current.discontinuitySequence + 1,
-    version: state.version,
-  };
-}
-
 // Initialize a newly rendered generation. A short preroll means the first
 // playlist already has a healthy live window instead of only one segment.
 export function writeLoopState(
@@ -154,7 +136,11 @@ export function writeLoopState(
   return state;
 }
 
-export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
+// A single shared live timeline: a sliding window over the looped segments,
+// the same for every viewer regardless of when they tune in. No per-open
+// session, so the channel is just "already live" — it never restarts at the
+// intro on channel open.
+export function buildLivePlaylist(dir, now = Date.now()) {
   const meta = readLoopMeta(dir);
   if (!meta) return null;
 
@@ -172,20 +158,15 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
     }
   }
 
-  const playbackState = introSession || state;
-  const current = position(meta, playbackState, now);
-  const firstSequence = introSession
-    ? playbackState.baseSeq
-    : Math.max(state.baseSeq, current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1);
-  const playbackOffset = firstSequence - playbackState.baseSeq;
+  const current = position(meta, state, now);
+  const firstSequence = Math.max(
+    state.baseSeq,
+    current.mediaSequence - LIVE_WINDOW_SEGMENTS + 1,
+  );
+  const playbackOffset = firstSequence - state.baseSeq;
   const discontinuitySequence =
-    playbackState.baseDiscontinuity + Math.floor(playbackOffset / meta.segments.length);
-  const availableSegmentCount = current.mediaSequence - firstSequence + 1;
-  const segmentCount = introSession
-    // EVENT playlists begin at the intro and only append. Keep multiple fully
-    // generated segments ahead so OTT-play never catches the synthetic edge.
-    ? availableSegmentCount + INTRO_LOOKAHEAD_SEGMENTS
-    : availableSegmentCount;
+    state.baseDiscontinuity + Math.floor(playbackOffset / meta.segments.length);
+  const segmentCount = current.mediaSequence - firstSequence + 1;
   const advertisedDuration = Array.from({ length: segmentCount }, (_, index) => {
     const offset = playbackOffset + index;
     return meta.segments[offset % meta.segments.length].duration;
@@ -198,26 +179,23 @@ export function buildLivePlaylist(dir, now = Date.now(), introSession = null) {
     // version/tag mismatch a lower number implies.
     '#EXT-X-VERSION:6',
     '#EXT-X-INDEPENDENT-SEGMENTS',
-    ...(introSession ? ['#EXT-X-PLAYLIST-TYPE:EVENT'] : []),
     `#EXT-X-TARGETDURATION:${meta.targetDuration}`,
     `#EXT-X-MEDIA-SEQUENCE:${firstSequence}`,
     `#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitySequence}`,
-    introSession
-      ? '#EXT-X-START:TIME-OFFSET=0.000,PRECISE=YES'
-      : `#EXT-X-START:TIME-OFFSET=-${advertisedDuration.toFixed(3)},PRECISE=NO`,
+    // Start at the live edge (a window's worth back), so players join the
+    // running stream rather than seeking to the beginning.
+    `#EXT-X-START:TIME-OFFSET=-${advertisedDuration.toFixed(3)},PRECISE=NO`,
   ];
 
   for (let index = 0; index < segmentCount; index += 1) {
     const sequence = firstSequence + index;
-    const offset = sequence - playbackState.baseSeq;
+    const offset = sequence - state.baseSeq;
     const localIndex = offset % meta.segments.length;
     const segment = meta.segments[localIndex];
 
     if (offset > 0 && localIndex === 0) lines.push('#EXT-X-DISCONTINUITY');
     lines.push(`#EXTINF:${segment.duration.toFixed(6)},`);
-    lines.push(
-      `${segment.file}?v=${encodeURIComponent(playbackState.version)}&s=${sequence}`,
-    );
+    lines.push(`${segment.file}?v=${encodeURIComponent(state.version)}&s=${sequence}`);
   }
   lines.push('');
   return lines.join('\n');

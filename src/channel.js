@@ -19,8 +19,9 @@ import { elapsedMs, log } from './logger.js';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
-// Common HLS output args (VOD loop). Players restart from segment 0 on each
-// tune-in, so the brand intro plays on every "channel open".
+// Common HLS output args. ffmpeg writes a finite VOD asset on disk; liveloop.js
+// then serves it as one shared, always-running live channel (it is not
+// re-anchored to the intro per tune-in).
 function hlsOutArgs(tmpDir) {
   return [
     '-f', 'hls',

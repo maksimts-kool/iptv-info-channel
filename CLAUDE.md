@@ -92,9 +92,11 @@ Request/data flow, entry point [src/server.js](src/server.js):
    pre-generated finite VOD asset as an **endless live HLS channel**: a sliding
    window over the looped segments with monotonically increasing media/
    discontinuity sequence numbers (they must never move backwards across a
-   regeneration — see `previousPosition` handling in channel.js). Each tune-in
-   gets an "intro session" (`createIntroSession`) so the brand intro replays on
-   every channel open while continuous refreshes stay on the shared timeline.
+   regeneration — see `previousPosition` handling in channel.js). All viewers
+   share one live timeline: tuning in joins the stream wherever it currently is,
+   it never restarts at the intro on channel open. (The brand intro slide, when
+   `INTRO_ENABLED`, is just ordinary loop content baked in by channel.js — it
+   only shows when the shared loop cycles past it.)
 
 5. **Public endpoints** — [src/routes/stream.js](src/routes/stream.js):
    `/u/:token/playlist.m3u` (and `/playlist.m3u?token=`) return the `.m3u`;
