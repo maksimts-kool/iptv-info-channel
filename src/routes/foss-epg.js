@@ -5,7 +5,6 @@ import { config as appConfig } from '../config.js';
 import { Users as AppUsers, Settings as AppSettings, Incidents as AppIncidents } from '../db.js';
 import {
   fossIdHash,
-  findUserByIdHash,
   buildFossChannelsJson,
   buildFossEpgJson,
   parseMatchRequest,
@@ -15,6 +14,7 @@ import {
   buildFossLogoSvg,
   normalizeFossProviderId,
 } from '../epgfoss.js';
+import { fossProviderBaseUrl } from '../playlist.js';
 import { log } from '../logger.js';
 
 const rawBody = express.raw({ type: () => true, limit: '1mb' });
@@ -52,9 +52,7 @@ export function createFossEpgRouter({
     };
   }
 
-  function providerBaseUrl(user) {
-    return `${config.publicBaseUrl}/foss-epg/u/${encodeURIComponent(user.token)}/`;
-  }
+  const providerBaseUrl = (user) => fossProviderBaseUrl(user, config);
 
   router.options('*', (req, res) => setPublicHeaders(res)
     .set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
@@ -69,11 +67,14 @@ export function createFossEpgRouter({
       return setPublicHeaders(res).status(400).type('text/plain').send('Bad Request');
     }
 
-    const users = Users.all();
-    const resolve = (channel) => {
-      const user = findUserByIdHash(users, channel.tvgIdHash);
-      return user ? { user, idHash: String(fossIdHash(user)) } : null;
-    };
+    // Index users by their FOSS id hash once, so resolving N request channels is
+    // O(N) lookups instead of O(channels × users) hashes.
+    const usersByHash = new Map();
+    for (const user of Users.all()) {
+      const hash = fossIdHash(user);
+      usersByHash.set(hash, { user, idHash: String(hash) });
+    }
+    const resolve = (channel) => usersByHash.get(Number(channel.tvgIdHash)) || null;
     const localBody = buildMatchChannelsResponse(
       parsed.channels,
       resolve,

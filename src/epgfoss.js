@@ -1,8 +1,10 @@
 // OTT-play FOSS JSON guide and match-protocol helpers. Pure logic, no I/O.
-import { epgChannelId, eachEpgDay } from './epg.js';
+import {
+  epgChannelId, eachEpgDay, dayStartUnix, xmlEscape,
+} from './epg.js';
 import { xxhash32 } from './xxhash32.js';
 
-export const DEFAULT_PROVIDER_ID = 'infochannel';
+const DEFAULT_PROVIDER_ID = 'infochannel';
 export const MATCH_BLOCK_SEP = '\n\t\n';
 const FIELD_SEP = '¦';
 const UINT32_MAX = 0xffffffff;
@@ -16,27 +18,23 @@ export function fossIdHash(user) {
   return xxhash32(epgChannelId(user));
 }
 
-export function findUserByIdHash(users, hash) {
-  const wanted = Number(hash);
-  if (!Number.isInteger(wanted) || wanted < 0 || wanted > UINT32_MAX) return null;
-  return users.find((user) => fossIdHash(user) === wanted) || null;
-}
-
 export function buildFossChannelsJson(user, opts = {}) {
   const { settings = {} } = opts;
   const providerId = normalizeFossProviderId(opts.providerId);
   const brand = settings.brand_name || 'Мой IPTV-сервис';
   const name = `${brand} — ${user.username}`;
-  const { days } = eachEpgDay(user, opts);
-  const topProgrammeStart = days.at(-1)?.startUnix
-    ?? Math.floor((opts.now?.getTime() ?? Date.now()) / 1000);
+  const { days, tz } = eachEpgDay(user, opts);
+  const nowUnix = Math.floor((opts.now?.getTime() ?? Date.now()) / 1000);
+  const lastDate = days.at(-1)?.date;
+  // channels.json only needs the latest programme start (the top of the guide).
+  const topProgrammeStart = lastDate ? dayStartUnix(lastDate, tz) : nowUnix;
   const idHash = String(fossIdHash(user));
 
   return {
     meta: {
       id: providerId,
       'url-hashes': [],
-      'last-upd': Math.floor((opts.now?.getTime() ?? Date.now()) / 1000),
+      'last-upd': nowUnix,
       'last-epg': topProgrammeStart,
     },
     data: {
@@ -49,13 +47,13 @@ export function buildFossChannelsJson(user, opts = {}) {
 }
 
 export function buildFossEpgJson(user, opts = {}) {
-  const { days } = eachEpgDay(user, opts);
+  const { days, tz } = eachEpgDay(user, opts);
   return {
     epg_data: days.map((day) => ({
       name: day.title,
       descr: '',
-      time: day.startUnix,
-      time_to: day.stopUnix,
+      time: dayStartUnix(day.date, tz),
+      time_to: dayStartUnix(day.next, tz),
     })),
   };
 }
@@ -161,14 +159,6 @@ export function mergeMatchChannelsResponses(localBody, upstreamBody) {
       .map(([, line]) => line)
       .join('\n'),
   ].join(MATCH_BLOCK_SEP);
-}
-
-function xmlEscape(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 export function buildFossLogoSvg(settings = {}) {

@@ -4,7 +4,6 @@ import { epgChannelId } from '../src/epg.js';
 import {
   MATCH_BLOCK_SEP,
   fossIdHash,
-  findUserByIdHash,
   buildFossChannelsJson,
   buildFossEpgJson,
   parseMatchRequest,
@@ -36,13 +35,6 @@ const opts = (overrides = {}) => ({
 test('FOSS id hash uses the playlist tvg-id', () => {
   assert.equal(epgChannelId(USER), 'account-abc123');
   assert.equal(fossIdHash(USER), 463191053);
-});
-
-test('findUserByIdHash reverses a decimal uint32 hash', () => {
-  const users = [USER, { ...USER, token: 'other' }];
-  assert.equal(findUserByIdHash(users, String(fossIdHash(USER))), USER);
-  assert.equal(findUserByIdHash(users, 'not-a-number'), null);
-  assert.equal(findUserByIdHash(users, '4294967296'), null);
 });
 
 test('channels.json contains a future top programme and broken-bar metadata', () => {

@@ -31,16 +31,14 @@ export function buildUserPlaylist(user, settings, cfg) {
     headerAttrs.push(`foss-tvg="=${providerId}::${attr(providerBase)}"`);
   }
 
+  // A real logo URL prevents a separate central match-logos request.
   const channelAttrs = [
     `tvg-id="${attr(tvgId)}"`,
+    ...(fossEnabled ? [`tvg-source="=${providerId}"`] : []),
     `tvg-name="${attr(name)}"`,
+    ...(fossEnabled ? [`tvg-logo="${attr(logoUrl)}"`] : []),
     `group-title="Аккаунт"`,
   ];
-  if (fossEnabled) {
-    channelAttrs.splice(1, 0, `tvg-source="=${providerId}"`);
-    // A real logo URL prevents a separate central match-logos request.
-    channelAttrs.splice(3, 0, `tvg-logo="${attr(logoUrl)}"`);
-  }
 
   return [
     headerAttrs.length ? `#EXTM3U ${headerAttrs.join(' ')}` : '#EXTM3U',

@@ -16,7 +16,7 @@ export function epgChannelId(user) {
   return `account-${user.token}`;
 }
 
-function xmlEscape(str) {
+export function xmlEscape(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -103,7 +103,10 @@ function accountLine(user, instant, tz, expiringThresholdDays) {
   return `Подписка: ${label} · осталось ${left} ${pluralDays(left)}`;
 }
 
-// Semantic daily records shared by the XMLTV and OTT-play JSON renderers.
+// Semantic daily records shared by the XMLTV and OTT-play JSON renderers. Each
+// record carries the day's calendar bounds (`date`/`next`) and rendered status
+// text; each renderer formats those bounds into its own timestamp shape
+// (`dayStartXmltv` vs. `dayStartUnix`) so neither pays for the other's format.
 export function eachEpgDay(
   user,
   {
@@ -118,6 +121,7 @@ export function eachEpgDay(
   const summary = statusSummary(incidents, { now, tz });
   const todayStr = summary.days.at(-1).date; // statusSummary's window ends "today"
   const window = dayWindow(todayStr, daysBehind, daysAhead);
+  const uptimeLine = `Доступность за 90 дней: ${formatUptime(summary.uptimePct)}`;
 
   const days = window.map((date) => {
     const next = nextDay(date);
@@ -135,22 +139,10 @@ export function eachEpgDay(
         return `${SEVERITY[inc.severity].label} (${span}): ${inc.title}${note}`;
       });
 
-    return {
-      date,
-      next,
-      severity,
-      title: SERVICE_TITLE[severity],
-      account,
-      uptimeLine: `Доступность за 90 дней: ${formatUptime(summary.uptimePct)}`,
-      incidentLines,
-      startXmltv: dayStartXmltv(date, tz),
-      stopXmltv: dayStartXmltv(next, tz),
-      startUnix: dayStartUnix(date, tz),
-      stopUnix: dayStartUnix(next, tz),
-    };
+    return { date, next, title: SERVICE_TITLE[severity], account, uptimeLine, incidentLines };
   });
 
-  return { summary, todayStr, days };
+  return { summary, todayStr, tz, days };
 }
 
 // Build the full XMLTV document for one user.
@@ -159,7 +151,7 @@ export function buildEpgXml(user, opts = {}) {
   const brand = settings.brand_name || 'Мой IPTV-сервис';
   const channelId = epgChannelId(user);
   const channelName = `${brand} — ${user.username}`;
-  const { days } = eachEpgDay(user, opts);
+  const { days, tz } = eachEpgDay(user, opts);
 
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -173,7 +165,7 @@ export function buildEpgXml(user, opts = {}) {
   for (const day of days) {
     const desc = [day.account, day.uptimeLine, ...day.incidentLines].join('\n');
     lines.push(
-      `  <programme start="${day.startXmltv}" stop="${day.stopXmltv}" channel="${xmlEscape(channelId)}">`,
+      `  <programme start="${dayStartXmltv(day.date, tz)}" stop="${dayStartXmltv(day.next, tz)}" channel="${xmlEscape(channelId)}">`,
       `    <title lang="ru">${xmlEscape(day.title)}</title>`,
       `    <sub-title lang="ru">${xmlEscape(day.account)}</sub-title>`,
       `    <desc lang="ru">${xmlEscape(desc)}</desc>`,
