@@ -16,6 +16,11 @@ function todayISO() {
 function formatPct(pct) {
   return Number.isInteger(pct) ? `${pct}%` : `${String(pct).replace('.', ',')}%`;
 }
+
+// Billing-period suffix shown after a plan price (mirrors periodLabel in util.js).
+function periodSuffix(period) {
+  return period === 'month' ? '/мес.' : period === 'year' ? '/год' : '';
+}
 let generationStatusLoading = false;
 let generationInProgress = false;
 let generationCompleteTimer;
@@ -246,7 +251,7 @@ function renderPlans() {
       <div class="plan-heading">
         <div>
           <div class="plan-name">${escapeHtml(p.name)}</div>
-          <div class="plan-price">${escapeHtml(p.price)}${p.billing_period === 'month' ? '/мес.' : p.billing_period === 'year' ? '/год' : ''}</div>
+          <div class="plan-price">${escapeHtml(p.price)}${periodSuffix(p.billing_period)}</div>
         </div>
         <div class="actions">
           <button class="btn tiny ghost" data-act="edit-plan">Edit</button>
@@ -341,10 +346,9 @@ function openDialog(user) {
   $('#f-expires').value = user?.expires_at || '';
   $('#f-active').checked = user ? user.active : true;
   const sel = $('#f-plan');
-  sel.innerHTML = STATE.plans.map((p) => {
-    const period = p.billing_period === 'month' ? '/мес.' : p.billing_period === 'year' ? '/год' : '';
-    return `<option value="${p.id}">${escapeHtml(p.name)} (${p.price}${period})</option>`;
-  }).join('');
+  sel.innerHTML = STATE.plans.map((p) => (
+    `<option value="${p.id}">${escapeHtml(p.name)} (${p.price}${periodSuffix(p.billing_period)})</option>`
+  )).join('');
   sel.value = user?.plan_id || STATE.plans[0]?.id;
   dlg.showModal();
 }
