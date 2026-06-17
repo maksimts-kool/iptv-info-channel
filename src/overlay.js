@@ -4,17 +4,10 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { config } from './config.js';
 import {
-  formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays, localDateString,
+  formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays,
+  localDateString, xmlEscape,
 } from './util.js';
 import { SEVERITY, formatUptime } from './status.js';
-
-function esc(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 // Shared <defs> + background used by every frame so the intro and card feel
 // like one continuous channel.
@@ -51,7 +44,7 @@ function svgDoc(inner) {
 
 // A small rounded "logo mark" with the brand's initial — purely decorative.
 function logoMark(brand, cx, cy, size) {
-  const initial = esc((brand || 'I').trim().charAt(0).toUpperCase() || 'I');
+  const initial = xmlEscape((brand || 'I').trim().charAt(0).toUpperCase() || 'I');
   const half = size / 2;
   return `
     <rect x="${cx - half}" y="${cy - half}" width="${size}" height="${size}" rx="${size * 0.26}" fill="url(#accent)" filter="url(#soft)"/>
@@ -60,7 +53,7 @@ function logoMark(brand, cx, cy, size) {
 
 // ---- Intro slide 1: the brand reveal ----
 export function buildBrandSlide1Svg(settings = {}) {
-  const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
   return svgDoc(`
     <rect width="1280" height="720" fill="url(#glow)"/>
     ${logoMark(settings.brand_name, 640, 300, 150)}
@@ -78,8 +71,8 @@ export function buildCardSvg(user, settings = {}, plans = []) {
     : d < 0 ? `${Math.abs(d)} ${pluralDays(d)} назад`
     : `${d} ${pluralDays(d)}`;
 
-  const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
-  const tagline = esc(settings.tagline || 'Информационный канал аккаунта');
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
+  const tagline = xmlEscape(settings.tagline || 'Информационный канал аккаунта');
   const price = formatPrice(user.price_cents, user.currency);
   const period = periodLabel(user.billing_period);
   const statusFontSize = meta.label.length > 10 ? 27 : 32;
@@ -103,7 +96,7 @@ export function buildCardSvg(user, settings = {}, plans = []) {
 
   <!-- Account -->
   <text x="104" y="248" fill="#7f93b5" font-family="Inter, sans-serif" font-size="22" letter-spacing="2">АККАУНТ</text>
-  <text x="104" y="312" fill="#ffffff" font-family="Inter, sans-serif" font-size="58" font-weight="700" letter-spacing="-1">${esc(user.username)}</text>
+  <text x="104" y="312" fill="#ffffff" font-family="Inter, sans-serif" font-size="58" font-weight="700" letter-spacing="-1">${xmlEscape(user.username)}</text>
 
   <!-- Status banner -->
   <rect x="820" y="214" width="356" height="86" rx="16" fill="${meta.color}"/>
@@ -116,20 +109,20 @@ export function buildCardSvg(user, settings = {}, plans = []) {
   <!-- Info grid -->
   <g font-family="Inter, sans-serif">
     <text x="104" y="436" fill="#7f93b5" font-size="22" letter-spacing="2">ТАРИФ</text>
-    <text x="104" y="492" fill="#ffffff" font-size="44" font-weight="700">${esc(user.plan_name)}</text>
+    <text x="104" y="492" fill="#ffffff" font-size="44" font-weight="700">${xmlEscape(user.plan_name)}</text>
 
     <text x="464" y="436" fill="#7f93b5" font-size="22" letter-spacing="2">ЦЕНА</text>
-    <text x="464" y="492" fill="#7dd3fc" font-size="44" font-weight="700">${esc(price)}${period ? `<tspan font-size="26" font-weight="600">${esc(period)}</tspan>` : ''}</text>
+    <text x="464" y="492" fill="#7dd3fc" font-size="44" font-weight="700">${xmlEscape(price)}${period ? `<tspan font-size="26" font-weight="600">${xmlEscape(period)}</tspan>` : ''}</text>
 
     <text x="824" y="436" fill="#7f93b5" font-size="22" letter-spacing="2">ИСТЕКАЕТ</text>
-    <text x="824" y="492" fill="#ffffff" font-size="44" font-weight="700">${esc(formatDate(user.expires_at))}</text>
+    <text x="824" y="492" fill="#ffffff" font-size="44" font-weight="700">${xmlEscape(formatDate(user.expires_at))}</text>
 
     <text x="104" y="566" fill="#7f93b5" font-size="22" letter-spacing="2">ОСТАЛОСЬ ВРЕМЕНИ</text>
-    <text x="104" y="612" fill="${meta.color}" font-size="40" font-weight="800">${esc(daysText)}</text>
+    <text x="104" y="612" fill="${meta.color}" font-size="40" font-weight="800">${xmlEscape(daysText)}</text>
   </g>
 
   <!-- Footer -->
-  <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${esc(formatDate(localDateString()))} · Канал обновляется ежедневно</text>`);
+  <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${xmlEscape(formatDate(localDateString()))} · Канал обновляется ежедневно</text>`);
 }
 
 // A compact plan chip used in the renewal strip: name + price, current plan
@@ -140,8 +133,8 @@ function compactPlanChip(plan, x, y, w, h, isCurrent) {
   return `
     <g font-family="Inter, sans-serif">
       <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="14" fill="#131f3d" stroke="${isCurrent ? '#38bdf8' : '#2b3d68'}" stroke-width="${isCurrent ? 2.5 : 1.5}"/>
-      <text x="${x + 18}" y="${y + 30}" fill="#ffffff" font-size="21" font-weight="700">${esc(clipText(plan.name, nameChars))}</text>
-      <text x="${x + 18}" y="${y + 60}" fill="#7dd3fc" font-size="27" font-weight="800">${esc(formatPrice(plan.price_cents, plan.currency))}${periodSuffix ? `<tspan font-size="17" font-weight="600">${esc(periodSuffix)}</tspan>` : ''}</text>
+      <text x="${x + 18}" y="${y + 30}" fill="#ffffff" font-size="21" font-weight="700">${xmlEscape(clipText(plan.name, nameChars))}</text>
+      <text x="${x + 18}" y="${y + 60}" fill="#7dd3fc" font-size="27" font-weight="800">${xmlEscape(formatPrice(plan.price_cents, plan.currency))}${periodSuffix ? `<tspan font-size="17" font-weight="600">${xmlEscape(periodSuffix)}</tspan>` : ''}</text>
       ${isCurrent ? `<text x="${x + w - 16}" y="${y + 26}" text-anchor="end" fill="#38bdf8" font-size="14" font-weight="700" letter-spacing="1">ВАШ ТАРИФ</text>` : ''}
     </g>`;
 }
@@ -186,7 +179,7 @@ function buildRenewingCardSvg(user, plans, settings, ctx) {
 
   <!-- Account -->
   <text x="104" y="232" fill="#7f93b5" font-family="Inter, sans-serif" font-size="22" letter-spacing="2">АККАУНТ</text>
-  <text x="104" y="294" fill="#ffffff" font-family="Inter, sans-serif" font-size="54" font-weight="700" letter-spacing="-1">${esc(clipText(user.username, 22))}</text>
+  <text x="104" y="294" fill="#ffffff" font-family="Inter, sans-serif" font-size="54" font-weight="700" letter-spacing="-1">${xmlEscape(clipText(user.username, 22))}</text>
 
   <!-- Status banner -->
   <rect x="820" y="200" width="356" height="86" rx="16" fill="${meta.color}"/>
@@ -199,13 +192,13 @@ function buildRenewingCardSvg(user, plans, settings, ctx) {
   <!-- Condensed info row -->
   <g font-family="Inter, sans-serif">
     <text x="104" y="386" fill="#7f93b5" font-size="20" letter-spacing="2">ТАРИФ</text>
-    <text x="104" y="434" fill="#ffffff" font-size="38" font-weight="700">${esc(clipText(user.plan_name, 16))}</text>
+    <text x="104" y="434" fill="#ffffff" font-size="38" font-weight="700">${xmlEscape(clipText(user.plan_name, 16))}</text>
 
     <text x="520" y="386" fill="#7f93b5" font-size="20" letter-spacing="2">ИСТЕКАЕТ</text>
-    <text x="520" y="434" fill="#ffffff" font-size="38" font-weight="700">${esc(formatDate(user.expires_at))}</text>
+    <text x="520" y="434" fill="#ffffff" font-size="38" font-weight="700">${xmlEscape(formatDate(user.expires_at))}</text>
 
     <text x="880" y="386" fill="#7f93b5" font-size="20" letter-spacing="2">ОСТАЛОСЬ</text>
-    <text x="880" y="434" fill="${meta.color}" font-size="38" font-weight="800">${esc(urgentDays)}</text>
+    <text x="880" y="434" fill="${meta.color}" font-size="38" font-weight="800">${xmlEscape(urgentDays)}</text>
   </g>
 
   <!-- Renewal strip -->
@@ -213,7 +206,7 @@ function buildRenewingCardSvg(user, plans, settings, ctx) {
   ${chipsOrFallback}
 
   <!-- Footer -->
-  <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${esc(formatDate(localDateString()))} · Свяжитесь с администратором, чтобы продлить</text>`);
+  <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${xmlEscape(formatDate(localDateString()))} · Свяжитесь с администратором, чтобы продлить</text>`);
 }
 
 function clipText(value, maxLength) {
@@ -251,7 +244,7 @@ const PLANS_HEADER = {
 // The common 2/3/4-plan cases are a single centered row.
 export function buildExpiredPlansSvg(user, plans = [], settings = {}, { variant = 'expired' } = {}) {
   const head = PLANS_HEADER[variant] || PLANS_HEADER.expired;
-  const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
   const visiblePlans = plans.slice(0, 12);
   const { columns, rows } = planGridLayout(visiblePlans.length);
   const gap = rows === 1 ? 18 : 14;
@@ -287,7 +280,7 @@ export function buildExpiredPlansSvg(user, plans = [], settings = {}, { variant 
       const fy = y + featureStart + featureIndex * featureLineHeight;
       return `
         <circle cx="${x + 27}" cy="${fy - 6}" r="${compact ? 4 : 5}" fill="#38bdf8"/>
-        <text x="${x + 42}" y="${fy}" fill="#c7d5eb" font-size="${featureFontSize}">${esc(clipText(feature, maxFeatureChars))}</text>`;
+        <text x="${x + 42}" y="${fy}" fill="#c7d5eb" font-size="${featureFontSize}">${xmlEscape(clipText(feature, maxFeatureChars))}</text>`;
     }).join('');
 
     const moreRow = hiddenFeatureCount && maxFeatureRows
@@ -297,8 +290,8 @@ export function buildExpiredPlansSvg(user, plans = [], settings = {}, { variant 
     return `
       <g font-family="Inter, sans-serif">
         <rect x="${x}" y="${y}" width="${cardWidth}" height="${cardHeight}" rx="${compact ? 14 : 20}" fill="#131f3d" stroke="${current ? '#38bdf8' : '#2b3d68'}" stroke-width="${current ? 3 : 1.5}"/>
-        <text x="${x + 24}" y="${y + (compact ? 43 : 58)}" fill="#ffffff" font-size="${nameSize}" font-weight="700">${esc(clipText(plan.name, nameChars))}</text>
-        <text x="${x + 24}" y="${y + (compact ? 82 : 119)}" fill="#7dd3fc" font-size="${priceSize}" font-weight="800">${esc(formatPrice(plan.price_cents, plan.currency))}${periodLabel(plan.billing_period) ? `<tspan font-size="${Math.round(priceSize * 0.62)}" font-weight="600">${esc(periodLabel(plan.billing_period))}</tspan>` : ''}</text>
+        <text x="${x + 24}" y="${y + (compact ? 43 : 58)}" fill="#ffffff" font-size="${nameSize}" font-weight="700">${xmlEscape(clipText(plan.name, nameChars))}</text>
+        <text x="${x + 24}" y="${y + (compact ? 82 : 119)}" fill="#7dd3fc" font-size="${priceSize}" font-weight="800">${xmlEscape(formatPrice(plan.price_cents, plan.currency))}${periodLabel(plan.billing_period) ? `<tspan font-size="${Math.round(priceSize * 0.62)}" font-weight="600">${xmlEscape(periodLabel(plan.billing_period))}</tspan>` : ''}</text>
         ${compact ? '' : `<line x1="${x + 24}" y1="${y + 146}" x2="${x + cardWidth - 24}" y2="${y + 146}" stroke="#2b3d68" stroke-width="1"/>`}
         ${featureRows || (compact ? '' : `<text x="${x + 24}" y="${y + featureStart}" fill="#7f93b5" font-size="${featureFontSize}">Подробности у администратора</text>`)}
         ${moreRow}
@@ -317,15 +310,12 @@ export function buildExpiredPlansSvg(user, plans = [], settings = {}, { variant 
     <text x="64" y="76" fill="#ffffff" font-family="Inter, sans-serif" font-size="34" font-weight="700" letter-spacing="-0.5">${brand}</text>
     <rect x="${badgeX}" y="42" width="${badgeWidth}" height="55" rx="14" fill="${head.badgeColor}"/>
     <text x="${badgeX + badgeWidth / 2}" y="79" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="24" font-weight="800">${head.badge}</text>
-    <text x="64" y="146" fill="#ffffff" font-family="Inter, sans-serif" font-size="42" font-weight="800" letter-spacing="-0.8">${esc(head.heading(clipText(user.username, 34)))}</text>
-    <text x="64" y="184" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">${esc(head.sub)}</text>
+    <text x="64" y="146" fill="#ffffff" font-family="Inter, sans-serif" font-size="42" font-weight="800" letter-spacing="-0.8">${xmlEscape(head.heading(clipText(user.username, 34)))}</text>
+    <text x="64" y="184" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">${xmlEscape(head.sub)}</text>
     ${cards}
     ${emptyState}
     <text x="64" y="684" fill="#6f83a6" font-family="Inter, sans-serif" font-size="18">Свяжитесь с администратором, чтобы активировать выбранный тариф${extraCount ? ` · Ещё тарифов: ${extraCount}` : ''}</text>`);
 }
-
-// Backwards-compatible alias (older callers used buildSvg for the card).
-export const buildSvg = buildCardSvg;
 
 // ---- Status board slide (Better Stack–style service status) ----
 
@@ -351,10 +341,10 @@ function incidentRange(inc) {
 
 // Builds the status slide from a statusSummary() result (see status.js).
 export function buildStatusSlideSvg(summary, settings = {}) {
-  const brand = esc(settings.brand_name || 'Мой IPTV-сервис');
-  const headline = esc(summary.label);
-  const dateStr = esc(formatDate(localDateString()));
-  const uptime = esc(formatUptime(summary.uptimePct));
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
+  const headline = xmlEscape(summary.label);
+  const dateStr = xmlEscape(formatDate(localDateString()));
+  const uptime = xmlEscape(formatUptime(summary.uptimePct));
   const pill = SEVERITY[summary.state];
   const pillW = 64 + pill.label.length * 15;
   const pillX = 1176 - pillW;
@@ -378,7 +368,7 @@ export function buildStatusSlideSvg(summary, settings = {}) {
       const extra = active.length > 1 ? ` (+${active.length - 1})` : '';
       return `<rect x="104" y="576" width="1072" height="46" rx="12" fill="#131f3d" stroke="${SEVERITY[inc.severity].color}" stroke-width="1.5"/>
         <circle cx="128" cy="599" r="7" fill="${SEVERITY[inc.severity].color}"/>
-        <text x="148" y="606" fill="#e8eefb" font-family="Inter, sans-serif" font-size="20">${esc(clipText(inc.title, 64))} · ${esc(incidentRange(inc))}${extra}</text>`;
+        <text x="148" y="606" fill="#e8eefb" font-family="Inter, sans-serif" font-size="20">${xmlEscape(clipText(inc.title, 64))} · ${xmlEscape(incidentRange(inc))}${extra}</text>`;
     })()
     : '<text x="104" y="606" fill="#5c6e91" font-family="Inter, sans-serif" font-size="20">Активных инцидентов нет</text>';
 
@@ -391,7 +381,7 @@ export function buildStatusSlideSvg(summary, settings = {}) {
     <text x="104" y="404" fill="#ffffff" font-family="Inter, sans-serif" font-size="30" font-weight="700">${brand}</text>
     <rect x="${pillX}" y="378" width="${pillW}" height="44" rx="12" fill="${pill.color}"/>
     <circle cx="${pillX + 24}" cy="400" r="8" fill="#ffffff" opacity="0.9"/>
-    <text x="${pillX + 42}" y="408" fill="#ffffff" font-family="Inter, sans-serif" font-size="22" font-weight="700">${esc(pill.label)}</text>
+    <text x="${pillX + 42}" y="408" fill="#ffffff" font-family="Inter, sans-serif" font-size="22" font-weight="700">${xmlEscape(pill.label)}</text>
 
     ${bars}
     <text x="104" y="540" fill="#6f83a6" font-family="Inter, sans-serif" font-size="18">90 дней назад</text>
@@ -405,11 +395,6 @@ export function buildStatusSlideSvg(summary, settings = {}) {
 async function svgToPng(svg, outPath) {
   await sharp(Buffer.from(svg)).png().toFile(outPath);
   return outPath;
-}
-
-// Render just the info card (used when the intro is disabled).
-export async function renderCardPng(user, settings, outPath, plans = []) {
-  return svgToPng(buildCardSvg(user, settings, plans), outPath);
 }
 
 export async function renderStatusPng(summary, settings, outPath) {

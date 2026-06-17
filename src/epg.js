@@ -7,8 +7,12 @@
 // the EPG into an at-a-glance "is everything OK?" board. Pure logic, no I/O.
 import {
   localTimeToDate, accountStatus, daysLeft, formatDate, pluralDays, STATUS_META,
+  dateFormatter, xmlEscape,
 } from './util.js';
 import { severityForDay, statusSummary, formatUptime, SEVERITY } from './status.js';
+
+// Re-exported so EPG renderers (epgfoss.js) can share the same escaper.
+export { xmlEscape };
 
 // Stable XMLTV channel id, also used as the .m3u `tvg-id` so players link the
 // two. Per-user (the guide carries that user's account status).
@@ -16,19 +20,10 @@ export function epgChannelId(user) {
   return `account-${user.token}`;
 }
 
-export function xmlEscape(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
 // "+0300" / "-0500" offset of `instant` in `tz`, derived from the wall clock
 // (DST-correct) rather than a fixed assumption.
 function tzOffset(instant, tz) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
+  const parts = dateFormatter('en-CA', {
     timeZone: tz,
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',

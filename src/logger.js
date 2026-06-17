@@ -1,6 +1,8 @@
+import { dateFormatter } from './util.js';
+
 function write(level, scope, message, details) {
   const timezone = process.env.TZ || 'Europe/Tallinn';
-  const timestamp = new Intl.DateTimeFormat('sv-SE', {
+  const timestamp = dateFormatter('sv-SE', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
@@ -27,11 +29,4 @@ export const log = {
 
 export function elapsedMs(startedAt) {
   return Date.now() - startedAt;
-}
-
-export function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return 'unknown';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 }

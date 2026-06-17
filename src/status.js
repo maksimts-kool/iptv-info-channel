@@ -11,6 +11,10 @@ export const SEVERITY = {
   outage: { rank: 2, color: '#dc2626', label: 'Сбой' },
 };
 
+// The severities an incident can actually be stored as ("operational" is the
+// implicit no-incident state). Used to validate incident input.
+export const INCIDENT_SEVERITIES = Object.keys(SEVERITY).filter((s) => s !== 'operational');
+
 // Headline shown above the strip for the current overall state.
 const STATE_HEADLINE = {
   operational: 'Все сервисы работают',

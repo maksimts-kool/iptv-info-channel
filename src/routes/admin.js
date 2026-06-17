@@ -7,7 +7,7 @@ import { Users, Plans, Settings, Incidents } from '../db.js';
 import {
   daysLeft, accountStatus, formatPrice, formatDate, STATUS_META,
 } from '../util.js';
-import { statusSummary } from '../status.js';
+import { statusSummary, INCIDENT_SEVERITIES } from '../status.js';
 import {
   generateForUser, generateAll, generationStatus, removeUserHls,
 } from '../channel.js';
@@ -33,7 +33,6 @@ function regenAll(reason) {
 }
 
 const VALID_PERIODS = ['', 'month', 'year'];
-const INCIDENT_SEVERITIES = ['degraded', 'outage'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function incidentJson(i) {

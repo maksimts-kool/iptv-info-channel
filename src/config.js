@@ -29,6 +29,8 @@ loadDotEnv();
 process.env.TZ ||= 'Europe/Tallinn';
 
 const num = (v, d) => (v !== undefined && v !== '' && !Number.isNaN(Number(v)) ? Number(v) : d);
+// Env flag: defaults to `d` (true) unless explicitly set to "false".
+const bool = (v, d = true) => (v ?? String(d)).toLowerCase() !== 'false';
 
 const DATA_DIR = path.isAbsolute(process.env.DATA_DIR || 'data')
   ? process.env.DATA_DIR
@@ -64,19 +66,19 @@ export const config = {
     hlsTime: num(process.env.HLS_TIME, 6),
     // Serve the per-user stream as an endless LIVE playlist (looped segments,
     // no seek bar, no end) instead of a finite VOD clip. `false` = plain VOD.
-    liveLoop: (process.env.CHANNEL_LIVE_LOOP ?? 'true').toLowerCase() !== 'false',
+    liveLoop: bool(process.env.CHANNEL_LIVE_LOOP),
     // Bottom-right "next slide in N" countdown, baked in via ffmpeg drawtext.
     // Needs a font ffmpeg can resolve: fontconfig name `Inter` by default (the
     // Docker image installs fonts-inter), or set TIMER_FONT_FILE to a TTF path
     // (forward slashes) on systems without fontconfig.
     slideTimer: {
-      enabled: (process.env.SLIDE_TIMER_ENABLED ?? 'true').toLowerCase() !== 'false',
+      enabled: bool(process.env.SLIDE_TIMER_ENABLED),
       fontFile: process.env.TIMER_FONT_FILE || '',
     },
   },
   intro: {
     // Animated brand intro (slide 1 -> slide 2) before the user-details card.
-    enabled: (process.env.INTRO_ENABLED ?? 'true').toLowerCase() !== 'false',
+    enabled: bool(process.env.INTRO_ENABLED),
     // Seconds each brand slide is on screen (incl. its share of the transition).
     slideSeconds: num(process.env.INTRO_SLIDE_SECONDS, 4),
     // ffmpeg xfade transition used between the two brand slides (e.g. slideleft,
@@ -85,7 +87,7 @@ export const config = {
   },
   statusSlide: {
     // Better Stack–style service-status frame appended to the channel loop.
-    enabled: (process.env.STATUS_SLIDE_ENABLED ?? 'true').toLowerCase() !== 'false',
+    enabled: bool(process.env.STATUS_SLIDE_ENABLED),
     // Seconds the status board is held on screen each loop.
     seconds: num(process.env.STATUS_SLIDE_SECONDS, 12),
   },
@@ -93,14 +95,14 @@ export const config = {
     // XMLTV programme guide advertised via `url-tvg` in each user's .m3u. The
     // guide's now/next programmes carry the service-status headline (operational
     // / degraded / outage) plus the account's own subscription status.
-    enabled: (process.env.EPG_ENABLED ?? 'true').toLowerCase() !== 'false',
+    enabled: bool(process.env.EPG_ENABLED),
     // Calendar days of schedule emitted forward of / behind "today".
     daysAhead: num(process.env.EPG_DAYS_AHEAD, 7),
     daysBehind: num(process.env.EPG_DAYS_BEHIND, 1),
     // OTT-play FOSS uses its own JSON guide format. Static sources are loaded
     // directly from this server instead of going through the public matcher.
     foss: {
-      enabled: (process.env.EPG_FOSS_ENABLED ?? 'true').toLowerCase() !== 'false',
+      enabled: bool(process.env.EPG_FOSS_ENABLED),
       providerId: process.env.EPG_FOSS_PROVIDER_ID || 'infochannel',
       upstreamMatchUrl: (process.env.EPG_FOSS_UPSTREAM_MATCH_URL || 'https://ottp.eu.org')
         .replace(/\/+$/, ''),

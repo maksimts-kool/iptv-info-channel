@@ -14,8 +14,32 @@ export function periodLabel(period) {
   return '';
 }
 
+// Escape a string for safe interpolation into XML/SVG text or attributes.
+export function xmlEscape(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// Intl.DateTimeFormat construction dominates the cost of these date helpers and
+// the formatters are immutable, so memoize them by locale + options (timezone
+// included). Shared with epg.js and logger.js.
+const formatterCache = new Map();
+export function dateFormatter(locale, options) {
+  const key = `${locale}|${JSON.stringify(options)}`;
+  let formatter = formatterCache.get(key);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, options);
+    formatterCache.set(key, formatter);
+  }
+  return formatter;
+}
+
 function datePartsInTimezone(date, timezone) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
+  const parts = dateFormatter('en-CA', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
@@ -31,7 +55,7 @@ export function localTimeToDate(year, month, day, hour, minute, second, timezone
 
   // Recalculate once to account for the timezone offset, including DST.
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const parts = new Intl.DateTimeFormat('en-CA', {
+    const parts = dateFormatter('en-CA', {
       timeZone: timezone,
       year: 'numeric',
       month: '2-digit',

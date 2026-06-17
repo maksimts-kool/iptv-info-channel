@@ -5,6 +5,7 @@ import path from 'node:path';
 import { customAlphabet } from 'nanoid';
 import { config } from './config.js';
 import { log } from './logger.js';
+import { INCIDENT_SEVERITIES } from './status.js';
 
 const DB_FILE = path.join(config.dataDir, 'db.json');
 
@@ -85,10 +86,11 @@ function save() {
 
 load();
 
-// Merge plan fields onto a user record (mimics the old SQL join).
-function decorate(u) {
+// Merge plan fields onto a user record (mimics the old SQL join). Pass a
+// prebuilt `planById` map when decorating many users to keep the join O(n+m).
+function decorate(u, planById) {
   if (!u) return u;
-  const plan = data.plans.find((p) => p.id === u.plan_id) || {};
+  const plan = (planById ? planById.get(u.plan_id) : data.plans.find((p) => p.id === u.plan_id)) || {};
   return {
     ...u,
     plan_name: plan.name ?? u.plan_id,
@@ -162,10 +164,12 @@ export const Plans = {
 
 // ---- Users ----
 export const Users = {
-  all: () =>
-    [...data.users]
+  all: () => {
+    const planById = new Map(data.plans.map((p) => [p.id, p]));
+    return [...data.users]
       .sort((a, b) => a.username.toLowerCase().localeCompare(b.username.toLowerCase()))
-      .map(decorate),
+      .map((u) => decorate(u, planById));
+  },
   get: (id) => decorate(data.users.find((u) => u.id === Number(id))),
   getByToken: (token) => decorate(data.users.find((u) => u.token === token)),
   create: ({ username, plan_id, expires_at, active = 1, token }) => {
@@ -210,8 +214,6 @@ export const Users = {
 };
 
 // ---- Incidents (drive the status-board slide) ----
-const INCIDENT_SEVERITIES = ['degraded', 'outage'];
-
 function cleanIncidentFields(fields) {
   const out = {};
   if (fields.title !== undefined) out.title = String(fields.title).trim();
@@ -266,8 +268,5 @@ export const Incidents = {
 // ---- Settings ----
 export const Settings = {
   all: () => ({ ...data.settings }),
-  get: (key) => data.settings[key],
   set: (key, value) => { data.settings[key] = value; save(); },
 };
-
-export default { Plans, Users, Incidents, Settings };
