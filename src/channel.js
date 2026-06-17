@@ -48,6 +48,22 @@ function videoEncodeArgs(fps) {
   ];
 }
 
+// AAC stereo audio settings, identical on every encode path.
+const AUDIO_ENCODE_ARGS = ['-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100'];
+
+// Shared output tail for the two intro paths: map the composed video and fade
+// the looped music input `audioIndex`, then the common encode + HLS output.
+function introOutputArgs(audioIndex, aOut, fps, tmpDir) {
+  return [
+    '-map', '[v]', '-map', `${audioIndex}:a`,
+    '-af', `afade=t=in:d=1,afade=t=out:st=${aOut}:d=2`,
+    ...videoEncodeArgs(fps),
+    ...AUDIO_ENCODE_ARGS,
+    '-shortest',
+    ...hlsOutArgs(tmpDir),
+  ];
+}
+
 // Bottom-right "next slide in N" countdown, baked in with drawtext. `boundaries`
 // is the sorted list of times (s) at which the visible slide changes, ending
 // with the loop total. Each segment counts whole seconds down to its boundary.
@@ -80,7 +96,8 @@ function withSlideTimer(filter, boundaries) {
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
 // info card held for the rest of the loop, with background music. When a status
 // slide is present the loop becomes slide -> card -> status (a chained xfade).
-function introFfmpegArgs(slides, music, tmpDir) {
+// Exported for the byte-identity snapshot test (test/channel-args.test.js).
+export function introFfmpegArgs(slides, music, tmpDir) {
   return slides.status
     ? introWithStatusArgs(slides, music, tmpDir)
     : introCardOnlyArgs(slides, music, tmpDir);
@@ -109,12 +126,7 @@ function introCardOnlyArgs(slides, music, tmpDir) {
     '-loop', '1', '-t', L2.toFixed(2), '-i', slides.card,
     '-stream_loop', '-1', '-i', music,
     '-filter_complex', filter,
-    '-map', '[v]', '-map', '2:a',
-    '-af', `afade=t=in:d=1,afade=t=out:st=${aOut}:d=2`,
-    ...videoEncodeArgs(fps),
-    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
-    '-shortest',
-    ...hlsOutArgs(tmpDir),
+    ...introOutputArgs(2, aOut, fps, tmpDir),
   ];
 }
 
@@ -149,18 +161,13 @@ function introWithStatusArgs(slides, music, tmpDir) {
     '-loop', '1', '-t', Ls.toFixed(2), '-i', slides.status,
     '-stream_loop', '-1', '-i', music,
     '-filter_complex', filter,
-    '-map', '[v]', '-map', '3:a',
-    '-af', `afade=t=in:d=1,afade=t=out:st=${aOut}:d=2`,
-    ...videoEncodeArgs(fps),
-    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
-    '-shortest',
-    ...hlsOutArgs(tmpDir),
+    ...introOutputArgs(3, aOut, fps, tmpDir),
   ];
 }
 
 // ffmpeg args for a plain still loop (intro disabled). With a status slide the
 // loop concatenates card -> status (no transition) at the low still frame rate.
-function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
+export function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
   const { stillFps: fps, duration: dur } = config.channel;
   if (!statusPng) {
     return [
@@ -170,7 +177,7 @@ function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
       '-t', String(dur),
       '-map', '0:v', '-map', '1:a',
       ...videoEncodeArgs(fps),
-      '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
+      ...AUDIO_ENCODE_ARGS,
       ...hlsOutArgs(tmpDir),
     ];
   }
@@ -192,7 +199,7 @@ function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
     '-filter_complex', filter,
     '-map', '[v]', '-map', '2:a',
     ...videoEncodeArgs(fps),
-    '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
+    ...AUDIO_ENCODE_ARGS,
     '-shortest',
     ...hlsOutArgs(tmpDir),
   ];

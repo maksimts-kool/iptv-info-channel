@@ -1,4 +1,6 @@
 // Admin panel logic (vanilla JS). Talks to /admin/api/*.
+import { makeWithRegen } from './regen.js';
+
 const $ = (sel) => document.querySelector(sel);
 let STATE = { users: [], plans: [], settings: {}, incidents: [], status: null, publicBaseUrl: '' };
 
@@ -152,6 +154,11 @@ async function refreshGenerationStatus() {
   }
 }
 
+// Wrap a mutating action with the shared banner + reload lifecycle (regen.js).
+const withRegen = makeWithRegen({
+  showGenerationPending, clearGenerationPending, toast, load, refreshGenerationStatus,
+});
+
 async function load() {
   STATE = await api('GET', '/admin/api/state');
   $('#base-url').textContent = `Public URL: ${STATE.publicBaseUrl}`;
@@ -209,26 +216,20 @@ function renderIncidents() {
 
     const resolveBtn = div.querySelector('[data-act="resolve"]');
     if (resolveBtn) {
-      resolveBtn.onclick = async () => {
-        showGenerationPending('Resolving incident and rebuilding streams');
-        try {
-          await api('PATCH', `/admin/api/incidents/${inc.id}`, { ends_on: todayISO() });
-          toast('Incident resolved — streams rebuilding');
-          await load();
-          await refreshGenerationStatus();
-        } catch (e) { toast(e.message); clearGenerationPending(); }
-      };
+      resolveBtn.onclick = () => withRegen(
+        'Resolving incident and rebuilding streams',
+        () => api('PATCH', `/admin/api/incidents/${inc.id}`, { ends_on: todayISO() }),
+        { success: 'Incident resolved — streams rebuilding' },
+      );
     }
     div.querySelector('[data-act="edit"]').onclick = () => openIncidentDialog(inc);
-    div.querySelector('[data-act="delete"]').onclick = async () => {
+    div.querySelector('[data-act="delete"]').onclick = () => {
       if (!confirm(`Delete incident "${inc.title}"?`)) return;
-      showGenerationPending('Deleting incident and rebuilding streams');
-      try {
-        await api('DELETE', `/admin/api/incidents/${inc.id}`);
-        toast('Incident deleted — streams rebuilding');
-        await load();
-        await refreshGenerationStatus();
-      } catch (e) { toast(e.message); clearGenerationPending(); }
+      withRegen(
+        'Deleting incident and rebuilding streams',
+        () => api('DELETE', `/admin/api/incidents/${inc.id}`),
+        { success: 'Incident deleted — streams rebuilding' },
+      );
     };
     wrap.appendChild(div);
   }
@@ -260,15 +261,13 @@ function renderPlans() {
       </div>
       ${features}`;
     div.querySelector('[data-act="edit-plan"]').onclick = () => openPlanDialog(p);
-    div.querySelector('[data-act="delete-plan"]').onclick = async () => {
+    div.querySelector('[data-act="delete-plan"]').onclick = () => {
       if (!confirm(`Delete plan "${p.name}"?`)) return;
-      showGenerationPending('Deleting plan and rebuilding streams');
-      try {
-        await api('DELETE', `/admin/api/plans/${p.id}`);
-        toast('Plan deleted — streams rebuilding');
-        await load();
-        await refreshGenerationStatus();
-      } catch (e) { toast(e.message); clearGenerationPending(); }
+      withRegen(
+        'Deleting plan and rebuilding streams',
+        () => api('DELETE', `/admin/api/plans/${p.id}`),
+        { success: 'Plan deleted — streams rebuilding' },
+      );
     };
     wrap.appendChild(div);
   }
@@ -305,28 +304,22 @@ function renderUsers() {
     const sw = document.createElement('label');
     sw.className = 'switch';
     sw.innerHTML = `<input type="checkbox" ${u.active ? 'checked' : ''}><span class="slider"></span>`;
-    sw.querySelector('input').onchange = async (e) => {
-      showGenerationPending(`Updating ${u.username}'s stream`);
-      try {
-        await api('PATCH', `/admin/api/users/${u.id}`, { active: e.target.checked });
-        await load();
-        await refreshGenerationStatus();
-      } catch (err) { toast(err.message); clearGenerationPending(); }
-    };
+    sw.querySelector('input').onchange = (e) => withRegen(
+      `Updating ${u.username}'s stream`,
+      () => api('PATCH', `/admin/api/users/${u.id}`, { active: e.target.checked }),
+    );
     tr.children[6].appendChild(sw);
 
     tr.querySelector('[data-act="copy-m3u"]').onclick = () => copy(u.m3u_url);
     tr.querySelector('[data-act="open-hls"]').onclick = () => window.open(u.hls_url, '_blank');
     tr.querySelector('[data-act="edit"]').onclick = () => openDialog(u);
-    tr.querySelector('[data-act="token"]').onclick = async () => {
+    tr.querySelector('[data-act="token"]').onclick = () => {
       if (!confirm('Generate a new link? The old m3u URL will stop working.')) return;
-      showGenerationPending(`Generating ${u.username}'s new stream`);
-      try {
-        await api('POST', `/admin/api/users/${u.id}/token`);
-        toast('New link generated — stream rebuilding');
-        await load();
-        await refreshGenerationStatus();
-      } catch (e) { toast(e.message); clearGenerationPending(); }
+      withRegen(
+        `Generating ${u.username}'s new stream`,
+        () => api('POST', `/admin/api/users/${u.id}/token`),
+        { success: 'New link generated — stream rebuilding' },
+      );
     };
     tr.querySelector('[data-act="del"]').onclick = async () => {
       if (!confirm(`Delete ${u.username}?`)) return;
@@ -363,15 +356,15 @@ $('#dialog-save').onclick = async (e) => {
     active: $('#f-active').checked,
   };
   if (!payload.username) return toast('Username required');
-  showGenerationPending(id ? `Updating ${payload.username}'s stream` : `Creating ${payload.username}'s stream`);
-  try {
-    if (id) await api('PATCH', `/admin/api/users/${id}`, payload);
-    else await api('POST', '/admin/api/users', payload);
-    $('#user-dialog').close();
-    toast('Saved — stream rebuilding');
-    await load();
-    await refreshGenerationStatus();
-  } catch (err) { toast(err.message); clearGenerationPending(); }
+  return withRegen(
+    id ? `Updating ${payload.username}'s stream` : `Creating ${payload.username}'s stream`,
+    async () => {
+      if (id) await api('PATCH', `/admin/api/users/${id}`, payload);
+      else await api('POST', '/admin/api/users', payload);
+      $('#user-dialog').close();
+    },
+    { success: 'Saved — stream rebuilding' },
+  );
 };
 $('#dialog-cancel').onclick = () => $('#user-dialog').close();
 
@@ -401,15 +394,15 @@ $('#plan-dialog-save').onclick = async (e) => {
   };
   if (!payload.name) return toast('Plan name required');
   if (!priceText || !Number.isFinite(payload.price_eur) || payload.price_eur < 0) return toast('Valid price required');
-  showGenerationPending('Saving plan and rebuilding streams');
-  try {
-    if (id) await api('PATCH', `/admin/api/plans/${id}`, payload);
-    else await api('POST', '/admin/api/plans', payload);
-    $('#plan-dialog').close();
-    toast('Plan saved — streams rebuilding');
-    await load();
-    await refreshGenerationStatus();
-  } catch (err) { toast(err.message); clearGenerationPending(); }
+  return withRegen(
+    'Saving plan and rebuilding streams',
+    async () => {
+      if (id) await api('PATCH', `/admin/api/plans/${id}`, payload);
+      else await api('POST', '/admin/api/plans', payload);
+      $('#plan-dialog').close();
+    },
+    { success: 'Plan saved — streams rebuilding' },
+  );
 };
 $('#plan-dialog-cancel').onclick = () => $('#plan-dialog').close();
 
@@ -438,15 +431,15 @@ $('#incident-dialog-save').onclick = async (e) => {
   if (!payload.title) return toast('Title required');
   if (!payload.starts_on) return toast('Start date required');
   if (payload.ends_on && payload.ends_on < payload.starts_on) return toast('End date is before start date');
-  showGenerationPending('Saving incident and rebuilding streams');
-  try {
-    if (id) await api('PATCH', `/admin/api/incidents/${id}`, payload);
-    else await api('POST', '/admin/api/incidents', payload);
-    $('#incident-dialog').close();
-    toast('Incident saved — streams rebuilding');
-    await load();
-    await refreshGenerationStatus();
-  } catch (err) { toast(err.message); clearGenerationPending(); }
+  return withRegen(
+    'Saving incident and rebuilding streams',
+    async () => {
+      if (id) await api('PATCH', `/admin/api/incidents/${id}`, payload);
+      else await api('POST', '/admin/api/incidents', payload);
+      $('#incident-dialog').close();
+    },
+    { success: 'Incident saved — streams rebuilding' },
+  );
 };
 $('#incident-dialog-cancel').onclick = () => $('#incident-dialog').close();
 
@@ -454,16 +447,13 @@ $('#incident-dialog-cancel').onclick = () => $('#incident-dialog').close();
 $('#add-user').onclick = () => openDialog(null);
 $('#add-plan').onclick = () => openPlanDialog(null);
 $('#add-incident').onclick = () => openIncidentDialog(null);
-$('#save-settings').onclick = async () => {
-  showGenerationPending('Saving branding and rebuilding streams');
-  try {
-    await api('PATCH', '/admin/api/settings', {
-      brand_name: $('#brand_name').value, tagline: $('#tagline').value,
-    });
-    toast('Branding saved — streams rebuilding');
-    await refreshGenerationStatus();
-  } catch (e) { toast(e.message); clearGenerationPending(); }
-};
+$('#save-settings').onclick = () => withRegen(
+  'Saving branding and rebuilding streams',
+  () => api('PATCH', '/admin/api/settings', {
+    brand_name: $('#brand_name').value, tagline: $('#tagline').value,
+  }),
+  { success: 'Branding saved — streams rebuilding', reload: false },
+);
 $('#regen-all').onclick = async () => {
   showGenerationPending('Rebuilding all channel streams');
   toast('Rebuilding all streams…');
