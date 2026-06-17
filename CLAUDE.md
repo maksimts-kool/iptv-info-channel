@@ -29,8 +29,13 @@ docker compose exec m3u-info npm run seed
 ```
 
 No build step, no linter, no TypeScript. Pure ESM (`"type": "module"`), Node
-20+. Tests use the built-in `node:test` runner and only cover the two pure-logic
-modules (`util`, `liveloop`); the ffmpeg/render path has no automated tests.
+20+. Tests use the built-in `node:test` runner and cover the pure-logic modules
+(`util`, `liveloop`, `epg`, `epgfoss`, `status`, `playlist`, `xxhash32`,
+`admin-domain`, the `regen` UI helper) plus route/integration tests for the FOSS
+endpoints. The ffmpeg encode has no live render test, but
+[test/channel-args.test.js](test/channel-args.test.js) pins the exact ffmpeg
+argv against a golden snapshot so the arg builders can be refactored safely (see
+"Things that bite").
 
 External requirement: **ffmpeg must be on PATH** (override with `FFMPEG_PATH`).
 The Docker image installs it plus the Inter font for Cyrillic rendering.
@@ -106,7 +111,12 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `/u/:token/epg.xml` (and `/epg.xml?token=`) return the **XMLTV programme
    guide** (see EPG below); the `.m3u` header advertises it via `url-tvg` and the
    `#EXTINF` uses a per-user `tvg-id` (`account-<token>`) matching the EPG
-   `<channel id>`.
+   `<channel id>`. The `.m3u` text itself is built by `buildUserPlaylist` in
+   [src/playlist.js](src/playlist.js). When `EPG_FOSS_ENABLED`,
+   [src/routes/foss-epg.js](src/routes/foss-epg.js) additionally serves the
+   OTT-play FOSS endpoints — `/foss-epg/u/:token/{channels.json,epg/<hash>.json,
+   logo.svg}` plus the `/m3u/match-channels` and `/m3u/match-logos` match
+   protocol (see FOSS below).
 
 6. **EPG** — [src/epg.js](src/epg.js) (`buildEpgXml`) synthesises a per-user
    XMLTV guide. There's no real schedule (the channel is a looping card), so it
@@ -122,15 +132,37 @@ Request/data flow, entry point [src/server.js](src/server.js):
    (`YYYYMMDDHHMMSS +ZZZZ`) with a DST-correct offset; interpolated text is
    XML-escaped. Toggle with `EPG_ENABLED` (disabling also drops `url-tvg`).
 
-7. **Admin** — [src/routes/admin.js](src/routes/admin.js) is a cookie-auth JSON
+   The per-day records are produced once by `eachEpgDay` (semantic data — each
+   renderer formats its own timestamps) and consumed by both `buildEpgXml` and
+   the OTT-play **FOSS JSON** guide.
+
+7. **FOSS EPG (OTT-play)** — [src/epgfoss.js](src/epgfoss.js) renders a
+   token-scoped JSON guide that OTT-play FOSS fetches **directly**
+   (`channels.json` + `epg/<xxhash32(tvg-id)>.json`), bypassing the central
+   matcher. [src/xxhash32.js](src/xxhash32.js) reproduces OTT-play's Go
+   `OneOfOne/xxhash` so the per-channel id hashes match byte-for-byte (pinned by
+   vector tests — don't swap it for a generic hash lib). The route also
+   proxies/merges the upstream OTT-play `match-channels` response so this server
+   works as a drop-in `!epg-server` in a combined playlist. Pure logic is
+   unit-tested; toggle with `EPG_FOSS_ENABLED` (`EPG_FOSS_PROVIDER_ID`,
+   `EPG_FOSS_UPSTREAM_MATCH_URL`). See the README for the `.m3u` attributes and
+   the **leading-`=`** requirement on `foss-tvg`/`tvg-source`.
+
+8. **Admin** — [src/routes/admin.js](src/routes/admin.js) is a cookie-auth JSON
    API under `/admin/api` plus static UI in `src/public/admin/`. Auth
    ([src/middleware/auth.js](src/middleware/auth.js)) is an HMAC of the admin
    password stored in the cookie, so changing `ADMIN_PASSWORD` invalidates all
-   sessions. Most mutations trigger **fire-and-forget** regeneration; note that
-   plan, branding and **incident** edits regenerate **all** users (expired users
-   render every available plan; the status slide is global), while user edits
-   regenerate just that user. Incidents (`/admin/api/incidents`, states
-   `degraded`/`outage`) drive the status board's 90-day uptime strip.
+   sessions. The route is HTTP-only orchestration; request validation and
+   response view-models are pure functions in
+   [src/admin-domain.js](src/admin-domain.js) (unit-tested). Most mutations
+   trigger **fire-and-forget** regeneration; note that plan, branding and
+   **incident** edits regenerate **all** users (expired users render every
+   available plan; the status slide is global), while user edits regenerate just
+   that user. Incidents (`/admin/api/incidents`, states `degraded`/`outage`)
+   drive the status board's 90-day uptime strip. The browser UI
+   ([src/public/admin/app.js](src/public/admin/app.js)) is an **ES module**;
+   most mutating actions run through the shared `withRegen` banner/reload
+   lifecycle in [src/public/admin/regen.js](src/public/admin/regen.js).
 
 ## Things that bite
 
@@ -140,11 +172,23 @@ Request/data flow, entry point [src/server.js](src/server.js):
   emits `#EXT-X-VERSION:6`, and the server supports `Range`. Lenient players
   (OTT Play) tolerate less of this. Don't "simplify" the liveloop playlist
   construction without testing on a strict player.
+- **The ffmpeg arg builders are pinned by a golden snapshot.** Strict-player
+  playback can't be tested in CI, so [test/channel-args.test.js](test/channel-args.test.js)
+  asserts the exact argv from `introFfmpegArgs`/`stillFfmpegArgs` across config
+  permutations against
+  [test/fixtures/ffmpeg-args.golden.json](test/fixtures/ffmpeg-args.golden.json).
+  Byte-identical argv is the proof a refactor of `channel.js`'s arg builders is
+  safe. If you *intend* to change the encode, regenerate the golden from
+  known-good code: `UPDATE_GOLDEN=1 node --test test/channel-args.test.js`.
 - **`PUBLIC_BASE_URL` is baked into generated `.m3u` URLs.** On a LAN it must be
   the host IP reachable by the IPTV box, never `localhost`.
 - **Timezone matters.** Day-counting, expiry, the daily cron, and displayed
   dates all use `TZ` (default `Europe/Tallinn`) via `Intl.DateTimeFormat`, not
   raw `Date` math. An account stays valid through 23:59 on its expiry date.
+  Formatters are expensive to build and are memoized by `dateFormatter` in
+  [src/util.js](src/util.js) — reuse it on hot paths instead of constructing new
+  `Intl.DateTimeFormat` instances. `xmlEscape` lives there too (shared by epg
+  and overlay).
 - Config is loaded by a **dependency-free `.env` parser** in
   [src/config.js](src/config.js) (no `dotenv`); env vars already set win over
   the file.
