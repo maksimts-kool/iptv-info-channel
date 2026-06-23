@@ -157,6 +157,17 @@ export function formatDate(dateStr) {
   return `${match[3]} ${months[Number(match[2]) - 1]} ${match[1]}`;
 }
 
+// Local wall-clock "HH:MM" for an instant (ISO string or Date), in `timezone`.
+// Returns null for missing/invalid input so callers can fall back to date-only.
+export function formatTime(value, timezone = process.env.TZ || 'Europe/Tallinn') {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return dateFormatter('en-GB', {
+    timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(date);
+}
+
 export function localDateString(now = new Date(), timezone = process.env.TZ || 'Europe/Tallinn') {
   const values = datePartsInTimezone(now, timezone);
   return `${values.year}-${values.month}-${values.day}`;

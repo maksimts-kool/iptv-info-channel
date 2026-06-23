@@ -392,6 +392,149 @@ export function buildStatusSlideSvg(summary, settings = {}) {
     <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Состояние сервиса · обновляется ежедневно</text>`);
 }
 
+// ---- World Cup 2026 match-list slide ----
+//
+// A chronological list of fixtures around "today" (see buildWorldCupModel in
+// worldcup.js): a couple of recent results, anything live, then the next games.
+// Each row is one match on a single line — date/time, stage tag, both teams and
+// the score/result — styled like the account card. Once the Final is decided the
+// slide switches to a champion summary instead.
+
+const WC_LIST_TOP = 132;
+const WC_LIST_BOTTOM = 686;
+const WC_ROW_MAX_H = 92;
+const WC_SCORE_CX = 800; // horizontal centre of the score column
+
+// Shorten the long FIFA seeding placeholders so they fit a row. Real country
+// names (and anything not matching) pass through untouched.
+function shortSeed(label) {
+  return String(label ?? '')
+    .replace(/^Победитель группы (\S+)$/, 'Победитель гр. $1')
+    .replace(/^Второе место в группе (\S+)$/, '2-е место, гр. $1')
+    .replace(/^3-е место в группе (\S+)$/, '3-е место: $1')
+    .replace(/^Проигравший в полуфинале$/, 'Проигравший в 1/2');
+}
+
+// Right-edge of the status pill (inside the row's right padding).
+const WC_BADGE_RIGHT = 1192;
+
+// Stroked, colour-coded status pill per match state. The border + tinted fill
+// make the status pop far more than the old grey caption did.
+const WC_STATUS_BADGE = {
+  live: { label: 'В ЭФИРЕ', stroke: '#dc2626', text: '#fca5a5', dot: true },
+  finished: { label: 'ЗАВЕРШЁН', stroke: '#16a34a', text: '#86efac' },
+  postponed: { label: 'ПЕРЕНЕСЁН', stroke: '#d97706', text: '#fcd34d' },
+  scheduled: { label: 'СКОРО', stroke: '#38bdf8', text: '#7dd3fc' },
+};
+
+function wcStatusBadge(statusKey, cy) {
+  const b = WC_STATUS_BADGE[statusKey] || WC_STATUS_BADGE.scheduled;
+  const text = `${b.dot ? '● ' : ''}${b.label}`;
+  const pillW = Math.round(text.length * 8.6 + 32);
+  const x = WC_BADGE_RIGHT - pillW;
+  return `
+    <rect x="${x}" y="${cy - 15}" width="${pillW}" height="30" rx="15" fill="${b.stroke}" fill-opacity="0.14" stroke="${b.stroke}" stroke-width="1.6"/>
+    <text x="${x + pillW / 2}" y="${cy + 5}" text-anchor="middle" fill="${b.text}" font-size="13" font-weight="800" letter-spacing="0.8">${text}</text>`;
+}
+
+// One fixture row. `top` is its top edge; `h` its allotted height.
+function wcFixtureRow(fixture, top, h) {
+  const cy = top + h / 2;
+  const live = fixture.status.key === 'live';
+  const finished = fixture.status.key === 'finished';
+  const x = 64;
+  const w = 1152;
+  const fill = live ? '#16203f' : '#0f1830';
+  const stroke = live ? '#dc2626' : '#1c2a4d';
+
+  const hasScore = fixture.home.score !== null && fixture.home.score !== undefined
+    && fixture.away.score !== null && fixture.away.score !== undefined;
+  const scoreColor = live ? '#fca5a5' : '#ffffff';
+  const scoreText = hasScore
+    ? `${fixture.home.score} – ${fixture.away.score}`
+    : '—';
+
+  // Left column: date, plus the kickoff time for matches that haven't started.
+  const showTime = !finished && fixture.time;
+  const dateY = showTime ? cy - 5 : cy + 5;
+  const timeLine = showTime
+    ? `<text x="92" y="${cy + 16}" fill="#7dd3fc" font-size="14" font-weight="700">${xmlEscape(fixture.time)}</text>`
+    : '';
+
+  const teamName = (team, anchor, tx) => {
+    const color = team.winner ? '#ffffff' : finished ? '#9fb3d1' : '#dbe5f5';
+    const weight = team.winner ? 800 : 600;
+    return `<text x="${tx}" y="${cy + 6}" text-anchor="${anchor}" fill="${color}" font-size="20" font-weight="${weight}">${xmlEscape(clipText(shortSeed(team.label), 16))}</text>`;
+  };
+
+  return `
+    ${live ? `<rect x="${x}" y="${top + 6}" width="5" height="${h - 12}" rx="2.5" fill="#dc2626"/>` : ''}
+    <rect x="${x}" y="${top + 6}" width="${w}" height="${h - 12}" rx="14" fill="${fill}" stroke="${stroke}" stroke-width="${live ? 2.5 : 1.5}"/>
+    <g font-family="Inter, sans-serif">
+      <text x="92" y="${dateY}" fill="#dbe5f5" font-size="16" font-weight="700">${xmlEscape(fixture.dateLabel)}</text>
+      ${timeLine}
+      <text x="250" y="${cy + 5}" fill="#7f93b5" font-size="15" font-weight="700">${xmlEscape(clipText(fixture.stageLabel, 18))}</text>
+      ${teamName(fixture.home, 'end', WC_SCORE_CX - 38)}
+      <text x="${WC_SCORE_CX}" y="${cy + 7}" text-anchor="middle" fill="${scoreColor}" font-size="22" font-weight="800">${xmlEscape(scoreText)}</text>
+      ${teamName(fixture.away, 'start', WC_SCORE_CX + 38)}
+      ${wcStatusBadge(fixture.status.key, cy)}
+    </g>`;
+}
+
+function wcFixtureList(fixtures) {
+  const areaH = WC_LIST_BOTTOM - WC_LIST_TOP;
+  const rowH = Math.min(WC_ROW_MAX_H, areaH / fixtures.length);
+  const startY = WC_LIST_TOP + (areaH - rowH * fixtures.length) / 2;
+  return fixtures.map((fx, i) => wcFixtureRow(fx, startY + i * rowH, rowH)).join('');
+}
+
+// Champion summary shown once the Final has a winner.
+function wcChampion(champion) {
+  const hasScore = champion.champScore !== null && champion.champScore !== undefined
+    && champion.runnerScore !== null && champion.runnerScore !== undefined;
+  const finalLine = hasScore
+    ? `Финал: ${champion.team} ${champion.champScore} – ${champion.runnerScore} ${champion.runnerUp}`
+    : `Финал: ${champion.team} — ${champion.runnerUp}`;
+  return `
+    <text x="640" y="250" text-anchor="middle" fill="#7dd3fc" font-family="Inter, sans-serif" font-size="30" font-weight="800" letter-spacing="3">ЧЕМПИОН МИРА 2026</text>
+    <text x="640" y="372" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="88" font-weight="800">${xmlEscape(clipText(champion.team, 22))}</text>
+    <text x="640" y="446" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="26" font-weight="600">${xmlEscape(clipText(finalLine, 60))}</text>`;
+}
+
+// Centred message shown before the knockout stage begins.
+function wcNotStarted(notStarted) {
+  return `
+    <text x="640" y="300" text-anchor="middle" fill="#7dd3fc" font-family="Inter, sans-serif" font-size="30" font-weight="800" letter-spacing="3">СТАРТ ПЛЕЙ-ОФФ</text>
+    <text x="640" y="406" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="84" font-weight="800">${xmlEscape(notStarted.startLabel)}</text>
+    <text x="640" y="462" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="26" font-weight="600">Первые матчи — 1/16 финала</text>`;
+}
+
+// Builds the match-list slide from a buildWorldCupModel() result (see worldcup.js).
+export function buildWorldCupSlideSvg(model, settings = {}) {
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
+  const headline = xmlEscape(model.headline || 'Плей-офф');
+  const updated = xmlEscape(model.updated || '');
+  const headerTop = `
+    <text x="64" y="56" fill="#ffffff" font-family="Inter, sans-serif" font-size="38" font-weight="800" letter-spacing="-0.5">Чемпионат мира 2026</text>
+    <text x="1216" y="50" text-anchor="end" fill="#ffffff" font-family="Inter, sans-serif" font-size="26" font-weight="700">${brand}</text>
+    <text x="1216" y="82" text-anchor="end" fill="#6f83a6" font-family="Inter, sans-serif" font-size="18">Обновлено ${updated}</text>`;
+
+  // The champion / not-started views are full-slide centred messages, so they
+  // skip the headline subtitle that the fixture list shows.
+  if (model.champion) return svgDoc(`${headerTop}${wcChampion(model.champion)}`);
+  if (model.notStarted) return svgDoc(`${headerTop}${wcNotStarted(model.notStarted)}`);
+
+  const fixtures = model.fixtures || [];
+  const body = fixtures.length
+    ? wcFixtureList(fixtures)
+    : '<text x="640" y="400" text-anchor="middle" fill="#7f93b5" font-family="Inter, sans-serif" font-size="26" font-weight="700">Матчей пока нет</text>';
+
+  return svgDoc(`${headerTop}
+    <text x="64" y="90" fill="#7dd3fc" font-family="Inter, sans-serif" font-size="24" font-weight="700">${headline}</text>
+    ${body}
+    <text x="64" y="704" fill="#5c6e91" font-family="Inter, sans-serif" font-size="16">Расписание матчей · обновляется ежедневно</text>`);
+}
+
 async function svgToPng(svg, outPath) {
   await sharp(Buffer.from(svg)).png().toFile(outPath);
   return outPath;
@@ -399,6 +542,10 @@ async function svgToPng(svg, outPath) {
 
 export async function renderStatusPng(summary, settings, outPath) {
   return svgToPng(buildStatusSlideSvg(summary, settings), outPath);
+}
+
+export async function renderWorldCupPng(model, settings, outPath) {
+  return svgToPng(buildWorldCupSlideSvg(model, settings), outPath);
 }
 
 export function buildBodySvg(user, plans = [], settings = {}) {
@@ -416,9 +563,11 @@ export async function renderBodyPng(user, settings, outPath, plans = []) {
   return svgToPng(buildBodySvg(user, plans, settings), outPath);
 }
 
-// Render the loop frames into dir. Returns { slide1, card, status? } paths;
-// `status.png` is rendered only when a status summary is supplied.
-export async function renderSlidesPng(user, settings, dir, plans = [], summary = null) {
+// Render the loop frames into dir. Returns { slide1, card, status?, worldcup? }
+// paths; the global slides are rendered only when their model is supplied.
+export async function renderSlidesPng(
+  user, settings, dir, plans = [], summary = null, worldcup = null,
+) {
   const out = {
     slide1: path.join(dir, 'slide1.png'),
     card: path.join(dir, 'card.png'),
@@ -430,6 +579,10 @@ export async function renderSlidesPng(user, settings, dir, plans = [], summary =
   if (summary) {
     out.status = path.join(dir, 'status.png');
     jobs.push(renderStatusPng(summary, settings, out.status));
+  }
+  if (worldcup) {
+    out.worldcup = path.join(dir, 'worldcup.png');
+    jobs.push(renderWorldCupPng(worldcup, settings, out.worldcup));
   }
   await Promise.all(jobs);
   return out;

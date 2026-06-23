@@ -15,6 +15,7 @@ change expiration dates and edit plan prices, and ships as a **Docker** image.
 - **Plans** with editable names, prices and feature lists — add or remove plans from the web admin.
 - **Expiration** with automatic `ACTIVE` / `EXPIRING SOON` / `EXPIRED` status (threshold configurable).
 - **Expired-account offer slide** — expired users see the available plans in an automatic 2-, 3- or 4-column grid, including each plan's features.
+- **World Cup 2026 match-list slide** *(optional)* — an auto-updating list of **knockout** fixtures around today (1/16 final onward, no group games): a couple of recent results, anything live, then the next matches. Shows a "playoffs start on <date>" message before the knockout begins and a champion summary once the Final is decided. Appended to every channel, fed by a free football API and refreshed daily. Off by default (`WORLDCUP_SLIDE_ENABLED`).
 - **Looping HLS channel** generated per user with ffmpeg (1920×1080, h264 + AAC).
 - **Branding intro animation** — an animated brand slide plays on every channel open, then transitions into the user's account details. Configurable (`INTRO_*`) or disablable.
 - **Background music** — includes `assets/music/background.mp3` by default and supports a custom track.
@@ -133,7 +134,7 @@ falls back to the bundled track.
 | `TZ` | `Europe/Tallinn` | Timezone used for logs, daily refresh scheduling and displayed update dates. |
 | `ADMIN_PASSWORD` | `changeme` | Admin panel password. **Change it.** |
 | `SESSION_SECRET` | — | Signs the admin cookie. Use a long random string. |
-| `CHANNEL_DURATION` | `120` | Length (seconds) of the generated loop. Static cards compress tiny. |
+| `ACCOUNT_SLIDE_SECONDS` | `120` | Seconds the account (info) card is on screen. The loop total is the sum of every enabled slide. |
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
 | `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
@@ -142,6 +143,11 @@ falls back to the bundled track.
 | `EPG_FOSS_ENABLED` | `true` | Advertise the token-scoped static OTT-play FOSS JSON guide. |
 | `EPG_FOSS_PROVIDER_ID` | `infochannel` | Short source name used by the FOSS playlist attributes. |
 | `EPG_FOSS_UPSTREAM_MATCH_URL` | `https://ottp.eu.org` | Normal OTT-play matcher merged into the local fallback response. |
+| `WORLDCUP_SLIDE_ENABLED` | `false` | Append the auto-updating World Cup 2026 match-list slide to every channel. |
+| `WORLDCUP_SLIDE_SECONDS` | `14` | Seconds the match list is held on screen each loop. |
+| `FOOTBALL_API_TOKEN` | — | Free [football-data.org](https://www.football-data.org/client/register) token for live teams/scores. Without it the slide shows only the upcoming knockout matches as seeding placeholders. |
+| `FOOTBALL_API_BASE` / `FOOTBALL_API_COMPETITION` | `…/v4` / `WC` | Results API endpoint + competition code (override for another provider). |
+| `FOOTBALL_API_TTL_MINUTES` | `360` | How long fetched results are cached before a lazy refresh; the daily cron forces one regardless. |
 | `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
 | `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
 | `INTRO_TRANSITION` | `slideleft` | ffmpeg `xfade` transition from the brand slide into the card (`fade`, `wipeleft`, `dissolve`, `smoothleft`, …). |
@@ -177,9 +183,9 @@ docker compose logs -f m3u-info
 1. For each user two 1920×1080 frames are rendered (SVG → PNG via sharp): the
    **brand intro slide** and the **info card**.
 2. **ffmpeg** builds the loop: brand slide → (`xfade` transition) → the info
-   card held for the rest of `CHANNEL_DURATION`, mixes in the background music,
-   and writes reusable **HLS** segments (`index.m3u8` + `.ts` segments). With
-   the intro disabled it just loops the still card.
+   card held for `ACCOUNT_SLIDE_SECONDS`, mixes in the background music, and
+   writes reusable **HLS** segments (`index.m3u8` + `.ts` segments). With the
+   intro disabled it just loops the still card.
    Rendering happens once per data change, so idle CPU use stays near zero.
 3. The server presents those segments as a sliding **live HLS** window with no
    end marker, so IPTV clients keep playing indefinitely. Each `.m3u` load gets

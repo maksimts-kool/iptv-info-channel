@@ -14,12 +14,12 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:9222}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       SESSION_SECRET: ${SESSION_SECRET:-please-change-this-to-a-long-random-string}
-      CHANNEL_DURATION: ${CHANNEL_DURATION:-120}
+      ACCOUNT_SLIDE_SECONDS: ${ACCOUNT_SLIDE_SECONDS:-120}
       # The card is a static image; 720p + low frame rates look identical on a
       # TV but cost far less CPU to encode on a small host.
       CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1280}
       CHANNEL_HEIGHT: ${CHANNEL_HEIGHT:-720}
-      CHANNEL_FPS: ${CHANNEL_FPS:-12}
+      CHANNEL_FPS: ${CHANNEL_FPS:-30}
       CHANNEL_STILL_FPS: ${CHANNEL_STILL_FPS:-4}
       FFMPEG_PRESET: ${FFMPEG_PRESET:-ultrafast}
       CHANNEL_LIVE_LOOP: ${CHANNEL_LIVE_LOOP:-true}
@@ -27,6 +27,16 @@ services:
       INTRO_ENABLED: ${INTRO_ENABLED:-true}
       INTRO_SLIDE_SECONDS: ${INTRO_SLIDE_SECONDS:-4}
       INTRO_TRANSITION: ${INTRO_TRANSITION:-slideleft}
+      # Global status board slide.
+      STATUS_SLIDE_ENABLED: ${STATUS_SLIDE_ENABLED:-true}
+      STATUS_SLIDE_SECONDS: ${STATUS_SLIDE_SECONDS:-12}
+      # Global World Cup 2026 bracket slide. Enable to add the football frame.
+      WORLDCUP_SLIDE_ENABLED: ${WORLDCUP_SLIDE_ENABLED:-false}
+      WORLDCUP_SLIDE_SECONDS: ${WORLDCUP_SLIDE_SECONDS:-14}
+      FOOTBALL_API_TOKEN: ${FOOTBALL_API_TOKEN:-}
+      FOOTBALL_API_BASE: ${FOOTBALL_API_BASE:-https://api.football-data.org/v4}
+      FOOTBALL_API_COMPETITION: ${FOOTBALL_API_COMPETITION:-WC}
+      FOOTBALL_API_TTL_MINUTES: ${FOOTBALL_API_TTL_MINUTES:-360}
       DATA_DIR: /app/data
       MUSIC_FILE: assets/music/background.mp3
     volumes:

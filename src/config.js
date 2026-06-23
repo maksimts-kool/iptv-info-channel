@@ -52,7 +52,11 @@ export const config = {
   sessionSecret: process.env.SESSION_SECRET || 'please-change-this-to-a-long-random-string',
 
   channel: {
-    duration: num(process.env.CHANNEL_DURATION, 120),
+    // On-screen seconds for the account (info) card — its own slide duration,
+    // matching how the intro/status/World Cup slides each set their own. The
+    // loop total is the sum of every enabled slide, rounded up to whole HLS
+    // segments (the still card absorbs the small rounding slack).
+    accountSlideSeconds: num(process.env.ACCOUNT_SLIDE_SECONDS, 120),
     width: num(process.env.CHANNEL_WIDTH, 1280),
     height: num(process.env.CHANNEL_HEIGHT, 720),
     // The card is essentially a still image, so a high frame rate just burns CPU
@@ -90,6 +94,27 @@ export const config = {
     enabled: bool(process.env.STATUS_SLIDE_ENABLED),
     // Seconds the status board is held on screen each loop.
     seconds: num(process.env.STATUS_SLIDE_SECONDS, 12),
+  },
+  worldcupSlide: {
+    // Auto-updating World Cup 2026 knockout-bracket frame appended to the loop.
+    // Opt-in (off by default) so existing channels are unchanged. Like the
+    // status board it is a single GLOBAL slide shared by every user.
+    enabled: bool(process.env.WORLDCUP_SLIDE_ENABLED, false),
+    // Seconds the bracket is held on screen each loop.
+    seconds: num(process.env.WORLDCUP_SLIDE_SECONDS, 14),
+  },
+  footballApi: {
+    // Free results feed for the World Cup slide. football-data.org by default:
+    // register for a free token at https://www.football-data.org/client/register
+    // and set FOOTBALL_API_TOKEN. Without a token the bracket still renders the
+    // seeding skeleton (group winners / placeholders), just no live teams/scores.
+    token: process.env.FOOTBALL_API_TOKEN || '',
+    base: (process.env.FOOTBALL_API_BASE || 'https://api.football-data.org/v4').replace(/\/+$/, ''),
+    competition: process.env.FOOTBALL_API_COMPETITION || 'WC',
+    // How long a fetched bracket is cached before the next refresh re-fetches it.
+    // The daily 00:05 cron forces a refresh regardless; this bounds lazy single-
+    // user regenerations so they don't each hit the API.
+    ttlMinutes: num(process.env.FOOTBALL_API_TTL_MINUTES, 360),
   },
   epg: {
     // XMLTV programme guide advertised via `url-tvg` in each user's .m3u. The

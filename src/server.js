@@ -46,7 +46,7 @@ const server = app.listen(config.port, async () => {
     users: users.length,
     plans: plans.length,
     resolution: `${config.channel.width}x${config.channel.height}`,
-    duration_seconds: config.channel.duration,
+    account_card_seconds: config.channel.accountSlideSeconds,
     intro: config.intro.enabled,
     timezone: config.timezone,
     data_dir: config.dataDir,

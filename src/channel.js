@@ -8,10 +8,11 @@ import cron from 'node-cron';
 import { config } from './config.js';
 import { Users, Plans, Settings, Incidents } from './db.js';
 import {
-  renderBodyPng, renderSlidesPng, renderStatusPng,
-  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
+  renderBodyPng, renderSlidesPng, renderStatusPng, renderWorldCupPng,
+  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg, buildWorldCupSlideSvg,
 } from './overlay.js';
 import { statusSummary } from './status.js';
+import { getWorldCupSummary, refreshWorldCup } from './worldcup.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
@@ -93,25 +94,51 @@ function withSlideTimer(filter, boundaries) {
   return `${filter.replace(/\[v\]$/, '[vbase]')};[vbase]${timer}[v]`;
 }
 
+// Round a raw loop length to the NEAREST whole number of HLS segments so the
+// looped VOD tiles cleanly (liveloop loops whole segments and drops the trailing
+// runt). The account card is the elastic still frame that absorbs the rounding
+// slack; rounding to nearest (not up) keeps that drift to ±half a segment so the
+// card stays close to its configured ACCOUNT_SLIDE_SECONDS instead of ballooning.
+function tileToSegments(seconds) {
+  const seg = config.channel.hlsTime;
+  return Math.max(seg, Math.round(seconds / seg) * seg);
+}
+
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
-// info card held for the rest of the loop, with background music. When a status
-// slide is present the loop becomes slide -> card -> status (a chained xfade).
+// info card, with background music. Any global slides present (status board,
+// World Cup bracket) are appended in order as further chained xfades:
+// slide -> card -> status -> worldcup. The account card shows for its own
+// configured duration (config.channel.accountSlideSeconds); the loop total is the sum.
 // Exported for the byte-identity snapshot test (test/channel-args.test.js).
 export function introFfmpegArgs(slides, music, tmpDir) {
-  return slides.status
-    ? introWithStatusArgs(slides, music, tmpDir)
+  const extras = globalExtras(slides);
+  return extras.length
+    ? introWithExtrasArgs(slides.slide1, slides.card, extras, music, tmpDir)
     : introCardOnlyArgs(slides, music, tmpDir);
 }
 
+// The optional global slides appended after the card, in fixed order. Each is
+// { file, seconds }; the seconds come from each slide's own config so different
+// hold times are respected.
+function globalExtras(slides) {
+  const extras = [];
+  if (slides.status) extras.push({ file: slides.status, seconds: config.statusSlide.seconds });
+  if (slides.worldcup) extras.push({ file: slides.worldcup, seconds: config.worldcupSlide.seconds });
+  return extras;
+}
+
 function introCardOnlyArgs(slides, music, tmpDir) {
-  const dur = config.channel.duration;
+  const cardDur = Math.max(6, config.channel.accountSlideSeconds);   // account card on-screen
   const { width: W, height: H, fps } = config.channel;
   const XF = 0.8;                 // transition length (s)
   const S = Math.max(XF + 0.5, config.intro.slideSeconds); // brand slide on-screen
-  const L2 = Math.max(6, dur - S + XF);                    // card hold length
+  // Loop total = intro slide + card less the shared xfade, tiled onto segment
+  // boundaries; the still card absorbs the rounding slack.
+  const total = tileToSegments(S + cardDur - XF);
+  const L2 = total - S + XF;                               // card hold length
   const o1 = (S - XF).toFixed(2);                          // transition offset
   const fos = (L2 - 0.6).toFixed(2);                       // card fade-out start
-  const aOut = Math.max(0, dur - 2).toFixed(2);
+  const aOut = Math.max(0, total - 2).toFixed(2);
 
   const baseFilter =
     `[0:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
@@ -130,51 +157,92 @@ function introCardOnlyArgs(slides, music, tmpDir) {
   ];
 }
 
-// slide -> card -> status, chained xfades. Total length ≈ config.channel.duration
-// so the looped VOD still tiles cleanly onto hlsTime segment boundaries.
-function introWithStatusArgs(slides, music, tmpDir) {
-  const dur = config.channel.duration;
+// slide -> card -> [extras...], chained xfades. The account card shows for its
+// own configured duration; the loop total is the sum of every frame (less the
+// xfade overlaps), tiled onto hlsTime segment boundaries so the looped VOD has
+// no runt segment. The still card absorbs the rounding slack.
+function introWithExtrasArgs(slide1, card, extras, music, tmpDir) {
+  const cardDur = Math.max(6, config.channel.accountSlideSeconds);   // account card on-screen
   const { width: W, height: H, fps } = config.channel;
   const XF = 0.8;                                          // transition length (s)
   const S = Math.max(XF + 0.5, config.intro.slideSeconds); // brand slide on-screen
-  const Ls = Math.max(XF + 1, config.statusSlide.seconds); // status slide on-screen
-  const Lc = Math.max(6, dur - S - Ls + 2 * XF);           // card hold length
-  const o1 = (S - XF).toFixed(2);                          // slide -> card offset
-  const o2 = (S + Lc - 2 * XF).toFixed(2);                 // card -> status offset
-  const fos = (Ls - 0.6).toFixed(2);                       // status fade-out start
-  const total = S + Lc + Ls - 2 * XF;
+  const extraLens = extras.map((e) => Math.max(XF + 1, e.seconds)); // each extra on-screen
+  const k = extras.length;
+  const sumExtras = extraLens.reduce((sum, len) => sum + len, 0);
+  // n = k + 2 frames; each of the k+1 chained xfades reclaims XF seconds.
+  const total = tileToSegments(S + cardDur + sumExtras - (k + 1) * XF);
+  const Lc = total - S - sumExtras + (k + 1) * XF;        // card hold length
+
+  // Per-frame on-screen lengths: slide, card, then each extra. n = k + 2 frames.
+  const D = [S, Lc, ...extraLens];
+  const n = D.length;
+
+  // Source filters: the first frame fades in, the last fades out, middles plain.
+  const frameParts = D.map((len, i) => {
+    const fade = i === 0
+      ? ',fade=t=in:st=0:d=0.6'
+      : i === n - 1
+        ? `,fade=t=out:st=${(len - 0.6).toFixed(2)}:d=0.6`
+        : '';
+    return `[${i}:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p${fade}[v${i}];`;
+  });
+
+  // Chained xfades. The transition that brings in frame f starts at
+  // (sum of on-screen lengths before f) - f*XF. Intermediate labels reuse the
+  // original `vx` name for the first, then vx2, vx3, … so the 3-frame argv is
+  // unchanged.
+  const boundaries = [];
+  const xfadeParts = [];
+  let prev = 'v0';
+  let cumulative = 0;
+  for (let f = 1; f < n; f += 1) {
+    cumulative += D[f - 1];
+    const offset = cumulative - f * XF;
+    boundaries.push(offset);
+    const out = f === n - 1 ? 'v' : f === 1 ? 'vx' : `vx${f}`;
+    xfadeParts.push(
+      `[${prev}][v${f}]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${offset.toFixed(2)}[${out}]`
+      + (f < n - 1 ? ';' : ''),
+    );
+    prev = out;
+  }
+  // The final xfade ends exactly at the pre-computed (tiled) loop total.
+  boundaries.push(total);
   const aOut = Math.max(0, total - 2).toFixed(2);
 
-  const baseFilter =
-    `[0:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=in:st=0:d=0.6[v0];` +
-    `[1:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p[v1];` +
-    `[2:v]scale=${W}:${H},setsar=1,fps=${fps},format=yuv420p,fade=t=out:st=${fos}:d=0.6[v2];` +
-    `[v0][v1]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o1}[vx];` +
-    `[vx][v2]xfade=transition=${config.intro.transition}:duration=${XF}:offset=${o2}[v]`;
-  // Transitions start at o1 (slide->card) and o2 (card->status); loop at total.
-  const filter = withSlideTimer(baseFilter, [S - XF, S + Lc - 2 * XF, total]);
+  const filter = withSlideTimer(frameParts.join('') + xfadeParts.join(''), boundaries);
+
+  const inputArgs = [
+    '-loop', '1', '-t', String(S), '-i', slide1,
+    '-loop', '1', '-t', Lc.toFixed(2), '-i', card,
+  ];
+  extras.forEach((extra, i) => {
+    inputArgs.push('-loop', '1', '-t', extraLens[i].toFixed(2), '-i', extra.file);
+  });
 
   return [
     '-y',
-    '-loop', '1', '-t', String(S), '-i', slides.slide1,
-    '-loop', '1', '-t', Lc.toFixed(2), '-i', slides.card,
-    '-loop', '1', '-t', Ls.toFixed(2), '-i', slides.status,
+    ...inputArgs,
     '-stream_loop', '-1', '-i', music,
     '-filter_complex', filter,
-    ...introOutputArgs(3, aOut, fps, tmpDir),
+    ...introOutputArgs(n, aOut, fps, tmpDir),
   ];
 }
 
-// ffmpeg args for a plain still loop (intro disabled). With a status slide the
-// loop concatenates card -> status (no transition) at the low still frame rate.
-export function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
-  const { stillFps: fps, duration: dur } = config.channel;
-  if (!statusPng) {
+// ffmpeg args for a plain still loop (intro disabled). `extras` is the ordered
+// list of global slides ({ file, seconds }) to concatenate after the card with
+// hard cuts: card -> status -> worldcup. Empty `extras` is the bare card loop.
+// The card holds for its own configured duration; the loop total is the sum,
+// tiled onto segment boundaries (the still card absorbs the rounding slack).
+export function stillFfmpegArgs(cardPng, extras, music, tmpDir) {
+  const { stillFps: fps } = config.channel;
+  const cardDur = Math.max(6, config.channel.accountSlideSeconds);   // account card on-screen
+  if (!extras.length) {
     return [
       '-y',
       '-loop', '1', '-i', cardPng,
       '-stream_loop', '-1', '-i', music,
-      '-t', String(dur),
+      '-t', String(tileToSegments(cardDur)),
       '-map', '0:v', '-map', '1:a',
       ...videoEncodeArgs(fps),
       ...AUDIO_ENCODE_ARGS,
@@ -182,22 +250,34 @@ export function stillFfmpegArgs(cardPng, statusPng, music, tmpDir) {
     ];
   }
 
-  const Ls = Math.max(2, config.statusSlide.seconds);
-  const Lc = Math.max(6, dur - Ls);
-  const baseFilter =
-    `[0:v]fps=${fps},format=yuv420p,setsar=1[c0];` +
-    `[1:v]fps=${fps},format=yuv420p,setsar=1[c1];` +
-    `[c0][c1]concat=n=2:v=1:a=0[v]`;
-  // Hard cut card -> status at Lc; loop restarts at Lc + Ls.
-  const filter = withSlideTimer(baseFilter, [Lc, Lc + Ls]);
+  const extraLens = extras.map((e) => Math.max(2, e.seconds));
+  const sumExtras = extraLens.reduce((sum, len) => sum + len, 0);
+  // Card shows for its own duration; total tiled onto segments, card takes slack.
+  const Lc = tileToSegments(cardDur + sumExtras) - sumExtras;
+  const lens = [Lc, ...extraLens]; // on-screen length of every concatenated frame
+  const m = lens.length;
+
+  const frameParts = lens.map((_, i) => `[${i}:v]fps=${fps},format=yuv420p,setsar=1[c${i}];`);
+  const concatInputs = lens.map((_, i) => `[c${i}]`).join('');
+  const baseFilter = `${frameParts.join('')}${concatInputs}concat=n=${m}:v=1:a=0[v]`;
+
+  // Hard cuts at each cumulative frame boundary; loop restarts at the total.
+  const boundaries = [];
+  let acc = 0;
+  for (const len of lens) { acc += len; boundaries.push(acc); }
+  const filter = withSlideTimer(baseFilter, boundaries);
+
+  const inputArgs = ['-loop', '1', '-t', Lc.toFixed(2), '-i', cardPng];
+  extras.forEach((extra, i) => {
+    inputArgs.push('-loop', '1', '-t', extraLens[i].toFixed(2), '-i', extra.file);
+  });
 
   return [
     '-y',
-    '-loop', '1', '-t', Lc.toFixed(2), '-i', cardPng,
-    '-loop', '1', '-t', Ls.toFixed(2), '-i', statusPng,
+    ...inputArgs,
     '-stream_loop', '-1', '-i', music,
     '-filter_complex', filter,
-    '-map', '[v]', '-map', '2:a',
+    '-map', '[v]', '-map', `${m}:a`,
     ...videoEncodeArgs(fps),
     ...AUDIO_ENCODE_ARGS,
     '-shortest',
@@ -283,28 +363,35 @@ export function userHlsDir(userId) {
 // 1-vCPU encode when nothing has changed since the last successful generation —
 // e.g. startup pre-gen followed by a manual "regenerate", or rapid double-clicks.
 const SIG_FILE = 'sig';
-function streamSignature(user, settings, plans, music, summary) {
+function streamSignature(user, settings, plans, music, summary, worldcup) {
   let musicMtime = 0;
   try { musicMtime = fs.statSync(music).mtimeMs; } catch { /* fall back to 0 */ }
   const c = config.channel;
   const svgs = config.intro.enabled
     ? [buildBrandSlide1Svg(settings), buildBodySvg(user, plans, settings)]
     : [buildBodySvg(user, plans, settings)];
-  // The (global) status slide depends on incidents + today's date, so hashing it
-  // here makes incident edits and the daily date roll bust the encode-skip cache.
+  // The global slides depend on external state (incidents + today's date for the
+  // status board; football results + today's date for the bracket), so hashing
+  // their SVGs busts the encode-skip cache whenever that content changes.
   if (summary) svgs.push(buildStatusSlideSvg(summary, settings));
+  if (worldcup) svgs.push(buildWorldCupSlideSvg(worldcup, settings));
   const payload = JSON.stringify({
-    v: 1,
+    // Bump when the encode math (frame durations / loop sizing) changes so the
+    // skip-cache re-encodes existing streams even when SVG content is identical.
+    v: 2,
     svgs,
     enc: {
       W: c.width, H: c.height, fps: c.fps, stillFps: c.stillFps,
-      preset: c.preset, duration: c.duration, hlsTime: c.hlsTime, liveLoop: c.liveLoop,
+      preset: c.preset, accountSlideSeconds: c.accountSlideSeconds, hlsTime: c.hlsTime, liveLoop: c.liveLoop,
       slideTimer: c.slideTimer,
       intro: config.intro.enabled
         ? { slide: config.intro.slideSeconds, transition: config.intro.transition }
         : false,
       status: summary
         ? { seconds: config.statusSlide.seconds }
+        : false,
+      worldcup: worldcup
+        ? { seconds: config.worldcupSlide.seconds }
         : false,
     },
     musicMtime,
@@ -378,9 +465,12 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const summary = config.statusSlide.enabled
       ? statusSummary(Incidents.all(), { tz: config.timezone })
       : null;
+    // Global World Cup 2026 bracket (null when disabled). Cached + shared across
+    // users so a bulk regeneration hits the football API at most once.
+    const worldcup = await getWorldCupSummary();
 
     const finalDir = userHlsDir(freshUser.id);
-    const signature = streamSignature(freshUser, settings, plans, music, summary);
+    const signature = streamSignature(freshUser, settings, plans, music, summary, worldcup);
     // Skip the encode entirely when the existing stream already matches.
     if (!force && fs.existsSync(playlistPath(freshUser.id)) && readSig(finalDir) === signature) {
       log.info('channel', 'stream up to date; skipping encode', {
@@ -408,7 +498,7 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, `.build-${freshUser.id}-`));
     try {
       if (config.intro.enabled) {
-        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary);
+        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary, worldcup);
         await run(
           FFMPEG,
           introFfmpegArgs(slides, music, tmpDir),
@@ -418,14 +508,21 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
       } else {
         const cardPng = path.join(tmpDir, 'card.png');
         await renderBodyPng(freshUser, settings, cardPng, plans);
-        let statusPng = null;
+        // Ordered global slides appended after the card (status, then bracket).
+        const extras = [];
         if (summary) {
-          statusPng = path.join(tmpDir, 'status.png');
+          const statusPng = path.join(tmpDir, 'status.png');
           await renderStatusPng(summary, settings, statusPng);
+          extras.push({ file: statusPng, seconds: config.statusSlide.seconds });
+        }
+        if (worldcup) {
+          const worldcupPng = path.join(tmpDir, 'worldcup.png');
+          await renderWorldCupPng(worldcup, settings, worldcupPng);
+          extras.push({ file: worldcupPng, seconds: config.worldcupSlide.seconds });
         }
         await run(
           FFMPEG,
-          stillFfmpegArgs(cardPng, statusPng, music, tmpDir),
+          stillFfmpegArgs(cardPng, extras, music, tmpDir),
           `HLS encode for user ${freshUser.id}`,
           signal,
         );
@@ -477,6 +574,9 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
 
 export async function generateAll({ reason = 'bulk regeneration' } = {}) {
   const startedAt = Date.now();
+  // Refresh the shared World Cup bracket once up front so the whole batch encodes
+  // the same data and the football API is queried at most once per rebuild.
+  try { await refreshWorldCup(); } catch { /* getWorldCupSummary already degrades */ }
   const users = Users.all();
   const bulkJobId = ++bulkJobSequence;
   const bulkJob = {

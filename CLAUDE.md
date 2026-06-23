@@ -59,7 +59,14 @@ Request/data flow, entry point [src/server.js](src/server.js):
    auto-layout plans grid (`buildExpiredPlansSvg`); and (when
    `STATUS_SLIDE_ENABLED`) a global Better Stack–style status board
    (`buildStatusSlideSvg`, fed by `statusSummary()` in
-   [src/status.js](src/status.js)). In the final days before expiry the card
+   [src/status.js](src/status.js)); and (when `WORLDCUP_SLIDE_ENABLED`) a global
+   auto-updating World Cup 2026 **match-list** slide (`buildWorldCupSlideSvg`, fed
+   by `getWorldCupSummary()` in [src/worldcup.js](src/worldcup.js) — the knockout
+   stage only (1/16 final onward, **no group games**): a static seeding skeleton
+   merged with live results from a free football API, windowed to an adaptive ~6
+   matches around "today" by `buildWorldCupModel`. Before the knockout starts it
+   shows a "playoffs start on <date>" message; once the Final is decided, a
+   champion summary. Cached so a bulk regen calls the API at most once). In the final days before expiry the card
    swaps its lower half for a compact "продлите подписку" plan strip
    (`buildRenewingCardSvg`); healthy cards are unchanged. On the **final valid
    day** (and once expired) the body becomes the full plans grid instead — same
@@ -71,11 +78,16 @@ Request/data flow, entry point [src/server.js](src/server.js):
 3. **Encode** — [src/channel.js](src/channel.js) spawns **ffmpeg** to turn the
    PNG(s) + looped music into HLS segments. Two paths: an intro path
    (slide → `xfade` transition → card, low fps) and a plain still-card path
-   (intro disabled, very low fps). When the status slide is enabled each path
-   gains a **third frame** (intro: a chained `xfade` into the status board;
-   still: a `concat` card → status) — the frame durations are sized so the loop
-   total stays ≈ `CHANNEL_DURATION` and still tiles onto `hlsTime` boundaries
-   with no runt segment. A bottom-right "Далее через N" countdown to the next
+   (intro disabled, very low fps). Each enabled global slide (status board, then
+   World Cup match list) is appended as **another frame** — the intro path chains
+   more `xfade`s, the still path adds more `concat` inputs (`introWithExtrasArgs`
+   / `stillFfmpegArgs` take an ordered `extras` list). Each slide holds for its
+   own configured duration — the account card for `ACCOUNT_SLIDE_SECONDS`, just like
+   the intro/status/World Cup slides set their own — and the loop total is their
+   sum, rounded **up** to a whole number of `hlsTime` segments (`tileToSegments`)
+   so the looped VOD tiles cleanly with no runt segment; the still card absorbs
+   the sub-segment rounding slack. The arg builders are pinned by a byte-identity
+   snapshot (`test/channel-args.test.js`). A bottom-right "Далее через N" countdown to the next
    slide change is baked in via `drawtext` (`slideTimerFilters`, toggle
    `SLIDE_TIMER_ENABLED`); it needs a font ffmpeg can resolve — fontconfig
    `Inter` by default (the image installs `fonts-inter`), or `TIMER_FONT_FILE`.
