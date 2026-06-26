@@ -5,7 +5,9 @@ import { config } from './config.js';
 import streamRoutes from './routes/stream.js';
 import fossEpgRoutes from './routes/foss-epg.js';
 import adminRoutes from './routes/admin.js';
-import { ensureMusic, generateAll, startDailyRefresh } from './channel.js';
+import {
+  ensureMusic, generateAll, startDailyRefresh, syncWorldcupSettings,
+} from './channel.js';
 import { Users, Plans } from './db.js';
 import { log } from './logger.js';
 
@@ -34,6 +36,8 @@ if (config.epg.enabled && config.epg.foss.enabled) app.use('/', fossEpgRoutes);
 app.use('/', streamRoutes);
 
 const server = app.listen(config.port, async () => {
+  // Apply any admin-saved World Cup slide overrides before the first pre-gen.
+  syncWorldcupSettings();
   const users = Users.all();
   const plans = Plans.all();
 

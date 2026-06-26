@@ -58,7 +58,61 @@ export function decorateUser(u) {
   };
 }
 
+// Compact view of one World Cup fixture for the admin preview list. Mirrors how
+// the on-air slide renders a row (overlay.js wcFixtureRow): the kickoff time is
+// only meaningful before a match finishes.
+function worldcupFixtureView(fx) {
+  const hasScore = fx.home.score !== null && fx.home.score !== undefined
+    && fx.away.score !== null && fx.away.score !== undefined;
+  return {
+    id: fx.id,
+    dateLabel: fx.dateLabel,
+    time: fx.status.key === 'finished' ? '' : (fx.time || ''),
+    stageLabel: fx.stageLabel,
+    statusKey: fx.status.key,
+    statusLabel: fx.status.label,
+    home: { label: fx.home.label, score: fx.home.score ?? null, winner: !!fx.home.winner },
+    away: { label: fx.away.label, score: fx.away.score ?? null, winner: !!fx.away.winner },
+    hasScore,
+  };
+}
+
+// View model for the admin World Cup card: the slide controls (enabled/seconds),
+// whether a live-results token is configured, and a preview of the same model
+// the channel renders (champion summary / not-started message / fixtures window).
+export function worldcupSummaryJson(model, { enabled, seconds, tokenConfigured } = {}) {
+  return {
+    enabled: !!enabled,
+    seconds,
+    tokenConfigured: !!tokenConfigured,
+    headline: model?.headline || '',
+    updated: model?.updated || '',
+    champion: model?.champion || null,
+    notStarted: model?.notStarted || null,
+    fixtures: (model?.fixtures || []).map(worldcupFixtureView),
+  };
+}
+
 // ---- Input validation (returns { error } or the parsed value) ----
+// Validate the World Cup slide settings (enable toggle + on-screen seconds).
+export function validateWorldcupSettings(body, { partial = false } = {}) {
+  const out = {};
+  const has = (k) => body[k] !== undefined;
+
+  if (!partial || has('enabled')) {
+    if (typeof body.enabled !== 'boolean') return { error: 'enabled must be a boolean' };
+    out.enabled = body.enabled;
+  }
+  if (!partial || has('seconds')) {
+    const seconds = Number(body.seconds);
+    if (!Number.isInteger(seconds) || seconds < 4 || seconds > 120) {
+      return { error: 'seconds must be a whole number between 4 and 120' };
+    }
+    out.seconds = seconds;
+  }
+  return { value: out };
+}
+
 // Parse a price entered in euros into integer cents. Shared by plan create/patch.
 export function parsePriceCents(priceEur) {
   if (priceEur === '' || priceEur === null || priceEur === undefined) {

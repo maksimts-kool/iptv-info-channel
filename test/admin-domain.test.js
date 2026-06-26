@@ -5,10 +5,13 @@ import {
   parseFeatures,
   duplicatePlanName,
   validateIncident,
+  validateWorldcupSettings,
+  worldcupSummaryJson,
   planJson,
   incidentJson,
   decorateUser,
 } from '../src/admin-domain.js';
+import { buildWorldCupModel, BRACKET_2026 } from '../src/worldcup.js';
 
 test('parsePriceCents converts euros to integer cents', () => {
   assert.deepEqual(parsePriceCents('4.99'), { cents: 499 });
@@ -82,6 +85,75 @@ test('incidentJson exposes ongoing state and pretty dates', () => {
   const closed = incidentJson({ id: '2', title: 'y', severity: 'degraded', starts_on: '2026-06-01', ends_on: '2026-06-02' });
   assert.equal(closed.ongoing, false);
   assert.match(closed.ends_pretty, /2026/);
+});
+
+test('validateWorldcupSettings accepts a boolean toggle and bounded seconds', () => {
+  assert.deepEqual(
+    validateWorldcupSettings({ enabled: true, seconds: 14 }),
+    { value: { enabled: true, seconds: 14 } },
+  );
+  assert.deepEqual(
+    validateWorldcupSettings({ enabled: false, seconds: 4 }),
+    { value: { enabled: false, seconds: 4 } },
+  );
+});
+
+test('validateWorldcupSettings rejects bad enabled / out-of-range seconds', () => {
+  assert.equal(validateWorldcupSettings({ enabled: 'yes', seconds: 14 }).error, 'enabled must be a boolean');
+  for (const bad of [3, 121, 14.5, 'x', NaN]) {
+    assert.equal(
+      validateWorldcupSettings({ enabled: true, seconds: bad }).error,
+      'seconds must be a whole number between 4 and 120',
+      String(bad),
+    );
+  }
+});
+
+test('validateWorldcupSettings supports partial patches', () => {
+  assert.deepEqual(validateWorldcupSettings({ seconds: 20 }, { partial: true }), { value: { seconds: 20 } });
+  assert.deepEqual(validateWorldcupSettings({ enabled: false }, { partial: true }), { value: { enabled: false } });
+});
+
+test('worldcupSummaryJson shapes the slide model + settings for the admin card', () => {
+  const model = buildWorldCupModel(BRACKET_2026, [], { now: new Date('2026-06-28T12:00:00Z'), tz: 'UTC' });
+  const json = worldcupSummaryJson(model, { enabled: true, seconds: 14, tokenConfigured: false });
+  assert.equal(json.enabled, true);
+  assert.equal(json.seconds, 14);
+  assert.equal(json.tokenConfigured, false);
+  assert.ok(json.headline);
+  assert.ok(Array.isArray(json.fixtures) && json.fixtures.length);
+  const fx = json.fixtures[0];
+  // Compact, escaped-friendly shape with a status key + labelled teams.
+  assert.ok(fx.statusKey && fx.statusLabel);
+  assert.ok('label' in fx.home && 'score' in fx.home && 'winner' in fx.home);
+  assert.equal(typeof fx.hasScore, 'boolean');
+});
+
+test('worldcupSummaryJson hides the kickoff time once a match is finished', () => {
+  const finished = {
+    headline: 'h', updated: 'u', champion: null, notStarted: null,
+    fixtures: [{
+      id: 1, dateLabel: '01 июл', time: '21:00', stageLabel: '1/16 финала',
+      status: { key: 'finished', label: 'завершён' },
+      home: { label: 'A', score: 2, winner: true }, away: { label: 'B', score: 1, winner: false },
+    }, {
+      id: 2, dateLabel: '02 июл', time: '18:00', stageLabel: '1/16 финала',
+      status: { key: 'scheduled', label: 'по расписанию' },
+      home: { label: 'C', score: null, winner: false }, away: { label: 'D', score: null, winner: false },
+    }],
+  };
+  const json = worldcupSummaryJson(finished, { enabled: false, seconds: 14, tokenConfigured: true });
+  assert.equal(json.fixtures[0].time, '');          // finished -> no time
+  assert.equal(json.fixtures[0].hasScore, true);
+  assert.equal(json.fixtures[1].time, '18:00');     // upcoming -> keeps kickoff
+  assert.equal(json.fixtures[1].hasScore, false);
+});
+
+test('worldcupSummaryJson tolerates a null model', () => {
+  const json = worldcupSummaryJson(null, { enabled: false, seconds: 14, tokenConfigured: true });
+  assert.deepEqual(json.fixtures, []);
+  assert.equal(json.champion, null);
+  assert.equal(json.headline, '');
 });
 
 test('decorateUser builds status + playlist URLs', () => {

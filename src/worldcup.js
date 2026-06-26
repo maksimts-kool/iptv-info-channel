@@ -446,11 +446,11 @@ function groupResults(matches) {
 
 let cache = null; // { matches, at }
 
-// Returns the fixture-list model (skeleton + cached live results), or null when
-// the slide is disabled. Re-fetches when the cache is older than the configured
-// TTL or when `force` is set (the daily refresh / startup pass `force`).
-export async function getWorldCupSummary({ now = new Date(), force = false } = {}) {
-  if (!config.worldcupSlide.enabled) return null;
+// Returns the fixture-list model (skeleton + cached live results) regardless of
+// whether the slide is enabled — the admin panel previews it even while it is
+// switched off. Re-fetches when the cache is older than the configured TTL or
+// when `force` is set (the daily refresh / startup / manual refresh pass `force`).
+export async function getWorldCupModel({ now = new Date(), force = false } = {}) {
   const ttlMs = config.footballApi.ttlMinutes * 60 * 1000;
   let matches;
   if (!force && cache && Date.now() - cache.at < ttlMs) {
@@ -460,6 +460,12 @@ export async function getWorldCupSummary({ now = new Date(), force = false } = {
     cache = { matches, at: Date.now() };
   }
   return buildWorldCupModel(BRACKET_2026, matches, { now });
+}
+
+// The model fed into the encode pipeline, or null when the slide is disabled.
+export async function getWorldCupSummary({ now = new Date(), force = false } = {}) {
+  if (!config.worldcupSlide.enabled) return null;
+  return getWorldCupModel({ now, force });
 }
 
 // Force a refresh of the cached results (startup pre-gen + daily cron call this

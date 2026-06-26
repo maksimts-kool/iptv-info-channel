@@ -2,7 +2,10 @@
 import { makeWithRegen } from './regen.js';
 
 const $ = (sel) => document.querySelector(sel);
-let STATE = { users: [], plans: [], settings: {}, incidents: [], status: null, publicBaseUrl: '' };
+let STATE = {
+  users: [], plans: [], settings: {}, incidents: [], status: null,
+  publicBaseUrl: '', worldcupSlide: { enabled: false, seconds: 14 },
+};
 
 // Incident severities mirror SEVERITY in src/status.js.
 const SEV = {
@@ -168,6 +171,9 @@ async function load() {
   renderUsers();
   renderStatus();
   renderIncidents();
+  // Show saved controls instantly from state, then fetch the live preview.
+  renderWorldcupControls(STATE.worldcupSlide?.enabled, STATE.worldcupSlide?.seconds);
+  loadWorldcup();
 }
 
 function renderStatus() {
@@ -177,7 +183,7 @@ function renderStatus() {
   if (!s) { headline.textContent = ''; strip.innerHTML = ''; return; }
   headline.innerHTML = `<span class="status-dot" style="background:${s.color}"></span>${escapeHtml(s.label)} · ${formatPct(s.uptimePct)} аптайм`;
   strip.innerHTML = (s.days || [])
-    .map((d) => `<span class="ubar" style="background:${d.color}" title="${escapeHtml(d.date)}"></span>`)
+    .map((d) => `<span class="status-day" style="background:${d.color}" title="${escapeHtml(d.date)}"></span>`)
     .join('');
 }
 
@@ -232,6 +238,76 @@ function renderIncidents() {
       );
     };
     wrap.appendChild(div);
+  }
+}
+
+// ---- World Cup slide ----
+function renderWorldcupControls(enabled, seconds) {
+  $('#wc-enabled').checked = !!enabled;
+  if (seconds !== undefined && seconds !== null) $('#wc-seconds').value = seconds;
+}
+
+function wcFixtureRow(fx) {
+  const score = fx.hasScore ? `${fx.home.score} : ${fx.away.score}` : '—';
+  return `
+    <div class="wc-row wc-${fx.statusKey}">
+      <div class="wc-when">
+        <span class="wc-date">${escapeHtml(fx.dateLabel)}</span>
+        ${fx.time ? `<span class="wc-time">${escapeHtml(fx.time)}</span>` : ''}
+      </div>
+      <div class="wc-stage">${escapeHtml(fx.stageLabel)}</div>
+      <div class="wc-teams">
+        <span class="wc-team${fx.home.winner ? ' win' : ''}">${escapeHtml(fx.home.label)}</span>
+        <span class="wc-score">${escapeHtml(score)}</span>
+        <span class="wc-team${fx.away.winner ? ' win' : ''}">${escapeHtml(fx.away.label)}</span>
+      </div>
+      <span class="wc-badge wc-badge-${fx.statusKey}">${escapeHtml(fx.statusLabel)}</span>
+    </div>`;
+}
+
+function wcPreviewHtml(data) {
+  if (data.champion) {
+    const c = data.champion;
+    const hasScore = c.champScore !== null && c.runnerScore !== null;
+    const final = hasScore
+      ? `Финал: ${c.team} ${c.champScore} – ${c.runnerScore} ${c.runnerUp}`
+      : `Финал: ${c.team} — ${c.runnerUp}`;
+    return `<div class="wc-hero">
+      <div class="wc-hero-kicker">ЧЕМПИОН МИРА 2026</div>
+      <div class="wc-hero-title">${escapeHtml(c.team)}</div>
+      <div class="muted">${escapeHtml(final)}</div>
+    </div>`;
+  }
+  if (data.notStarted) {
+    return `<div class="wc-hero">
+      <div class="wc-hero-kicker">СТАРТ ПЛЕЙ-ОФФ</div>
+      <div class="wc-hero-title">${escapeHtml(data.notStarted.startLabel)}</div>
+      <div class="muted">Первые матчи — 1/16 финала</div>
+    </div>`;
+  }
+  if (!data.fixtures.length) return '<div class="empty-state muted">Матчей пока нет.</div>';
+  return data.fixtures.map(wcFixtureRow).join('');
+}
+
+function renderWorldcup(data) {
+  renderWorldcupControls(data.enabled, data.seconds);
+  const dot = data.enabled ? '#16a34a' : '#5c6e91';
+  $('#wc-phase').innerHTML = `<span class="status-dot" style="background:${dot}"></span>`
+    + `${data.enabled ? 'Включён' : 'Выключен'}${data.headline ? ` · ${escapeHtml(data.headline)}` : ''}`;
+  const token = data.tokenConfigured
+    ? 'Live-результаты: токен задан ✓'
+    : 'Live-результаты: токен не задан — показывается сетка-заглушка';
+  $('#wc-meta').textContent = `${token}${data.updated ? ` · обновлено ${data.updated}` : ''}`;
+  const preview = $('#wc-preview');
+  preview.classList.toggle('is-off', !data.enabled);
+  preview.innerHTML = wcPreviewHtml(data);
+}
+
+async function loadWorldcup() {
+  try {
+    renderWorldcup(await api('GET', '/admin/api/worldcup'));
+  } catch (e) {
+    $('#wc-preview').innerHTML = `<div class="empty-state muted">Не удалось загрузить данные чемпионата: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -453,6 +529,22 @@ $('#save-settings').onclick = () => withRegen(
     brand_name: $('#brand_name').value, tagline: $('#tagline').value,
   }),
   { success: 'Branding saved — streams rebuilding', reload: false },
+);
+$('#wc-save').onclick = () => {
+  const seconds = Number($('#wc-seconds').value);
+  if (!Number.isInteger(seconds) || seconds < 4 || seconds > 120) {
+    return toast('Секунд на экране: целое число от 4 до 120');
+  }
+  return withRegen(
+    'Сохранение настроек чемпионата и пересборка потоков',
+    () => api('PATCH', '/admin/api/worldcup', { enabled: $('#wc-enabled').checked, seconds }),
+    { success: 'Настройки слайда сохранены — потоки пересобираются' },
+  );
+};
+$('#wc-refresh').onclick = () => withRegen(
+  'Обновление результатов чемпионата',
+  () => api('POST', '/admin/api/worldcup/refresh'),
+  { success: 'Результаты обновлены' },
 );
 $('#regen-all').onclick = async () => {
   showGenerationPending('Rebuilding all channel streams');

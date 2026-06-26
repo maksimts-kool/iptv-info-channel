@@ -624,6 +624,17 @@ export function removeUserHls(userId) {
   fs.rmSync(userHlsDir(userId), { recursive: true, force: true });
 }
 
+// Apply the admin-saved World Cup slide overrides (enabled / on-screen seconds)
+// onto the live config. The encode path and worldcup.js read config.worldcupSlide
+// directly, so persisting the admin choice here keeps both the env-var default
+// (when unset) and the saved override working. Called at startup and after each
+// admin worldcup update.
+export function syncWorldcupSettings() {
+  const s = Settings.all();
+  if (typeof s.worldcup_enabled === 'boolean') config.worldcupSlide.enabled = s.worldcup_enabled;
+  if (Number.isFinite(s.worldcup_seconds)) config.worldcupSlide.seconds = s.worldcup_seconds;
+}
+
 // Ensure a user's stream exists; (re)generate if missing.
 export async function ensureUserStream(user) {
   if (!fs.existsSync(playlistPath(user.id))) {

@@ -8,10 +8,13 @@ import { statusSummary } from '../status.js';
 import {
   incidentJson, planJson, decorateUser,
   parsePriceCents, parseFeatures, duplicatePlanName, validateIncident,
+  validateWorldcupSettings, worldcupSummaryJson,
 } from '../admin-domain.js';
 import {
   generateForUser, generateAll, generationStatus, removeUserHls,
+  syncWorldcupSettings,
 } from '../channel.js';
+import { getWorldCupModel } from '../worldcup.js';
 import {
   requireAuth, requireAuthPage, checkPassword, setSession, clearSession,
 } from '../middleware/auth.js';
@@ -68,6 +71,7 @@ router.get('/api/state', (req, res) => {
     publicBaseUrl: config.publicBaseUrl,
     expiringThresholdDays: config.expiringThresholdDays,
     statusSlideEnabled: config.statusSlide.enabled,
+    worldcupSlide: { enabled: config.worldcupSlide.enabled, seconds: config.worldcupSlide.seconds },
     settings: Settings.all(),
     plans: Plans.all().map(planJson),
     users: Users.all().map(decorateUser),
@@ -265,6 +269,53 @@ router.delete('/api/incidents/:id', (req, res) => {
   log.info('admin', 'incident deleted', { incident_id: req.params.id });
   regenAll('admin incident deleted');
   res.json({ ok: true });
+});
+
+// ---------- World Cup slide ----------
+// Live preview of the global World Cup bracket slide plus its current settings.
+// The model is built regardless of the enable toggle so admins can preview it
+// while the slide is switched off; live teams/scores need a football API token.
+async function worldcupResponse({ now = new Date(), force = false } = {}) {
+  const model = await getWorldCupModel({ now, force });
+  return worldcupSummaryJson(model, {
+    enabled: config.worldcupSlide.enabled,
+    seconds: config.worldcupSlide.seconds,
+    tokenConfigured: Boolean(config.footballApi.token),
+  });
+}
+
+router.get('/api/worldcup', async (req, res) => {
+  try {
+    res.json(await worldcupResponse());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Toggle the slide on/off and set its on-screen seconds. Persisted in Settings
+// (env vars are the fallback) and applied to the live config; rebuilds all
+// streams because the slide is global.
+router.patch('/api/worldcup', (req, res) => {
+  const { error, value } = validateWorldcupSettings(req.body || {});
+  if (error) return res.status(400).json({ error });
+  Settings.set('worldcup_enabled', value.enabled);
+  Settings.set('worldcup_seconds', value.seconds);
+  syncWorldcupSettings();
+  log.info('admin', 'world cup slide settings updated', value);
+  regenAll('admin world cup settings updated');
+  res.json({ enabled: config.worldcupSlide.enabled, seconds: config.worldcupSlide.seconds });
+});
+
+// Force a re-fetch of live results now, then rebuild (only useful when enabled).
+router.post('/api/worldcup/refresh', async (req, res) => {
+  try {
+    const payload = await worldcupResponse({ force: true });
+    log.info('admin', 'world cup results refresh requested');
+    if (config.worldcupSlide.enabled) regenAll('admin world cup results refreshed');
+    res.json(payload);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Rebuild all streams

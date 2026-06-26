@@ -31,8 +31,8 @@ docker compose exec m3u-info npm run seed
 No build step, no linter, no TypeScript. Pure ESM (`"type": "module"`), Node
 20+. Tests use the built-in `node:test` runner and cover the pure-logic modules
 (`util`, `liveloop`, `epg`, `epgfoss`, `status`, `playlist`, `xxhash32`,
-`admin-domain`, the `regen` UI helper) plus route/integration tests for the FOSS
-endpoints. The ffmpeg encode has no live render test, but
+`worldcup`, `admin-domain`, the `regen` UI helper) plus route/integration tests
+for the FOSS endpoints. The ffmpeg encode has no live render test, but
 [test/channel-args.test.js](test/channel-args.test.js) pins the exact ffmpeg
 argv against a golden snapshot so the arg builders can be refactored safely (see
 "Things that bite").
@@ -59,14 +59,17 @@ Request/data flow, entry point [src/server.js](src/server.js):
    auto-layout plans grid (`buildExpiredPlansSvg`); and (when
    `STATUS_SLIDE_ENABLED`) a global Better Stack–style status board
    (`buildStatusSlideSvg`, fed by `statusSummary()` in
-   [src/status.js](src/status.js)); and (when `WORLDCUP_SLIDE_ENABLED`) a global
+   [src/status.js](src/status.js)); and (when the World Cup slide is enabled — via
+   `WORLDCUP_SLIDE_ENABLED` or the admin toggle, see Admin below) a global
    auto-updating World Cup 2026 **match-list** slide (`buildWorldCupSlideSvg`, fed
    by `getWorldCupSummary()` in [src/worldcup.js](src/worldcup.js) — the knockout
    stage only (1/16 final onward, **no group games**): a static seeding skeleton
    merged with live results from a free football API, windowed to an adaptive ~6
    matches around "today" by `buildWorldCupModel`. Before the knockout starts it
    shows a "playoffs start on <date>" message; once the Final is decided, a
-   champion summary. Cached so a bulk regen calls the API at most once). In the final days before expiry the card
+   champion summary. Cached so a bulk regen calls the API at most once.
+   `getWorldCupSummary()` is the enabled-gated encode feed; `getWorldCupModel()`
+   builds the same model unconditionally for the admin preview). In the final days before expiry the card
    swaps its lower half for a compact "продлите подписку" plan strip
    (`buildRenewingCardSvg`); healthy cards are unchanged. On the **final valid
    day** (and once expired) the body becomes the full plans grid instead — same
@@ -171,7 +174,16 @@ Request/data flow, entry point [src/server.js](src/server.js):
    **incident** edits regenerate **all** users (expired users render every
    available plan; the status slide is global), while user edits regenerate just
    that user. Incidents (`/admin/api/incidents`, states `degraded`/`outage`)
-   drive the status board's 90-day uptime strip. The browser UI
+   drive the status board's 90-day uptime strip. A **World Cup** card
+   (`/admin/api/worldcup`) shows a live preview of the global bracket slide
+   (`getWorldCupModel` — built even while the slide is off so it can be
+   previewed) and lets the admin toggle the slide on/off and set its on-screen
+   seconds. Those two flags are stored in `Settings` (`worldcup_enabled` /
+   `worldcup_seconds`) and overlaid onto `config.worldcupSlide` by
+   `syncWorldcupSettings()` (called at startup and after each edit), with the
+   `WORLDCUP_SLIDE_ENABLED`/`WORLDCUP_SLIDE_SECONDS` env vars as the fallback
+   when unset — the encode path keeps reading `config.worldcupSlide.*`, so the
+   ffmpeg golden test is unaffected. The browser UI
    ([src/public/admin/app.js](src/public/admin/app.js)) is an **ES module**;
    most mutating actions run through the shared `withRegen` banner/reload
    lifecycle in [src/public/admin/regen.js](src/public/admin/regen.js).

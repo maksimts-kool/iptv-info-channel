@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BRACKET_2026, buildBracketModel, buildWorldCupModel, fetchWorldCupResults, nationName,
+  getWorldCupModel, getWorldCupSummary,
 } from '../src/worldcup.js';
 import { buildWorldCupSlideSvg } from '../src/overlay.js';
+import { config } from '../src/config.js';
 
 // Helper: a football-data-shaped match object.
 function apiMatch({ stage, group, date, status, home, away, hs = null, as = null }) {
@@ -212,4 +214,34 @@ test('champion SVG renders the winner summary', () => {
   assert.match(svg, /ЧЕМПИОН МИРА 2026/);
   assert.match(svg, /Франция/);
   assert.match(svg, /Финал: Франция 2 – 1 Бразилия/);
+});
+
+test('getWorldCupModel builds the slide model even with no API token (skeleton)', async () => {
+  const savedToken = config.footballApi.token;
+  config.footballApi.token = '';
+  try {
+    const model = await getWorldCupModel({ now: new Date('2026-06-28T12:00:00Z') });
+    assert.ok(model.headline);
+    assert.ok(Array.isArray(model.fixtures));
+  } finally {
+    config.footballApi.token = savedToken;
+  }
+});
+
+test('getWorldCupSummary is gated by the enabled flag; getWorldCupModel is not', async () => {
+  const savedToken = config.footballApi.token;
+  const savedEnabled = config.worldcupSlide.enabled;
+  config.footballApi.token = '';
+  try {
+    config.worldcupSlide.enabled = false;
+    assert.equal(await getWorldCupSummary({ now: new Date('2026-06-28T12:00:00Z') }), null);
+    // The admin preview path still resolves a model while the slide is off.
+    assert.ok((await getWorldCupModel({ now: new Date('2026-06-28T12:00:00Z') })).headline);
+    config.worldcupSlide.enabled = true;
+    const model = await getWorldCupSummary({ now: new Date('2026-06-28T12:00:00Z') });
+    assert.ok(model && model.headline);
+  } finally {
+    config.footballApi.token = savedToken;
+    config.worldcupSlide.enabled = savedEnabled;
+  }
 });

@@ -133,7 +133,7 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color:
 .status-headline { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .status-strip { display: flex; gap: 2px; align-items: stretch; height: 34px; margin-bottom: 16px; }
-.status-strip .ubar { flex: 1 1 0; min-width: 0; border-radius: 2px; }
+.status-strip .status-day { flex: 1 1 0; min-width: 0; border-radius: 2px; }
 .incidents-list { display: grid; gap: 10px; }
 .incident {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -143,6 +143,36 @@ label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color:
 .incident-text { min-width: 0; }
 .incident-title { font-weight: 700; font-size: 14px; }
 .incident-range { font-size: 12px; margin-top: 2px; white-space: normal; }
+
+/* World Cup slide */
+.wc-controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.wc-seconds { flex-direction: row; align-items: center; gap: 8px; color: var(--muted); }
+.wc-seconds input { width: 72px; }
+.wc-meta { font-size: 12px; }
+.wc-preview { display: grid; gap: 8px; }
+.wc-preview.is-off { opacity: .5; }
+.wc-row {
+  display: grid; grid-template-columns: 84px 128px 1fr auto; gap: 12px; align-items: center;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px;
+}
+.wc-row.wc-live { border-color: #dc2626; box-shadow: inset 3px 0 0 #dc2626; }
+.wc-when { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wc-date { font-weight: 700; font-size: 14px; }
+.wc-time { color: var(--accent); font-size: 12px; font-weight: 700; }
+.wc-stage { color: var(--muted); font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wc-teams { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; min-width: 0; }
+.wc-team { font-size: 15px; color: #dbe5f5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wc-teams .wc-team:first-child { text-align: right; }
+.wc-team.win { color: #fff; font-weight: 800; }
+.wc-score { font-weight: 800; font-size: 16px; text-align: center; }
+.wc-badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap; border: 1px solid currentColor; }
+.wc-badge-live { color: #fca5a5; background: rgba(220,38,38,.14); }
+.wc-badge-finished { color: #86efac; background: rgba(22,163,74,.14); }
+.wc-badge-postponed { color: #fcd34d; background: rgba(217,119,6,.14); }
+.wc-badge-scheduled { color: #7dd3fc; background: rgba(56,189,248,.14); }
+.wc-hero { text-align: center; padding: 26px 10px; display: grid; gap: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; }
+.wc-hero-kicker { color: var(--accent); font-size: 14px; font-weight: 800; letter-spacing: 3px; }
+.wc-hero-title { font-size: 30px; font-weight: 800; }
 
 /* Table */
 .table-scroll { overflow-x: auto; }
@@ -187,4 +217,8 @@ dialog::backdrop { background: rgba(2,6,18,0.6); }
   .topbar { padding: 14px 16px; }
   .brand .muted { display: none; }
   .generation-status { top: 65px; margin: 10px 12px 0; }
+  .wc-row { grid-template-columns: 72px 1fr; row-gap: 8px; }
+  .wc-stage { grid-column: 2; }
+  .wc-teams { grid-column: 1 / -1; }
+  .wc-badge { grid-column: 1 / -1; justify-self: start; }
 }
