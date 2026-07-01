@@ -199,6 +199,16 @@ dialog {
   border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 360px;
 }
 dialog::backdrop { background: rgba(2,6,18,0.6); }
+
+/* Notifications */
+.notify-test-email {
+  padding: 8px 11px; border-radius: 8px; border: 1px solid var(--border);
+  background: #0b1224; color: var(--text); font-size: 14px; min-width: 200px;
+}
+.sub-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.sub-email { font-size: 13px; }
+.sub-opts { font-size: 11px; }
+#notify-log td { font-size: 13px; }
 #user-form, #plan-form, #incident-form { display: grid; gap: 14px; }
 #user-form h3, #plan-form h3, #incident-form h3 { margin: 0; }
 #incident-form textarea { min-height: 64px; }

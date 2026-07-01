@@ -5,14 +5,19 @@ import { config } from './config.js';
 import streamRoutes from './routes/stream.js';
 import fossEpgRoutes from './routes/foss-epg.js';
 import adminRoutes from './routes/admin.js';
+import subscribeRoutes from './routes/subscribe.js';
 import {
-  ensureMusic, generateAll, startDailyRefresh, syncWorldcupSettings,
+  ensureMusic, generateAll, startDailyRefresh, syncWorldcupSettings, syncNotifySettings,
 } from './channel.js';
 import { Users, Plans } from './db.js';
 import { log } from './logger.js';
 
 const app = express();
 app.disable('x-powered-by');
+// Honor X-Forwarded-For only for the configured number of proxy hops, so the
+// /sub rate limiter sees real client IPs behind a reverse proxy (and can't be
+// spoofed when directly exposed). See config.trustProxy.
+app.set('trust proxy', config.trustProxy);
 app.use(cookieParser());
 
 // Public landing page.
@@ -32,12 +37,15 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 
 // Admin must be mounted before stream so /admin isn't shadowed.
 app.use('/admin', adminRoutes);
+// Public notification sign-up page (/sub/:token), before the stream routes.
+app.use('/', subscribeRoutes);
 if (config.epg.enabled && config.epg.foss.enabled) app.use('/', fossEpgRoutes);
 app.use('/', streamRoutes);
 
 const server = app.listen(config.port, async () => {
-  // Apply any admin-saved World Cup slide overrides before the first pre-gen.
+  // Apply any admin-saved slide / notification overrides before the first pre-gen.
   syncWorldcupSettings();
+  syncNotifySettings();
   const users = Users.all();
   const plans = Plans.all();
 

@@ -3,8 +3,11 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
-import { Users, Plans, Settings, Incidents } from '../db.js';
+import {
+  Users, Plans, Settings, Incidents, Subscribers, NotifyLog,
+} from '../db.js';
 import { statusSummary } from '../status.js';
+import * as notify from '../notify.js';
 import {
   incidentJson, planJson, decorateUser,
   parsePriceCents, parseFeatures, duplicatePlanName, validateIncident,
@@ -12,7 +15,7 @@ import {
 } from '../admin-domain.js';
 import {
   generateForUser, generateAll, generationStatus, removeUserHls,
-  syncWorldcupSettings,
+  syncWorldcupSettings, syncNotifySettings,
 } from '../channel.js';
 import { getWorldCupModel } from '../worldcup.js';
 import {
@@ -34,6 +37,11 @@ function regen(userOrId, reason) {
 function regenAll(reason) {
   generateAll({ reason })
     .catch((e) => log.error('admin', 'bulk regeneration failed', { reason, error: e.message }));
+}
+// Fire-and-forget notification dispatch (don't block / fail the API response).
+function fireNotify(factory, label) {
+  Promise.resolve().then(factory)
+    .catch((e) => log.error('admin', label, { error: e.message }));
 }
 
 const VALID_PERIODS = ['', 'month', 'year'];
@@ -72,9 +80,13 @@ router.get('/api/state', (req, res) => {
     expiringThresholdDays: config.expiringThresholdDays,
     statusSlideEnabled: config.statusSlide.enabled,
     worldcupSlide: { enabled: config.worldcupSlide.enabled, seconds: config.worldcupSlide.seconds },
+    notify: { enabled: config.notify.enabled },
     settings: Settings.all(),
     plans: Plans.all().map(planJson),
     users: Users.all().map(decorateUser),
+    subscribers: Subscribers.all().map((s) => ({
+      user_id: s.user_id, email: s.email, options: s.options, verified: !!s.verified,
+    })),
     incidents: incidents.map(incidentJson),
     status: statusSummary(incidents, { tz: config.timezone }),
   });
@@ -98,12 +110,17 @@ router.post('/api/users', (req, res) => {
 // Update user (expiration change, plan change, rename, enable/disable)
 router.patch('/api/users/:id', (req, res) => {
   const id = Number(req.params.id);
-  if (!Users.get(id)) return res.status(404).json({ error: 'not found' });
+  const before = Users.get(id);
+  if (!before) return res.status(404).json({ error: 'not found' });
   const { username, plan_id, expires_at, active } = req.body || {};
   if (plan_id && !Plans.get(plan_id)) return res.status(400).json({ error: 'unknown plan_id' });
   const u = Users.update(id, { username, plan_id, expires_at, active });
   log.info('admin', 'user updated', { user_id: u.id, username: u.username });
   regen(u.id, 'admin user updated');
+  // Renewal: the admin pushed the expiry to a later date — notify (mandatory).
+  if (expires_at !== undefined && before.expires_at && u.expires_at && u.expires_at > before.expires_at) {
+    fireNotify(() => notify.notifyRenewal(u), 'renewal notification failed');
+  }
   res.json(decorateUser(u));
 });
 
@@ -244,6 +261,7 @@ router.post('/api/incidents', (req, res) => {
   const inc = Incidents.create(value);
   log.info('admin', 'incident created', { incident_id: inc.id, severity: inc.severity });
   regenAll('admin incident created');
+  fireNotify(() => notify.notifyServerStatus(inc, 'raised'), 'server-status notification failed');
   res.status(201).json(incidentJson(inc));
 });
 
@@ -260,6 +278,10 @@ router.patch('/api/incidents/:id', (req, res) => {
   const inc = Incidents.update(req.params.id, value);
   log.info('admin', 'incident updated', { incident_id: inc.id, fields: Object.keys(value) });
   regenAll('admin incident updated');
+  // First time an ongoing incident gets an end date → "service restored" mail.
+  if (!existing.ends_on && inc.ends_on) {
+    fireNotify(() => notify.notifyServerStatus(inc, 'resolved'), 'server-status notification failed');
+  }
   res.json(incidentJson(inc));
 });
 
@@ -316,6 +338,60 @@ router.post('/api/worldcup/refresh', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ---------- Email notifications ----------
+function notificationsView() {
+  const byUser = new Map(Subscribers.all().map((s) => [s.user_id, s]));
+  return {
+    enabled: config.notify.enabled,
+    provider: config.notify.provider,
+    dryRun: config.notify.dryRun,
+    configured: config.notify.dryRun || Boolean(config.notify.apiKey && config.notify.from),
+    subscribers: Users.all()
+      .filter((u) => byUser.has(u.id))
+      .map((u) => {
+        const s = byUser.get(u.id);
+        return {
+          user_id: u.id, username: u.username, email: s.email,
+          options: s.options, verified: !!s.verified, created_at: s.created_at,
+        };
+      }),
+    log: NotifyLog.recent(30),
+  };
+}
+
+router.get('/api/notifications', (req, res) => res.json(notificationsView()));
+
+// Toggle the whole system. The QR appears/disappears on the intro slide, so this
+// rebuilds all streams (like a branding change).
+router.patch('/api/notifications', (req, res) => {
+  const { enabled } = req.body || {};
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' });
+  Settings.set('notify_enabled', enabled);
+  syncNotifySettings();
+  log.info('admin', 'notifications toggled', { enabled });
+  regenAll('admin notifications toggled');
+  res.json({ enabled: config.notify.enabled });
+});
+
+// Send a one-off test email; surfaces provider/config errors to the admin.
+router.post('/api/notifications/test', async (req, res) => {
+  try {
+    await notify.sendTest(req.body?.email);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Manually remove a user's subscriber.
+router.delete('/api/users/:id/subscriber', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Users.get(id)) return res.status(404).json({ error: 'not found' });
+  Subscribers.remove(id);
+  log.info('admin', 'subscriber removed', { user_id: id });
+  res.json({ ok: true });
 });
 
 // Rebuild all streams

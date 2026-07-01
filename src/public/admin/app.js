@@ -5,7 +5,19 @@ const $ = (sel) => document.querySelector(sel);
 let STATE = {
   users: [], plans: [], settings: {}, incidents: [], status: null,
   publicBaseUrl: '', worldcupSlide: { enabled: false, seconds: 14 },
+  subscribers: [], notify: { enabled: false },
 };
+
+// Short Russian label per notification log type.
+const NOTIFY_TYPE = {
+  verification: 'Подтверждение адреса', confirmation: 'Подписка оформлена',
+  expiry: 'Истечение', renewal: 'Продление', server: 'Статус сервера', test: 'Тест',
+};
+// Compact list of a subscriber's enabled topics.
+function subOptLabels(o) {
+  return ['Продление', o.expiry ? 'Истечение' : null, o.server ? 'Статус' : null]
+    .filter(Boolean).join(', ');
+}
 
 // Incident severities mirror SEVERITY in src/status.js.
 const SEV = {
@@ -174,6 +186,8 @@ async function load() {
   // Show saved controls instantly from state, then fetch the live preview.
   renderWorldcupControls(STATE.worldcupSlide?.enabled, STATE.worldcupSlide?.seconds);
   loadWorldcup();
+  $('#notify-enabled').checked = !!STATE.notify?.enabled;
+  loadNotifications();
 }
 
 function renderStatus() {
@@ -311,6 +325,37 @@ async function loadWorldcup() {
   }
 }
 
+// ---- Email notifications ----
+function renderNotifications(data) {
+  $('#notify-enabled').checked = !!data.enabled;
+  const dot = data.enabled ? '#16a34a' : '#5c6e91';
+  $('#notify-status').innerHTML = `<span class="status-dot" style="background:${dot}"></span>`
+    + (data.enabled ? 'Включены' : 'Выключены');
+  const cfg = data.dryRun ? 'тестовый режим — письма не отправляются'
+    : data.configured ? `провайдер: ${escapeHtml(data.provider)} ✓`
+    : 'не настроено — задайте NOTIFY_API_KEY и NOTIFY_FROM';
+  $('#notify-meta').textContent = `${cfg} · подписчиков: ${data.subscribers.length}`;
+  const tb = $('#notify-log tbody');
+  tb.innerHTML = data.log.length
+    ? data.log.map((e) => `<tr>
+        <td>${escapeHtml(e.at)}</td>
+        <td>${escapeHtml(e.email || '—')}</td>
+        <td>${escapeHtml(NOTIFY_TYPE[e.type] || e.type)}</td>
+        <td>${e.ok
+          ? '<span class="pill" style="background:#16a34a">OK</span>'
+          : `<span class="pill" style="background:#dc2626" title="${escapeHtml(e.error || '')}">Ошибка</span>`}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="muted">Писем пока не отправлялось.</td></tr>';
+}
+
+async function loadNotifications() {
+  try {
+    renderNotifications(await api('GET', '/admin/api/notifications'));
+  } catch (e) {
+    $('#notify-meta').textContent = `Не удалось загрузить: ${e.message}`;
+  }
+}
+
 function renderPlans() {
   const wrap = $('#plans');
   wrap.innerHTML = '';
@@ -353,10 +398,19 @@ function renderUsers() {
   const tbody = $('#users tbody');
   tbody.innerHTML = '';
   if (!STATE.users.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="muted">No users yet — click “Add user”.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="muted">No users yet — click “Add user”.</td></tr>`;
     return;
   }
+  const subByUser = new Map((STATE.subscribers || []).map((s) => [s.user_id, s]));
   for (const u of STATE.users) {
+    const sub = subByUser.get(u.id);
+    const subCell = sub
+      ? `<div class="sub-cell">
+          <span class="sub-email">${escapeHtml(sub.email)}${sub.verified ? '' : ' <span class="pill" style="background:#d97706">не подтв.</span>'}</span>
+          <span class="sub-opts muted">${escapeHtml(subOptLabels(sub.options))}</span>
+          <button class="btn tiny ghost" data-act="unsub">Отписать</button>
+        </div>`
+      : '<span class="muted">—</span>';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><strong>${escapeHtml(u.username)}</strong></td>
@@ -366,6 +420,7 @@ function renderUsers() {
       <td>${u.days_left === null ? '—' : u.days_left}</td>
       <td><span class="pill" style="background:${u.status_color}">${u.status_label}</span></td>
       <td></td>
+      <td>${subCell}</td>
       <td><div class="link-btns">
         <button class="btn tiny ghost" data-act="copy-m3u">Copy m3u</button>
         <button class="btn tiny ghost" data-act="open-hls">HLS</button>
@@ -386,6 +441,14 @@ function renderUsers() {
     );
     tr.children[6].appendChild(sw);
 
+    const unsubBtn = tr.querySelector('[data-act="unsub"]');
+    if (unsubBtn) unsubBtn.onclick = async () => {
+      if (!confirm(`Отписать ${u.username} (${sub.email})?`)) return;
+      try {
+        await api('DELETE', `/admin/api/users/${u.id}/subscriber`);
+        toast('Подписчик удалён'); await load();
+      } catch (e) { toast(e.message); }
+    };
     tr.querySelector('[data-act="copy-m3u"]').onclick = () => copy(u.m3u_url);
     tr.querySelector('[data-act="open-hls"]').onclick = () => window.open(u.hls_url, '_blank');
     tr.querySelector('[data-act="edit"]').onclick = () => openDialog(u);
@@ -546,6 +609,20 @@ $('#wc-refresh').onclick = () => withRegen(
   () => api('POST', '/admin/api/worldcup/refresh'),
   { success: 'Результаты обновлены' },
 );
+$('#notify-enabled').onchange = (e) => withRegen(
+  'Сохранение настроек уведомлений и пересборка потоков',
+  () => api('PATCH', '/admin/api/notifications', { enabled: e.target.checked }),
+  { success: 'Настройки уведомлений сохранены — потоки пересобираются' },
+);
+$('#notify-test').onclick = async () => {
+  const email = $('#notify-test-email').value.trim();
+  if (!email) return toast('Введите адрес для теста');
+  try {
+    await api('POST', '/admin/api/notifications/test', { email });
+    toast('Тестовое письмо отправлено');
+    await loadNotifications();
+  } catch (e) { toast(e.message); }
+};
 $('#regen-all').onclick = async () => {
   showGenerationPending('Rebuilding all channel streams');
   toast('Rebuilding all streams…');

@@ -14,6 +14,9 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:9222}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       SESSION_SECRET: ${SESSION_SECRET:-please-change-this-to-a-long-random-string}
+      # Set to 1 if you run behind a reverse proxy (nginx / DO LB) so the /sub
+      # rate limiter sees real client IPs. Leave unset on a directly-exposed port.
+      TRUST_PROXY: ${TRUST_PROXY:-}
       ACCOUNT_SLIDE_SECONDS: ${ACCOUNT_SLIDE_SECONDS:-120}
       # The card is a static image; 720p + low frame rates look identical on a
       # TV but cost far less CPU to encode on a small host.
@@ -37,6 +40,15 @@ services:
       FOOTBALL_API_BASE: ${FOOTBALL_API_BASE:-https://api.football-data.org/v4}
       FOOTBALL_API_COMPETITION: ${FOOTBALL_API_COMPETITION:-WC}
       FOOTBALL_API_TTL_MINUTES: ${FOOTBALL_API_TTL_MINUTES:-360}
+      # ---- Email notifications (intro-slide QR -> /sub/:token sign-up) ----
+      # DigitalOcean blocks SMTP ports, so mail goes over a third-party HTTP
+      # email API (HTTPS:443). NOTIFY_DRY_RUN=true logs instead of sending.
+      NOTIFY_ENABLED: ${NOTIFY_ENABLED:-false}
+      NOTIFY_PROVIDER: ${NOTIFY_PROVIDER:-brevo}
+      NOTIFY_API_KEY: ${NOTIFY_API_KEY:-}
+      NOTIFY_FROM: ${NOTIFY_FROM:-}
+      NOTIFY_FROM_NAME: ${NOTIFY_FROM_NAME:-IPTV Info Channel}
+      NOTIFY_DRY_RUN: ${NOTIFY_DRY_RUN:-false}
       DATA_DIR: /app/data
       MUSIC_FILE: assets/music/background.mp3
     volumes:

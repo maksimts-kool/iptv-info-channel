@@ -163,7 +163,32 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `EPG_FOSS_UPSTREAM_MATCH_URL`). See the README for the `.m3u` attributes and
    the **leading-`=`** requirement on `foss-tvg`/`tvg-source`.
 
-8. **Admin** — [src/routes/admin.js](src/routes/admin.js) is a cookie-auth JSON
+8. **Email notifications** — [src/notify.js](src/notify.js) is the whole feature
+   in one module: transport, templates, dispatch and validation. The intro slide
+   carries a per-user QR (`qrPanelSvg` in overlay.js) to
+   `/sub/:token` ([src/routes/subscribe.js](src/routes/subscribe.js)), where a
+   customer subscribes one email with opt-in topics. That token is a **separate
+   `notify_token`** (not the stream token), so photographing the on-screen QR
+   can't grant stream access. Subscriptions are **double opt-in**: a new/changed
+   address is stored `verified:false` with a single-use `verify_token`, gets a
+   verification link (`/sub/verify/:vtoken`), and receives **no** real
+   notifications until the recipient clicks it — so the flow can't be used to
+   mail an unconsenting address. `expiryDue`/dispatch all gate on `verified`. Mail is sent over a
+   **third-party HTTP email API** (Brevo default, Resend optional — `NOTIFY_*`
+   env) because DigitalOcean blocks outbound SMTP ports; `NOTIFY_DRY_RUN` logs
+   instead of sending. Three triggers: **server status** (admin incident
+   raised/resolved, opt-in), **expiring soon** (`expirySweep()` from the daily
+   cron, opt-in, once per expiry date via a `last_expiry_notice` dedup marker),
+   and **renewal** (admin pushes expiry later — mandatory). Data lives in `db.js`
+   (`Subscribers`, one per `user_id`; `NotifyLog` capped ring buffer); the global
+   on/off flag is a `Settings` value (`notify_enabled`) overlaid onto
+   `config.notify.enabled` by `syncNotifySettings()` (mirrors the World Cup
+   pattern). The `/sub` write endpoints are rate-limited (per-IP + per-token) so
+   the confirmation email can't be used as a spam relay. Pure logic is
+   unit-tested ([test/notify.test.js](test/notify.test.js)); the admin card lives
+   in `src/public/admin/`.
+
+9. **Admin** — [src/routes/admin.js](src/routes/admin.js) is a cookie-auth JSON
    API under `/admin/api` plus static UI in `src/public/admin/`. Auth
    ([src/middleware/auth.js](src/middleware/auth.js)) is an HMAC of the admin
    password stored in the cookie, so changing `ADMIN_PASSWORD` invalidates all

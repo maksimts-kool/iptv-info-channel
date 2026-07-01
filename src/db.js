@@ -67,6 +67,8 @@ function load() {
   data.plans ||= [];
   data.users ||= [];
   data.incidents ||= [];
+  data.subscribers ||= [];
+  data.notify_log ||= [];
   data.seq ||= 0;
   data.settings ||= {};
   if (data.settings.brand_name === undefined) data.settings.brand_name = 'Мой IPTV-сервис';
@@ -76,6 +78,18 @@ function load() {
     if (!Number.isFinite(plan.sort)) plan.sort = index + 1;
     if (plan.billing_period === undefined) plan.billing_period = '';
   }
+  // Backfill the notification token (separate from the stream token so the
+  // on-screen sign-up QR never exposes stream access).
+  let changed = false;
+  for (const u of data.users) {
+    if (!u.notify_token) { u.notify_token = makeToken(); changed = true; }
+  }
+  // Subscribers predating email verification are grandfathered as verified (they
+  // went through the earlier confirm step); new ones default to unverified.
+  for (const s of data.subscribers) {
+    if (s.verified === undefined) { s.verified = true; s.verify_token = null; changed = true; }
+  }
+  if (changed) save();
 }
 
 function save() {
@@ -172,12 +186,14 @@ export const Users = {
   },
   get: (id) => decorate(data.users.find((u) => u.id === Number(id))),
   getByToken: (token) => decorate(data.users.find((u) => u.token === token)),
+  getByNotifyToken: (token) => decorate(data.users.find((u) => u.notify_token === token)),
   create: ({ username, plan_id, expires_at, active = 1, token }) => {
     const id = ++data.seq;
     const u = {
       id,
       username,
       token: token || makeToken(),
+      notify_token: makeToken(),
       plan_id,
       expires_at: expires_at || null,
       active: active ? 1 : 0,
@@ -208,8 +224,95 @@ export const Users = {
     return decorate(u);
   },
   remove: (id) => {
-    const i = data.users.findIndex((x) => x.id === Number(id));
-    if (i !== -1) { data.users.splice(i, 1); save(); }
+    const numId = Number(id);
+    const i = data.users.findIndex((x) => x.id === numId);
+    if (i === -1) return;
+    data.users.splice(i, 1);
+    // Drop the user's notification subscriber row alongside the account.
+    const si = data.subscribers.findIndex((s) => s.user_id === numId);
+    if (si !== -1) data.subscribers.splice(si, 1);
+    save();
+  },
+};
+
+// ---- Notification subscribers (one per user; keyed by user_id) ----
+// Renewal notices are mandatory, so that option is always forced on.
+function cleanOptions(options = {}) {
+  return { server: !!options.server, expiry: !!options.expiry, renewal: true };
+}
+
+export const Subscribers = {
+  all: () => data.subscribers.map((s) => ({ ...s })),
+  byUser: (userId) => {
+    const s = data.subscribers.find((x) => x.user_id === Number(userId));
+    return s ? { ...s } : null;
+  },
+  upsert: (userId, { email, options }) => {
+    const id = Number(userId);
+    let s = data.subscribers.find((x) => x.user_id === id);
+    if (s) {
+      const emailChanged = s.email !== email;
+      s.email = email;
+      s.options = cleanOptions(options);
+      s.updated_at = nowIso();
+      // A new/changed address must re-prove control: drop to unverified, mint a
+      // fresh verification token, and re-arm the expiry warning.
+      if (emailChanged) {
+        s.verified = false;
+        s.verify_token = makeToken();
+        s.last_expiry_notice = null;
+      }
+    } else {
+      s = {
+        user_id: id,
+        email,
+        options: cleanOptions(options),
+        verified: false,
+        verify_token: makeToken(),
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        last_expiry_notice: null,
+      };
+      data.subscribers.push(s);
+    }
+    save();
+    return { ...s };
+  },
+  verifyByToken: (token) => {
+    const s = data.subscribers.find((x) => x.verify_token === token);
+    return s ? { ...s } : null;
+  },
+  markVerified: (userId) => {
+    const s = data.subscribers.find((x) => x.user_id === Number(userId));
+    if (!s) return null;
+    s.verified = true;
+    s.verify_token = null;
+    s.updated_at = nowIso();
+    save();
+    return { ...s };
+  },
+  setExpiryNotice: (userId, value) => {
+    const s = data.subscribers.find((x) => x.user_id === Number(userId));
+    if (!s) return;
+    s.last_expiry_notice = value;
+    save();
+  },
+  remove: (userId) => {
+    const i = data.subscribers.findIndex((x) => x.user_id === Number(userId));
+    if (i !== -1) { data.subscribers.splice(i, 1); save(); }
+  },
+};
+
+// ---- Notification send log (capped newest-last ring buffer) ----
+const NOTIFY_LOG_MAX = 100;
+export const NotifyLog = {
+  recent: (n = 30) => data.notify_log.slice(-n).reverse(),
+  add: (entry) => {
+    data.notify_log.push({ at: nowIso(), ...entry });
+    if (data.notify_log.length > NOTIFY_LOG_MAX) {
+      data.notify_log.splice(0, data.notify_log.length - NOTIFY_LOG_MAX);
+    }
+    save();
   },
 };
 

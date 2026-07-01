@@ -13,6 +13,7 @@ import {
 } from './overlay.js';
 import { statusSummary } from './status.js';
 import { getWorldCupSummary, refreshWorldCup } from './worldcup.js';
+import * as notify from './notify.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
@@ -363,12 +364,12 @@ export function userHlsDir(userId) {
 // 1-vCPU encode when nothing has changed since the last successful generation —
 // e.g. startup pre-gen followed by a manual "regenerate", or rapid double-clicks.
 const SIG_FILE = 'sig';
-function streamSignature(user, settings, plans, music, summary, worldcup) {
+function streamSignature(user, settings, plans, music, summary, worldcup, subscribeUrl) {
   let musicMtime = 0;
   try { musicMtime = fs.statSync(music).mtimeMs; } catch { /* fall back to 0 */ }
   const c = config.channel;
   const svgs = config.intro.enabled
-    ? [buildBrandSlide1Svg(settings), buildBodySvg(user, plans, settings)]
+    ? [buildBrandSlide1Svg(settings, subscribeUrl), buildBodySvg(user, plans, settings)]
     : [buildBodySvg(user, plans, settings)];
   // The global slides depend on external state (incidents + today's date for the
   // status board; football results + today's date for the bracket), so hashing
@@ -468,9 +469,14 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     // Global World Cup 2026 bracket (null when disabled). Cached + shared across
     // users so a bulk regeneration hits the football API at most once.
     const worldcup = await getWorldCupSummary();
+    // Per-user notification sign-up QR on the intro slide (only when intro is on
+    // AND notifications are enabled). Null otherwise leaves the slide unchanged.
+    const subscribeUrl = config.intro.enabled && notify.notifyEnabled()
+      ? notify.subscribeUrlFor(freshUser)
+      : null;
 
     const finalDir = userHlsDir(freshUser.id);
-    const signature = streamSignature(freshUser, settings, plans, music, summary, worldcup);
+    const signature = streamSignature(freshUser, settings, plans, music, summary, worldcup, subscribeUrl);
     // Skip the encode entirely when the existing stream already matches.
     if (!force && fs.existsSync(playlistPath(freshUser.id)) && readSig(finalDir) === signature) {
       log.info('channel', 'stream up to date; skipping encode', {
@@ -498,7 +504,7 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, `.build-${freshUser.id}-`));
     try {
       if (config.intro.enabled) {
-        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary, worldcup);
+        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary, worldcup, subscribeUrl);
         await run(
           FFMPEG,
           introFfmpegArgs(slides, music, tmpDir),
@@ -635,6 +641,13 @@ export function syncWorldcupSettings() {
   if (Number.isFinite(s.worldcup_seconds)) config.worldcupSlide.seconds = s.worldcup_seconds;
 }
 
+// Apply the admin-saved notifications on/off flag onto the live config (env var
+// is the fallback when unset). Called at startup and after the admin toggle.
+export function syncNotifySettings() {
+  const s = Settings.all();
+  if (typeof s.notify_enabled === 'boolean') config.notify.enabled = s.notify_enabled;
+}
+
 // Ensure a user's stream exists; (re)generate if missing.
 export async function ensureUserStream(user) {
   if (!fs.existsSync(playlistPath(user.id))) {
@@ -653,6 +666,13 @@ export function startDailyRefresh() {
   cron.schedule(schedule, async () => {
     log.info('scheduler', 'daily refresh triggered', { schedule });
     await generateAll({ reason: 'daily refresh' });
+    // After the rebuild, mail anyone who just entered the expiry window (once).
+    try {
+      const { sent } = await notify.expirySweep();
+      if (sent) log.info('notify', 'expiry warnings sent', { count: sent });
+    } catch (e) {
+      log.error('notify', 'expiry sweep failed', { error: e.message });
+    }
   }, { timezone: config.timezone });
   log.info('scheduler', 'daily refresh registered', {
     schedule,

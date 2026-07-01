@@ -31,6 +31,15 @@ process.env.TZ ||= 'Europe/Tallinn';
 const num = (v, d) => (v !== undefined && v !== '' && !Number.isNaN(Number(v)) ? Number(v) : d);
 // Env flag: defaults to `d` (true) unless explicitly set to "false".
 const bool = (v, d = true) => (v ?? String(d)).toLowerCase() !== 'false';
+// Express `trust proxy` value: number of trusted proxy hops, a boolean, or a
+// passthrough string (e.g. a subnet). Defaults to false (use the socket IP).
+const parseTrustProxy = (v) => {
+  if (v === undefined || v === '') return false;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : v;
+};
 
 const DATA_DIR = path.isAbsolute(process.env.DATA_DIR || 'data')
   ? process.env.DATA_DIR
@@ -38,8 +47,8 @@ const DATA_DIR = path.isAbsolute(process.env.DATA_DIR || 'data')
 const DEFAULT_MUSIC_FILE = path.join(ROOT, 'assets/music/background.mp3');
 const configuredMusicFile = process.env.MUSIC_FILE
   ? (path.isAbsolute(process.env.MUSIC_FILE)
-      ? process.env.MUSIC_FILE
-      : path.join(ROOT, process.env.MUSIC_FILE))
+    ? process.env.MUSIC_FILE
+    : path.join(ROOT, process.env.MUSIC_FILE))
   : DEFAULT_MUSIC_FILE;
 
 export const config = {
@@ -50,13 +59,17 @@ export const config = {
 
   adminPassword: process.env.ADMIN_PASSWORD || 'changeme',
   sessionSecret: process.env.SESSION_SECRET || 'please-change-this-to-a-long-random-string',
+  // Trusted reverse-proxy hops for req.ip (used by the /sub rate limiter). Set
+  // TRUST_PROXY=1 behind one proxy (nginx / DO load balancer); leave unset
+  // (false) on a directly-exposed port so clients can't spoof X-Forwarded-For.
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 
   channel: {
     // On-screen seconds for the account (info) card — its own slide duration,
     // matching how the intro/status/World Cup slides each set their own. The
     // loop total is the sum of every enabled slide, rounded up to whole HLS
     // segments (the still card absorbs the small rounding slack).
-    accountSlideSeconds: num(process.env.ACCOUNT_SLIDE_SECONDS, 120),
+    accountSlideSeconds: num(process.env.ACCOUNT_SLIDE_SECONDS, 15),
     width: num(process.env.CHANNEL_WIDTH, 1280),
     height: num(process.env.CHANNEL_HEIGHT, 720),
     // The card is essentially a still image, so a high frame rate just burns CPU
@@ -132,6 +145,21 @@ export const config = {
       upstreamMatchUrl: (process.env.EPG_FOSS_UPSTREAM_MATCH_URL || 'https://ottp.eu.org')
         .replace(/\/+$/, ''),
     },
+  },
+  notify: {
+    // Email notification system. Customers scan the intro-slide QR to open
+    // /sub/:token and subscribe with their email. Mail is sent over a third-party
+    // HTTP email API (HTTPS:443) because DigitalOcean blocks outbound SMTP ports.
+    // The on/off flag is also stored in Settings (admin toggle); the env var is
+    // the fallback when unset, overlaid by syncNotifySettings() in channel.js.
+    enabled: bool(process.env.NOTIFY_ENABLED, false),
+    provider: (process.env.NOTIFY_PROVIDER || 'brevo').toLowerCase(), // brevo | resend
+    apiKey: process.env.NOTIFY_API_KEY || '',
+    from: process.env.NOTIFY_FROM || '',
+    fromName: process.env.NOTIFY_FROM_NAME || 'IPTV Info Channel',
+    // Log instead of sending — lets you test the flow locally / in Docker
+    // without a real API key.
+    dryRun: bool(process.env.NOTIFY_DRY_RUN, false),
   },
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),
 

@@ -2,6 +2,7 @@
 // Two frames make up a channel: the brand intro and the account-specific body.
 import path from 'node:path';
 import sharp from 'sharp';
+import QRCode from 'qrcode';
 import { config } from './config.js';
 import {
   formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays,
@@ -51,14 +52,56 @@ function logoMark(brand, cx, cy, size) {
     <text x="${cx}" y="${cy + size * 0.18}" text-anchor="middle" fill="#0b1224" font-family="Inter, sans-serif" font-size="${size * 0.55}" font-weight="800">${initial}</text>`;
 }
 
+// A white QR panel (with caption) drawn from a URL. Modules are emitted as
+// `<rect>`s over a quiet-zone-padded white card so any phone camera resolves it.
+// Used on the intro slide to point customers at the notification sign-up page.
+function qrPanelSvg(url, x, y, size) {
+  const qr = QRCode.create(url, { errorCorrectionLevel: 'M' });
+  const count = qr.modules.size;
+  const { data } = qr.modules;
+  const pad = 18;          // white border around the QR
+  const quiet = 4;         // quiet-zone modules required by the spec
+  const cell = size / (count + quiet * 2);
+  const ox = x + pad + quiet * cell;
+  const oy = y + pad + quiet * cell;
+  let modules = '';
+  for (let r = 0; r < count; r += 1) {
+    for (let c = 0; c < count; c += 1) {
+      if (data[r * count + c]) {
+        modules += `<rect x="${(ox + c * cell).toFixed(2)}" y="${(oy + r * cell).toFixed(2)}" width="${cell.toFixed(2)}" height="${cell.toFixed(2)}" fill="#0b1224"/>`;
+      }
+    }
+  }
+  const panelW = size + pad * 2;
+  const panelH = size + pad * 2 + 30;
+  return `
+    <g>
+      <rect x="${x}" y="${y}" width="${panelW}" height="${panelH}" rx="18" fill="#ffffff" filter="url(#soft)"/>
+      ${modules}
+      <text x="${x + panelW / 2}" y="${y + size + pad + 22}" text-anchor="middle" fill="#0b1224" font-family="Inter, sans-serif" font-size="16" font-weight="700">Подписка на уведомления</text>
+    </g>`;
+}
+
 // ---- Intro slide 1: the brand reveal ----
-export function buildBrandSlide1Svg(settings = {}) {
+// When subscribeUrl is set (notifications enabled) a QR sign-up code is added in
+// the corner; passing null leaves the slide exactly as before.
+export function buildBrandSlide1Svg(settings = {}, subscribeUrl = null) {
   const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
-  return svgDoc(`
+  if (!subscribeUrl) {
+    return svgDoc(`
     <rect width="1280" height="720" fill="url(#glow)"/>
     ${logoMark(settings.brand_name, 640, 300, 150)}
     <text x="640" y="470" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="72" font-weight="800" letter-spacing="-1">${brand}</text>
     <rect x="560" y="500" width="160" height="6" rx="3" fill="url(#accent)"/>`);
+  }
+  // With the sign-up QR present, the brand stacks above a centered QR panel.
+  return svgDoc(`
+    <rect width="1280" height="720" fill="url(#glow)"/>
+    ${logoMark(settings.brand_name, 640, 170, 120)}
+    <text x="640" y="300" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="58" font-weight="800" letter-spacing="-1">${brand}</text>
+    <rect x="588" y="326" width="104" height="6" rx="3" fill="url(#accent)"/>
+    <text x="640" y="394" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">Наведите камеру телефона на QR-код, чтобы подписаться на уведомления</text>
+    ${qrPanelSvg(subscribeUrl, 522, 414, 200)}`);
 }
 
 // ---- The looping info card (user details) ----
@@ -566,14 +609,14 @@ export async function renderBodyPng(user, settings, outPath, plans = []) {
 // Render the loop frames into dir. Returns { slide1, card, status?, worldcup? }
 // paths; the global slides are rendered only when their model is supplied.
 export async function renderSlidesPng(
-  user, settings, dir, plans = [], summary = null, worldcup = null,
+  user, settings, dir, plans = [], summary = null, worldcup = null, subscribeUrl = null,
 ) {
   const out = {
     slide1: path.join(dir, 'slide1.png'),
     card: path.join(dir, 'card.png'),
   };
   const jobs = [
-    svgToPng(buildBrandSlide1Svg(settings), out.slide1),
+    svgToPng(buildBrandSlide1Svg(settings, subscribeUrl), out.slide1),
     renderBodyPng(user, settings, out.card, plans),
   ];
   if (summary) {
