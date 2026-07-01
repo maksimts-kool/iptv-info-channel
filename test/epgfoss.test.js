@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { epgChannelId } from '../src/epg.js';
+import { epgChannelId } from '../src/epg/epg.js';
 import {
   MATCH_BLOCK_SEP,
   fossIdHash,
@@ -11,7 +11,7 @@ import {
   mergeMatchChannelsResponses,
   EMPTY_CHANNEL_MATCH_RESPONSE,
   EMPTY_LOGO_MATCH_RESPONSE,
-} from '../src/epgfoss.js';
+} from '../src/epg/epgfoss.js';
 
 const TZ = 'Europe/Tallinn';
 const NOW = new Date('2026-06-13T12:00:00Z');

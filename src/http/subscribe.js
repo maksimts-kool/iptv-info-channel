@@ -3,7 +3,7 @@
 // that gates their stream), so it is the only credential — there is no login.
 // One subscription per user. Mounted before the stream routes in server.js.
 import express from 'express';
-import { Users, Subscribers, Settings } from '../db.js';
+import { Users, Subscribers, Settings } from '../data.js';
 import { validateSubscription, sendVerification, sendConfirmation } from '../notify.js';
 import { log } from '../logger.js';
 
@@ -109,42 +109,44 @@ function notFoundPage() {
 // fixed server-side text, never user input.
 function resultPage(message) {
   return `<!doctype html><meta charset="utf-8"><title>Уведомления</title>
-  <body style="font-family:system-ui,-apple-system,sans-serif;background:#0b1224;color:#e6edf7;display:grid;place-items:center;height:100vh;margin:0;padding:20px;text-align:center">
-    <div style="max-width:420px;background:#0f1830;border:1px solid #24345f;border-radius:18px;padding:28px">
-      <div style="font-size:13px;letter-spacing:2px;text-transform:uppercase;color:#7dd3fc">Уведомления</div>
-      <p style="font-size:17px;line-height:1.5;margin:14px 0 0">${message}</p>
+  <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;background:#f5f5f5;color:rgba(0,0,0,0.88);display:grid;place-items:center;min-height:100vh;margin:0;padding:20px;text-align:center">
+    <div style="max-width:420px;background:#fff;border:1px solid #f0f0f0;border-radius:12px;padding:32px;box-shadow:0 2px 12px rgba(0,0,0,0.06)">
+      <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#2563eb">Уведомления</div>
+      <p style="font-size:16px;line-height:1.6;margin:14px 0 0">${message}</p>
     </div></body>`;
 }
 
-// Self-contained sign-up page: dark theme matching the channel, fetches its own
-// state and renders everything client-side via textContent (no HTML injection).
+// Self-contained sign-up page: light theme matching the Ant Design admin, fetches
+// its own state and renders everything client-side via textContent (no injection).
 function subscribePage(token) {
   return `<!doctype html><html lang="ru"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Уведомления</title>
 <style>
-  :root{color-scheme:dark}
   *{box-sizing:border-box}
-  body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#0b1224;color:#e6edf7;display:grid;place-items:center;min-height:100vh;padding:20px}
-  .card{width:100%;max-width:440px;background:#0f1830;border:1px solid #24345f;border-radius:18px;padding:26px}
-  .kicker{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#7dd3fc}
-  h1{font-size:23px;margin:8px 0 4px}
-  .muted{color:#9fb3d1;font-size:14px;line-height:1.5}
-  label.field{display:block;margin:18px 0 6px;font-size:14px;color:#c7d5eb}
-  input[type=email]{width:100%;padding:12px 14px;border-radius:10px;border:1px solid #2b3d68;background:#0b1224;color:#fff;font-size:16px}
-  .opt{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid #2b3d68;border-radius:10px;margin-top:10px}
-  .opt input{margin-top:3px;width:18px;height:18px}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:#f5f5f5;color:rgba(0,0,0,0.88);display:grid;place-items:center;min-height:100vh;padding:20px}
+  .card{width:100%;max-width:440px;background:#fff;border:1px solid #f0f0f0;border-radius:12px;padding:28px;box-shadow:0 2px 12px rgba(0,0,0,0.06)}
+  .kicker{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#2563eb}
+  h1{font-size:22px;margin:8px 0 4px;font-weight:600}
+  .muted{color:rgba(0,0,0,0.45);font-size:14px;line-height:1.5}
+  label.field{display:block;margin:18px 0 6px;font-size:14px;color:rgba(0,0,0,0.65)}
+  input[type=email]{width:100%;padding:9px 12px;border-radius:6px;border:1px solid #d9d9d9;background:#fff;color:rgba(0,0,0,0.88);font-size:16px;outline:none}
+  input[type=email]:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,0.1)}
+  .opt{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid #d9d9d9;border-radius:8px;margin-top:10px}
+  .opt input{margin-top:3px;width:16px;height:16px;accent-color:#2563eb}
   .opt .t{font-size:14px}
-  .opt .t small{display:block;color:#9fb3d1;margin-top:2px}
-  .opt.locked{opacity:.85}
-  button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:10px;font-size:16px;font-weight:700;cursor:pointer}
-  .primary{background:#38bdf8;color:#06243a}
-  .ghost{background:transparent;color:#9fb3d1;border:1px solid #2b3d68;margin-top:10px}
-  .note{margin-top:14px;padding:12px;border-radius:10px;font-size:14px;display:none}
-  .note.ok{display:block;background:#0c2a1c;border:1px solid #16a34a;color:#86efac}
-  .note.err{display:block;background:#2a0f12;border:1px solid #dc2626;color:#fca5a5}
-  .badge{display:inline-block;margin-top:8px;padding:4px 10px;border-radius:999px;background:#16a34a;color:#04140c;font-size:12px;font-weight:700}
-  .badge.pending{background:#d97706;color:#1a1206}
+  .opt .t small{display:block;color:rgba(0,0,0,0.45);margin-top:2px}
+  .opt.locked{background:#fafafa}
+  button{width:100%;margin-top:18px;padding:10px;border:0;border-radius:6px;font-size:15px;font-weight:500;cursor:pointer}
+  .primary{background:#2563eb;color:#fff}
+  .primary:hover{background:#1d4ed8}
+  .ghost{background:#fff;color:rgba(0,0,0,0.88);border:1px solid #d9d9d9;margin-top:10px}
+  .ghost:hover{border-color:#2563eb;color:#2563eb}
+  .note{margin-top:14px;padding:10px 12px;border-radius:8px;font-size:14px;display:none}
+  .note.ok{display:block;background:#f6ffed;border:1px solid #b7eb8f;color:#389e0d}
+  .note.err{display:block;background:#fff2f0;border:1px solid #ffccc7;color:#cf1322}
+  .badge{display:inline-block;margin-top:8px;padding:3px 10px;border-radius:999px;background:#f6ffed;border:1px solid #b7eb8f;color:#389e0d;font-size:12px;font-weight:500}
+  .badge.pending{background:#fff7e6;border-color:#ffd591;color:#d46b08}
 </style></head>
 <body>
   <div class="card">

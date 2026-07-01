@@ -22,6 +22,8 @@ function loadDotEnv() {
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
+    // A variable already present in the environment wins over the .env file, so
+    // Docker/compose `environment:` values and shell exports override .env.
     if (process.env[key] === undefined) process.env[key] = val;
   }
 }
@@ -55,6 +57,10 @@ export const config = {
   root: ROOT,
   port: num(process.env.PORT, 9222),
   timezone: process.env.TZ,
+  // Baked into every generated .m3u/HLS URL. On a LAN this MUST be the host IP
+  // the IPTV box can reach (e.g. http://192.168.1.50:9222) — never localhost —
+  // or the links the player receives will 404. Off-LAN it should be an https://
+  // origin so the per-user token in the path isn't exposed in plaintext.
   publicBaseUrl: (process.env.PUBLIC_BASE_URL || `http://localhost:${num(process.env.PORT, 9222)}`).replace(/\/+$/, ''),
 
   adminPassword: process.env.ADMIN_PASSWORD || 'changeme',

@@ -46,8 +46,28 @@ export function requireAuth(req, res, next) {
   return res.status(401).json({ error: 'unauthorized' });
 }
 
-// For HTML pages: redirect to login.
-export function requireAuthPage(req, res, next) {
-  if (isAuthed(req)) return next();
-  return res.redirect('/admin/login');
+// CSRF token for the cookie-auth admin API. Derived from the session secret +
+// admin password (like the session cookie, so rotating the password rotates it),
+// under a distinct label so it never equals the session value. It is handed to
+// the authenticated SPA in /api/state and echoed back in an X-CSRF-Token header
+// on mutating calls. A cross-site attacker can neither read it (same-origin policy
+// on /api/state) nor set the custom header, so a forged cross-site request can't
+// carry a valid token — even though the browser still auto-sends the cookie.
+export function csrfToken() {
+  return crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`csrf:${config.adminPassword}`)
+    .digest('hex');
+}
+
+// Gate mutating admin API requests on a valid CSRF token. Safe (non-mutating)
+// methods pass through so the SPA can GET /api/state to learn the token.
+export function requireCsrf(req, res, next) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const provided = Buffer.from(req.get('x-csrf-token') || '');
+  const expected = Buffer.from(csrfToken());
+  if (provided.length === expected.length && crypto.timingSafeEqual(provided, expected)) {
+    return next();
+  }
+  return res.status(403).json({ error: 'bad or missing CSRF token' });
 }

@@ -4,3 +4,12 @@ data/
 .env.server
 *.log
 **/.DS_Store
+
+# Frontend (React + Vite) build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Built admin UI: produced by the Vite build and copied here at docker build
+# time (or locally if you point the build output here). Never committed.
+src/public/admin/*
+!src/public/admin/.gitkeep

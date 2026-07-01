@@ -3,11 +3,11 @@
 import path from 'node:path';
 import sharp from 'sharp';
 import QRCode from 'qrcode';
-import { config } from './config.js';
+import { config } from '../config.js';
 import {
   formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays,
   localDateString, xmlEscape,
-} from './util.js';
+} from '../util.js';
 import { SEVERITY, formatUptime } from './status.js';
 
 // Shared <defs> + background used by every frame so the intro and card feel

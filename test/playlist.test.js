@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUserPlaylist } from '../src/playlist.js';
-import { fossIdHash } from '../src/epgfoss.js';
+import { buildUserPlaylist } from '../src/http/stream.js';
+import { fossIdHash } from '../src/epg/epgfoss.js';
 
 const USER = { token: 'abc123', username: 'ivan' };
 const CONFIG = {

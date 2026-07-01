@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {
   BRACKET_2026, buildBracketModel, buildWorldCupModel, fetchWorldCupResults, nationName,
   getWorldCupModel, getWorldCupSummary,
-} from '../src/worldcup.js';
-import { buildWorldCupSlideSvg } from '../src/overlay.js';
+} from '../src/render/worldcup.js';
+import { buildWorldCupSlideSvg } from '../src/render/overlay.js';
 import { config } from '../src/config.js';
 
 // Helper: a football-data-shaped match object.

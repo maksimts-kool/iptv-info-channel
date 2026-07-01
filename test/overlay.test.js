@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBodySvg, buildExpiredPlansSvg } from '../src/overlay.js';
+import { buildBodySvg, buildExpiredPlansSvg } from '../src/render/overlay.js';
 
 const expiredUser = {
   username: 'Expired customer',

@@ -10,8 +10,8 @@ import {
   planJson,
   incidentJson,
   decorateUser,
-} from '../src/admin-domain.js';
-import { buildWorldCupModel, BRACKET_2026 } from '../src/worldcup.js';
+} from '../src/http/admin.js';
+import { buildWorldCupModel, BRACKET_2026 } from '../src/render/worldcup.js';
 
 test('parsePriceCents converts euros to integer cents', () => {
   assert.deepEqual(parsePriceCents('4.99'), { cents: 499 });

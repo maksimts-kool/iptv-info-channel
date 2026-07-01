@@ -1,6 +1,6 @@
 // Derives the service-status summary (Better Stack–style 90-day uptime strip)
 // from a list of manually-created incidents. Pure logic, no I/O — unit tested.
-import { localDateString } from './util.js';
+import { localDateString } from '../util.js';
 
 // Incident states, worst-last. "operational" is implicit (no incident covers
 // the day); only 'degraded' and 'outage' are ever stored. Colours match the

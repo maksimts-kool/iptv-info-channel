@@ -5,7 +5,7 @@ import path from 'node:path';
 import { customAlphabet } from 'nanoid';
 import { config } from './config.js';
 import { log } from './logger.js';
-import { INCIDENT_SEVERITIES } from './status.js';
+import { INCIDENT_SEVERITIES } from './render/status.js';
 
 const DB_FILE = path.join(config.dataDir, 'db.json');
 
@@ -373,3 +373,23 @@ export const Settings = {
   all: () => ({ ...data.settings }),
   set: (key, value) => { data.settings[key] = value; save(); },
 };
+
+// ---- Demo seed ----
+// Create a few sample users so the channel is visible immediately. No-op if any
+// user already exists. Used by the `npm run seed` CLI shim (src/seed.js).
+export function seedDemo() {
+  const existing = Users.all();
+  if (existing.length > 0) return { skipped: true, existing: existing.length, created: [] };
+  const dateInDays = (n) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const demos = [
+    { username: 'Alice', plan_id: 'pro', expires_at: dateInDays(90) },       // active
+    { username: 'Bob', plan_id: 'standard', expires_at: dateInDays(4) },      // expiring soon
+    { username: 'Charlie', plan_id: 'standard', expires_at: dateInDays(-3) }, // expired
+  ];
+  const created = demos.map((d) => Users.create(d));
+  return { skipped: false, existing: 0, created };
+}

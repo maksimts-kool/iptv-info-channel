@@ -5,19 +5,19 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import cron from 'node-cron';
-import { config } from './config.js';
-import { Users, Plans, Settings, Incidents } from './db.js';
+import { config } from '../config.js';
+import { Users, Plans, Settings, Incidents } from '../data.js';
 import {
   renderBodyPng, renderSlidesPng, renderStatusPng, renderWorldCupPng,
   buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg, buildWorldCupSlideSvg,
-} from './overlay.js';
-import { statusSummary } from './status.js';
-import { getWorldCupSummary, refreshWorldCup } from './worldcup.js';
-import * as notify from './notify.js';
+} from '../render/overlay.js';
+import { statusSummary } from '../render/status.js';
+import { getWorldCupSummary, refreshWorldCup } from '../render/worldcup.js';
+import * as notify from '../notify.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
-import { elapsedMs, log } from './logger.js';
+import { elapsedMs, log } from '../logger.js';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
@@ -77,6 +77,9 @@ function slideTimerFilters(boundaries) {
   if (!cfg.enabled || boundaries.length < 1) return null;
   const font = cfg.fontFile ? `fontfile='${cfg.fontFile}'` : 'font=Inter';
   let prev = 0;
+  // The colons inside %{eif:...:d} must be escaped as \: — ffmpeg strips the
+  // quotes around a filter option's value before splitting options on ':', so an
+  // unescaped colon there is parsed as a new option and breaks the filtergraph.
   return boundaries.map((b) => {
     const start = Number(prev).toFixed(2);
     const end = Number(b).toFixed(2);
@@ -105,12 +108,24 @@ function tileToSegments(seconds) {
   return Math.max(seg, Math.round(seconds / seg) * seg);
 }
 
+// ---------------------------------------------------------------------------
+// ffmpeg argument builders (introFfmpegArgs / stillFfmpegArgs).
+//
+// These two exported builders are PINNED by a byte-identity golden snapshot
+// (test/channel-args.test.js against test/fixtures/ffmpeg-args.golden.json).
+// Real strict-player playback can't be exercised in CI, so byte-identical argv
+// is the proof that a refactor of the helpers below changed nothing — the
+// golden must keep passing unchanged. Only when you *intend* to change the
+// encode do you regenerate it, from known-good code, with:
+//   UPDATE_GOLDEN=1 node --test test/channel-args.test.js
+// Never rewrite the snapshot silently just to make a red test go green.
+// ---------------------------------------------------------------------------
+
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
 // info card, with background music. Any global slides present (status board,
 // World Cup bracket) are appended in order as further chained xfades:
 // slide -> card -> status -> worldcup. The account card shows for its own
 // configured duration (config.channel.accountSlideSeconds); the loop total is the sum.
-// Exported for the byte-identity snapshot test (test/channel-args.test.js).
 export function introFfmpegArgs(slides, music, tmpDir) {
   const extras = globalExtras(slides);
   return extras.length

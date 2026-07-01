@@ -5,52 +5,80 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-9222}:${PORT:-9222}"
+    # Grouped to mirror .env.example. Each var falls back to its default, so an
+    # empty .env still boots. Override by exporting the var or editing .env.
     environment:
-      # Override the .env values for the container here if you like.
+      # --- 1. Networking & access ---
       PORT: ${PORT:-9222}
       TZ: ${TZ:-Europe/Tallinn}
-      # IMPORTANT: set this to the address clients use to reach the server.
-      # For LAN IPTV players use the host machine IP, e.g. http://192.168.1.50:9222
+      # IMPORTANT: the address clients use to reach the server. For LAN IPTV
+      # players use the host machine IP, e.g. http://192.168.1.50:9222 — never
+      # localhost. Off-LAN use an https:// origin (the token travels in the URL).
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:9222}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       SESSION_SECRET: ${SESSION_SECRET:-please-change-this-to-a-long-random-string}
-      # Set to 1 if you run behind a reverse proxy (nginx / DO LB) so the /sub
-      # rate limiter sees real client IPs. Leave unset on a directly-exposed port.
+      # Set to 1 behind a reverse proxy (nginx / DO LB) so the rate limiters see
+      # real client IPs. Leave unset on a directly-exposed port.
       TRUST_PROXY: ${TRUST_PROXY:-}
-      ACCOUNT_SLIDE_SECONDS: ${ACCOUNT_SLIDE_SECONDS:-120}
-      # The card is a static image; 720p + low frame rates look identical on a
-      # TV but cost far less CPU to encode on a small host.
+      # --- 2. Channel look & timing ---
+      # 720p + low frame rates look identical on a TV but cost far less CPU.
       CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1280}
       CHANNEL_HEIGHT: ${CHANNEL_HEIGHT:-720}
-      CHANNEL_FPS: ${CHANNEL_FPS:-30}
+      CHANNEL_FPS: ${CHANNEL_FPS:-12}
       CHANNEL_STILL_FPS: ${CHANNEL_STILL_FPS:-4}
       FFMPEG_PRESET: ${FFMPEG_PRESET:-ultrafast}
+      HLS_TIME: ${HLS_TIME:-6}
+      ACCOUNT_SLIDE_SECONDS: ${ACCOUNT_SLIDE_SECONDS:-120}
       CHANNEL_LIVE_LOOP: ${CHANNEL_LIVE_LOOP:-true}
       EXPIRING_THRESHOLD_DAYS: ${EXPIRING_THRESHOLD_DAYS:-7}
+      SLIDE_TIMER_ENABLED: ${SLIDE_TIMER_ENABLED:-true}
+      TIMER_FONT_FILE: ${TIMER_FONT_FILE:-}
       INTRO_ENABLED: ${INTRO_ENABLED:-true}
       INTRO_SLIDE_SECONDS: ${INTRO_SLIDE_SECONDS:-4}
       INTRO_TRANSITION: ${INTRO_TRANSITION:-slideleft}
-      # Global status board slide.
+      # --- 3. Global slides ---
       STATUS_SLIDE_ENABLED: ${STATUS_SLIDE_ENABLED:-true}
       STATUS_SLIDE_SECONDS: ${STATUS_SLIDE_SECONDS:-12}
-      # Global World Cup 2026 bracket slide. Enable to add the football frame.
+      # World Cup 2026 bracket slide. Enable to add the football frame.
       WORLDCUP_SLIDE_ENABLED: ${WORLDCUP_SLIDE_ENABLED:-false}
       WORLDCUP_SLIDE_SECONDS: ${WORLDCUP_SLIDE_SECONDS:-14}
       FOOTBALL_API_TOKEN: ${FOOTBALL_API_TOKEN:-}
       FOOTBALL_API_BASE: ${FOOTBALL_API_BASE:-https://api.football-data.org/v4}
       FOOTBALL_API_COMPETITION: ${FOOTBALL_API_COMPETITION:-WC}
       FOOTBALL_API_TTL_MINUTES: ${FOOTBALL_API_TTL_MINUTES:-360}
-      # ---- Email notifications (intro-slide QR -> /sub/:token sign-up) ----
-      # DigitalOcean blocks SMTP ports, so mail goes over a third-party HTTP
-      # email API (HTTPS:443). NOTIFY_DRY_RUN=true logs instead of sending.
+      # --- 4. EPG / programme guide ---
+      EPG_ENABLED: ${EPG_ENABLED:-true}
+      EPG_DAYS_AHEAD: ${EPG_DAYS_AHEAD:-7}
+      EPG_DAYS_BEHIND: ${EPG_DAYS_BEHIND:-1}
+      EPG_FOSS_ENABLED: ${EPG_FOSS_ENABLED:-true}
+      EPG_FOSS_PROVIDER_ID: ${EPG_FOSS_PROVIDER_ID:-infochannel}
+      EPG_FOSS_UPSTREAM_MATCH_URL: ${EPG_FOSS_UPSTREAM_MATCH_URL:-https://ottp.eu.org}
+      # --- 5. Email notifications ---
+      # DigitalOcean blocks SMTP, so mail goes over a third-party HTTP email API
+      # (HTTPS:443). NOTIFY_DRY_RUN=true logs instead of sending.
       NOTIFY_ENABLED: ${NOTIFY_ENABLED:-false}
       NOTIFY_PROVIDER: ${NOTIFY_PROVIDER:-brevo}
       NOTIFY_API_KEY: ${NOTIFY_API_KEY:-}
       NOTIFY_FROM: ${NOTIFY_FROM:-}
       NOTIFY_FROM_NAME: ${NOTIFY_FROM_NAME:-IPTV Info Channel}
       NOTIFY_DRY_RUN: ${NOTIFY_DRY_RUN:-false}
+      # --- 6. Storage & assets (container paths — do not point outside the volume) ---
       DATA_DIR: /app/data
       MUSIC_FILE: assets/music/background.mp3
     volumes:
-      # Persist database + generated HLS across restarts.
+      # Persist database + generated HLS across restarts. The container runs as
+      # the non-root `node` user (uid 1000); if this bind-mounted dir isn't
+      # writable by uid 1000, run `sudo chown -R 1000:1000 ./data` once (or use a
+      # named volume, which inherits the correct owner automatically).
       - ./data:/app/data
+
+  # Run the test suite inside the image (Docker is the documented test path):
+  #   docker compose --profile test run --rm test
+  # profiles: ["test"] keeps it out of a normal `docker compose up`.
+  test:
+    build: .
+    profiles: ["test"]
+    environment:
+      TZ: Europe/Tallinn
+      NOTIFY_DRY_RUN: "true"
+    command: ["npm", "test"]

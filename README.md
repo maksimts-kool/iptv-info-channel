@@ -45,7 +45,15 @@ docker compose exec m3u-info npm run seed
 > For LAN IPTV boxes set it to the host machine's IP (not `localhost`), e.g.
 > `PUBLIC_BASE_URL=http://192.168.1.50:9222`.
 
-### Without Docker
+### Running the tests
+
+The suite runs inside the same image, so no host toolchain is required:
+
+```bash
+docker compose --profile test run --rm test
+```
+
+### Without Docker (optional)
 
 Requires **Node 20+** and **ffmpeg** on PATH.
 
@@ -54,6 +62,7 @@ cp .env.example .env      # edit values
 npm install
 npm run seed              # optional demo users
 npm start                 # http://localhost:9222
+npm test                  # run the test suite
 ```
 
 ## How customers use it
@@ -127,6 +136,10 @@ falls back to the bundled track.
 
 ## Configuration (`.env`)
 
+Every variable is documented and grouped into six labeled sections in
+[.env.example](.env.example) (`docker-compose.yml` mirrors the grouping) — copy
+it to `.env` and edit. The most-used settings:
+
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `9222` | HTTP port. |
@@ -134,9 +147,11 @@ falls back to the bundled track.
 | `TZ` | `Europe/Tallinn` | Timezone used for logs, daily refresh scheduling and displayed update dates. |
 | `ADMIN_PASSWORD` | `changeme` | Admin panel password. **Change it.** |
 | `SESSION_SECRET` | — | Signs the admin cookie. Use a long random string. |
+| `TRUST_PROXY` | — | Set to `1` behind a reverse proxy so the login / sign-up rate limiters see real client IPs. |
 | `ACCOUNT_SLIDE_SECONDS` | `120` | Seconds the account (info) card is on screen. The loop total is the sum of every enabled slide. |
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
 | `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
+| `STATUS_SLIDE_ENABLED` / `STATUS_SLIDE_SECONDS` | `true` / `12` | Append the global service-status board slide, and how long it holds. |
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
 | `EPG_ENABLED` | `true` | Advertise a per‑user XMLTV guide (`/u/<token>/epg.xml`) via `url-tvg`. |
 | `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |
@@ -188,10 +203,11 @@ docker compose logs -f m3u-info
    intro disabled it just loops the still card.
    Rendering happens once per data change, so idle CPU use stays near zero.
 3. The server presents those segments as a sliding **live HLS** window with no
-   end marker, so IPTV clients keep playing indefinitely. Each `.m3u` load gets
-   a tune-in session that starts at the intro before joining the continuous
-   loop. It generates a user's stream on first request and switches open clients
-   to rebuilt content whenever their data, plan price, or branding changes.
+   end marker, so IPTV clients keep playing indefinitely. All viewers share one
+   live timeline — tuning in joins the stream wherever it currently is, it does
+   not restart at the intro. It generates a user's stream on first request and
+   switches open clients to rebuilt content whenever their data, plan price, or
+   branding changes.
 4. A **daily job** (00:05) rebuilds every stream so the day counter and expiry
    status stay current.
 
@@ -212,10 +228,41 @@ docker compose logs -f m3u-info
 | `PATCH` | `/admin/api/settings` | `{brand_name, tagline}` |
 | `POST` | `/admin/api/regenerate-all` | rebuild all streams |
 
+## Security
+
+- **Access is a capability URL.** A channel is reachable only via the
+  unguessable per-user token in its path — the token *is* the credential, so
+  treat the URLs as secrets. Prefer `/u/<token>/playlist.m3u` over the `?token=`
+  query form (query strings leak via access logs / `Referer`), and put the
+  server behind **HTTPS** when exposing it off-LAN (`PUBLIC_BASE_URL=https://…`).
+- The e-mail sign-up QR uses a **separate token**, so photographing it can't
+  grant stream access, and sign-up is **double opt-in** (no mail is sent to an
+  unconfirmed address).
+- The admin session is an HMAC-signed HttpOnly cookie; rotating `ADMIN_PASSWORD`
+  logs everyone out. `/admin/login` and the `/sub` endpoints are rate-limited —
+  set `TRUST_PROXY=1` behind a reverse proxy so the limiter sees real client IPs.
+  Mutating admin API calls also require a CSRF token (`X-CSRF-Token`).
+- The container runs as the **non-root `node`** user; if you bind-mount `./data`,
+  make it writable by uid 1000 (`sudo chown -R 1000:1000 ./data`) or use a named volume.
+
+## Development
+
+Backend source is grouped by concern under `src/`: `render/` (SVG frames),
+`encode/` (ffmpeg + live HLS), `http/` (all routes), `epg/` (guides), with
+`config.js`, `data.js`, `util.js`, `logger.js` and `notify.js` at the root. There
+is no backend build step; run the tests with `docker compose --profile test run
+--rm test` (or `npm test` on a host with Node 20+). See [CLAUDE.md](CLAUDE.md) for
+the full module map.
+
+The admin UI is a **React + Vite + Ant Design** app in `frontend/` (its own
+`package.json`). The Docker build compiles it and copies the output into
+`src/public/admin/`, which the server serves at `/admin` — so production needs no
+host toolchain. For UI development run `npm install && npm run dev` in `frontend/`
+(its dev server proxies `/admin/api` to a backend on `:9222`). On a bare host
+checkout with no build, `/admin` shows an "Admin UI not built" stub.
+
 ## Notes
 
 - The generated media is reused as an endless live channel, so ffmpeg does not
   need to run continuously. Set `CHANNEL_LIVE_LOOP=false` only to expose the
   finite generated VOD directly.
-- Access is by unguessable per‑user token in the URL. Put the server behind
-  HTTPS / a reverse proxy if exposing it to the internet.

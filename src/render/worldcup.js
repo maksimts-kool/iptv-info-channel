@@ -19,9 +19,9 @@
 //
 // Pure logic (skeleton + buildBracketModel + buildWorldCupModel) is unit-tested;
 // the network fetch is best-effort and degrades to the skeleton on any error.
-import { config } from './config.js';
-import { formatDate, formatTime, localDateString } from './util.js';
-import { log } from './logger.js';
+import { config } from '../config.js';
+import { formatDate, formatTime, localDateString } from '../util.js';
+import { log } from '../logger.js';
 
 // ---- Static knockout skeleton (official 2026 seeding, Russian) ----
 

@@ -1,4 +1,11 @@
 // Presents a pre-generated VOD HLS asset as an endless live channel.
+//
+// HLS player compatibility here is fragile. Strict players (Televizo's
+// ExoPlayer/IJK) buffer forever unless this playlist keeps a >=8-segment window
+// (LIVE_WINDOW_SEGMENTS), drops the sub-second "runt" trailing segment, emits
+// #EXT-X-VERSION:6, and the server honors Range (see http/stream.js). Lenient
+// players (OTT Play) tolerate less of this. Don't "simplify" the window /
+// sequence-number construction below without testing on a strict player.
 import fs from 'node:fs';
 import path from 'node:path';
 

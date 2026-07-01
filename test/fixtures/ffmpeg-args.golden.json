@@ -59,8 +59,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-card-timerOff": [
     "-y",
@@ -122,8 +122,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-card-fontFile": [
     "-y",
@@ -185,8 +185,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-status-default": [
     "-y",
@@ -254,8 +254,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-status-timerOff": [
     "-y",
@@ -323,8 +323,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-status-alt": [
     "-y",
@@ -392,8 +392,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-nostatus-default": [
     "-y",
@@ -444,8 +444,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-status-default": [
     "-y",
@@ -505,8 +505,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-status-timerOff": [
     "-y",
@@ -566,8 +566,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-status-alt": [
     "-y",
@@ -627,8 +627,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-worldcup-default": [
     "-y",
@@ -696,8 +696,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-status-worldcup-default": [
     "-y",
@@ -771,8 +771,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "intro-status-worldcup-alt": [
     "-y",
@@ -846,8 +846,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-worldcup-default": [
     "-y",
@@ -907,8 +907,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-status-worldcup-default": [
     "-y",
@@ -974,8 +974,8 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ],
   "still-status-worldcup-alt": [
     "-y",
@@ -1041,7 +1041,7 @@
     "-hls_playlist_type",
     "vod",
     "-hls_segment_filename",
-    "\\t\\seg_%03d.ts",
-    "\\t\\index.m3u8"
+    "/t/seg_%03d.ts",
+    "/t/index.m3u8"
   ]
 }

@@ -1,32 +1,235 @@
-// Admin web config: login + JSON API to manage users, plans and settings.
+// Admin web config: login + JSON API to manage users, plans, incidents and
+// settings. Merged from the former routes/admin.js (HTTP orchestration) and
+// admin-domain.js (pure validation + view-model shaping). The pure functions
+// stay exported and free of Express/I/O so they remain unit-tested in isolation
+// (test/admin-domain.test.js).
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import {
   Users, Plans, Settings, Incidents, Subscribers, NotifyLog,
-} from '../db.js';
-import { statusSummary } from '../status.js';
-import * as notify from '../notify.js';
+} from '../data.js';
+import { statusSummary, INCIDENT_SEVERITIES } from '../render/status.js';
 import {
-  incidentJson, planJson, decorateUser,
-  parsePriceCents, parseFeatures, duplicatePlanName, validateIncident,
-  validateWorldcupSettings, worldcupSummaryJson,
-} from '../admin-domain.js';
+  daysLeft, accountStatus, formatPrice, formatDate, STATUS_META,
+} from '../util.js';
+import * as notify from '../notify.js';
 import {
   generateForUser, generateAll, generationStatus, removeUserHls,
   syncWorldcupSettings, syncNotifySettings,
-} from '../channel.js';
-import { getWorldCupModel } from '../worldcup.js';
+} from '../encode/channel.js';
+import { getWorldCupModel } from '../render/worldcup.js';
 import {
-  requireAuth, requireAuthPage, checkPassword, setSession, clearSession,
-} from '../middleware/auth.js';
+  requireAuth, requireCsrf, csrfToken, checkPassword, setSession, clearSession,
+} from './auth.js';
 import { log } from '../logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// http/ is one level under src/, same as the old routes/, so this still resolves
+// to src/public/admin (the built admin UI is served from there).
 const ADMIN_PUBLIC = path.join(__dirname, '..', 'public', 'admin');
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// ===========================================================================
+// Pure view models + input validation (no Express, no I/O — unit-tested)
+// ===========================================================================
+
+// ---- View models (decorate stored records for the API response) ----
+export function incidentJson(i) {
+  return {
+    id: i.id,
+    title: i.title,
+    severity: i.severity,
+    starts_on: i.starts_on,
+    ends_on: i.ends_on || null,
+    starts_pretty: formatDate(i.starts_on),
+    ends_pretty: i.ends_on ? formatDate(i.ends_on) : null,
+    ongoing: !i.ends_on,
+    note: i.note || '',
+  };
+}
+
+export function planJson(plan) {
+  return {
+    id: plan.id,
+    name: plan.name,
+    price_cents: plan.price_cents,
+    currency: plan.currency,
+    billing_period: plan.billing_period || '',
+    price: formatPrice(plan.price_cents, plan.currency),
+    features: plan.features || [],
+    sort: plan.sort,
+  };
+}
+
+export function decorateUser(u) {
+  const status = accountStatus(u, config.expiringThresholdDays);
+  return {
+    id: u.id,
+    username: u.username,
+    token: u.token,
+    plan_id: u.plan_id,
+    plan_name: u.plan_name,
+    price: formatPrice(u.price_cents, u.currency),
+    expires_at: u.expires_at,
+    expires_pretty: formatDate(u.expires_at),
+    days_left: daysLeft(u.expires_at),
+    active: !!u.active,
+    status,
+    status_label: STATUS_META[status].label,
+    status_color: STATUS_META[status].color,
+    m3u_url: `${config.publicBaseUrl}/u/${u.token}/playlist.m3u`,
+    hls_url: `${config.publicBaseUrl}/hls/${u.token}/index.m3u8`,
+  };
+}
+
+// Compact view of one World Cup fixture for the admin preview list. Mirrors how
+// the on-air slide renders a row (overlay.js wcFixtureRow): the kickoff time is
+// only meaningful before a match finishes.
+function worldcupFixtureView(fx) {
+  const hasScore = fx.home.score !== null && fx.home.score !== undefined
+    && fx.away.score !== null && fx.away.score !== undefined;
+  return {
+    id: fx.id,
+    dateLabel: fx.dateLabel,
+    time: fx.status.key === 'finished' ? '' : (fx.time || ''),
+    stageLabel: fx.stageLabel,
+    statusKey: fx.status.key,
+    statusLabel: fx.status.label,
+    home: { label: fx.home.label, score: fx.home.score ?? null, winner: !!fx.home.winner },
+    away: { label: fx.away.label, score: fx.away.score ?? null, winner: !!fx.away.winner },
+    hasScore,
+  };
+}
+
+// View model for the admin World Cup card: the slide controls (enabled/seconds),
+// whether a live-results token is configured, and a preview of the same model
+// the channel renders (champion summary / not-started message / fixtures window).
+export function worldcupSummaryJson(model, { enabled, seconds, tokenConfigured } = {}) {
+  return {
+    enabled: !!enabled,
+    seconds,
+    tokenConfigured: !!tokenConfigured,
+    headline: model?.headline || '',
+    updated: model?.updated || '',
+    champion: model?.champion || null,
+    notStarted: model?.notStarted || null,
+    fixtures: (model?.fixtures || []).map(worldcupFixtureView),
+  };
+}
+
+// ---- Input validation (returns { error } or the parsed value) ----
+// Validate the World Cup slide settings (enable toggle + on-screen seconds).
+export function validateWorldcupSettings(body, { partial = false } = {}) {
+  const out = {};
+  const has = (k) => body[k] !== undefined;
+
+  if (!partial || has('enabled')) {
+    if (typeof body.enabled !== 'boolean') return { error: 'enabled must be a boolean' };
+    out.enabled = body.enabled;
+  }
+  if (!partial || has('seconds')) {
+    const seconds = Number(body.seconds);
+    if (!Number.isInteger(seconds) || seconds < 4 || seconds > 120) {
+      return { error: 'seconds must be a whole number between 4 and 120' };
+    }
+    out.seconds = seconds;
+  }
+  return { value: out };
+}
+
+// Parse a price entered in euros into integer cents. Shared by plan create/patch.
+export function parsePriceCents(priceEur) {
+  if (priceEur === '' || priceEur === null || priceEur === undefined) {
+    return { error: 'bad price' };
+  }
+  const cents = Math.round(Number(priceEur) * 100);
+  if (!Number.isFinite(cents) || cents < 0) return { error: 'bad price' };
+  return { cents };
+}
+
+export function parseFeatures(value) {
+  if (!Array.isArray(value)) return { error: 'features must be an array' };
+  const features = value.map((feature) => String(feature).trim()).filter(Boolean);
+  if (features.length > 12) return { error: 'a plan can have at most 12 features' };
+  if (features.some((feature) => feature.length > 100)) {
+    return { error: 'each feature must be 100 characters or less' };
+  }
+  return { features };
+}
+
+export function duplicatePlanName(plans, name, exceptId = null) {
+  const normalized = name.trim().toLocaleLowerCase();
+  return plans.some((plan) => (
+    plan.id !== exceptId && plan.name.trim().toLocaleLowerCase() === normalized
+  ));
+}
+
+// Shared incident field validation; returns { error } or { value } for a
+// create (full) or patch (partial) request.
+export function validateIncident(body, { partial = false } = {}) {
+  const out = {};
+  const has = (k) => body[k] !== undefined;
+
+  if (!partial || has('title')) {
+    const title = String(body.title || '').trim();
+    if (!title) return { error: 'incident title required' };
+    if (title.length > 100) return { error: 'title must be 100 characters or less' };
+    out.title = title;
+  }
+  if (!partial || has('severity')) {
+    if (!INCIDENT_SEVERITIES.includes(body.severity)) return { error: 'bad severity' };
+    out.severity = body.severity;
+  }
+  if (!partial || has('starts_on')) {
+    if (!DATE_RE.test(body.starts_on || '')) return { error: 'bad starts_on (YYYY-MM-DD)' };
+    out.starts_on = body.starts_on;
+  }
+  if (has('ends_on')) {
+    const end = body.ends_on ? String(body.ends_on) : null;
+    if (end && !DATE_RE.test(end)) return { error: 'bad ends_on (YYYY-MM-DD)' };
+    out.ends_on = end;
+  } else if (!partial) {
+    out.ends_on = null;
+  }
+  if (has('note')) {
+    const note = String(body.note || '').trim();
+    if (note.length > 280) return { error: 'note must be 280 characters or less' };
+    out.note = note;
+  } else if (!partial) {
+    out.note = '';
+  }
+  return { value: out };
+}
+
+// ===========================================================================
+// HTTP layer
+// ===========================================================================
+
 const router = express.Router();
+
+// In-memory sliding-window rate limit for login attempts, to blunt password
+// brute-forcing. Keyed per client IP (req.ip honors the configured trust proxy).
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+const loginHits = new Map();
+function loginRateLimited(key) {
+  const now = Date.now();
+  const arr = (loginHits.get(key) || []).filter((t) => now - t < LOGIN_WINDOW_MS);
+  arr.push(now);
+  loginHits.set(key, arr);
+  return arr.length > LOGIN_MAX_ATTEMPTS;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, arr] of loginHits) {
+    const live = arr.filter((t) => now - t < LOGIN_WINDOW_MS);
+    if (live.length) loginHits.set(k, live); else loginHits.delete(k);
+  }
+}, LOGIN_WINDOW_MS).unref();
 
 // Fire-and-forget regeneration (don't block the API response on ffmpeg).
 function regen(userOrId, reason) {
@@ -46,10 +249,13 @@ function fireNotify(factory, label) {
 
 const VALID_PERIODS = ['', 'month', 'year'];
 
-// ---------- Auth pages ----------
-router.get('/login', (req, res) => res.sendFile(path.join(ADMIN_PUBLIC, 'login.html')));
-
+// ---------- Auth ----------
 router.post('/login', express.urlencoded({ extended: false }), express.json(), (req, res) => {
+  if (loginRateLimited(`login:${req.ip}`)) {
+    log.warn('admin', 'login rate limited', { remote: req.ip });
+    if (req.is('application/json')) return res.status(429).json({ error: 'too many attempts, try again later' });
+    return res.redirect('/admin/login?error=rate');
+  }
   const pw = req.body?.password;
   if (!checkPassword(pw)) {
     log.warn('admin', 'login failed', { remote: req.ip });
@@ -66,16 +272,33 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- Static UI (after auth gate for the page) ----------
-router.get('/', requireAuthPage, (req, res) => res.sendFile(path.join(ADMIN_PUBLIC, 'index.html')));
+// ---------- Single-page admin UI ----------
+// Always serve the SPA shell (no server-side auth gate); the React app renders
+// the login view itself when the API answers 401. The hashed assets are produced
+// by the Vite build in frontend/ and copied into ADMIN_PUBLIC at docker build
+// time — so on a bare host checkout (no build) index.html is absent, hence the
+// guard below.
+router.get('/', (req, res) => {
+  const indexHtml = path.join(ADMIN_PUBLIC, 'index.html');
+  if (!fs.existsSync(indexHtml)) {
+    return res.status(200).type('html').send(
+      '<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:2rem">'
+      + '<h1>Admin UI not built</h1><p>Build the Docker image (it runs the Vite build) '
+      + 'or run <code>npm run dev</code> in <code>frontend/</code> for local development.</p>',
+    );
+  }
+  return res.sendFile(indexHtml);
+});
 router.use('/static', express.static(ADMIN_PUBLIC));
 
 // ---------- JSON API ----------
-router.use('/api', requireAuth, express.json());
+// requireCsrf sits after requireAuth: unauth -> 401, authed but forged -> 403.
+router.use('/api', requireAuth, requireCsrf, express.json());
 
 router.get('/api/state', (req, res) => {
   const incidents = Incidents.all();
   res.json({
+    csrfToken: csrfToken(),
     publicBaseUrl: config.publicBaseUrl,
     expiringThresholdDays: config.expiringThresholdDays,
     statusSlideEnabled: config.statusSlide.enabled,

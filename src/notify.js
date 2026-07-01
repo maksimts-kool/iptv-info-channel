@@ -10,7 +10,7 @@
 import { config } from './config.js';
 import {
   Users, Subscribers, Settings, NotifyLog,
-} from './db.js';
+} from './data.js';
 import {
   accountStatus, daysLeft, formatDate, pluralDays, xmlEscape,
 } from './util.js';

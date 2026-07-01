@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEpgXml, epgChannelId } from '../src/epg.js';
+import { buildEpgXml, epgChannelId } from '../src/epg/epg.js';
 
 const TZ = 'Europe/Tallinn';
 // Fixed "now": 2026-06-13 (noon UTC is still the 13th locally).

@@ -2,14 +2,13 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config.js';
-import streamRoutes from './routes/stream.js';
-import fossEpgRoutes from './routes/foss-epg.js';
-import adminRoutes from './routes/admin.js';
-import subscribeRoutes from './routes/subscribe.js';
+import streamRoutes, { fossEpgRouter } from './http/stream.js';
+import adminRoutes from './http/admin.js';
+import subscribeRoutes from './http/subscribe.js';
 import {
   ensureMusic, generateAll, startDailyRefresh, syncWorldcupSettings, syncNotifySettings,
-} from './channel.js';
-import { Users, Plans } from './db.js';
+} from './encode/channel.js';
+import { Users, Plans } from './data.js';
 import { log } from './logger.js';
 
 const app = express();
@@ -23,12 +22,12 @@ app.use(cookieParser());
 // Public landing page.
 app.get('/', (req, res) => {
   res.type('html').send(`<!doctype html><meta charset="utf-8">
-  <title>m3u playlist info</title>
-  <body style="font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;background:#0b1224;color:#e6edf7;display:grid;place-items:center;height:100vh;margin:0">
-    <div style="text-align:center">
-      <h1>IPTV Info Channel</h1>
-      <p>Per-user account channel server is running.</p>
-      <p><a style="color:#7dd3fc" href="/admin">Open admin panel →</a></p>
+  <title>IPTV Info Channel</title>
+  <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:#f5f5f5;color:rgba(0,0,0,0.88);display:grid;place-items:center;height:100vh;margin:0">
+    <div style="text-align:center;background:#fff;border:1px solid #f0f0f0;border-radius:12px;padding:40px 48px;box-shadow:0 2px 12px rgba(0,0,0,0.06)">
+      <h1 style="font-weight:600;margin:0 0 8px">IPTV Info Channel</h1>
+      <p style="color:rgba(0,0,0,0.45);margin:0 0 16px">Per-user account channel server is running.</p>
+      <p style="margin:0"><a style="color:#2563eb;text-decoration:none;font-weight:500" href="/admin">Open admin panel →</a></p>
     </div>
   </body>`);
 });
@@ -39,7 +38,7 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 app.use('/admin', adminRoutes);
 // Public notification sign-up page (/sub/:token), before the stream routes.
 app.use('/', subscribeRoutes);
-if (config.epg.enabled && config.epg.foss.enabled) app.use('/', fossEpgRoutes);
+if (config.epg.enabled && config.epg.foss.enabled) app.use('/', fossEpgRouter);
 app.use('/', streamRoutes);
 
 const server = app.listen(config.port, async () => {

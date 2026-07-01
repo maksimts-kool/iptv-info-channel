@@ -24,9 +24,16 @@ export function xmlEscape(str) {
     .replace(/'/g, '&apos;');
 }
 
+// Timezone is load-bearing. Day-counting, expiry, the daily cron and every
+// displayed date go through these Intl.DateTimeFormat helpers (configured TZ,
+// default Europe/Tallinn) — never raw Date math — so an account stays valid
+// through 23:59 on its expiry date in the configured zone. Building a formatter
+// is expensive, so hot paths must reuse dateFormatter() below rather than
+// constructing new Intl.DateTimeFormat instances.
+//
 // Intl.DateTimeFormat construction dominates the cost of these date helpers and
 // the formatters are immutable, so memoize them by locale + options (timezone
-// included). Shared with epg.js and logger.js.
+// included). Shared with epg/epg.js and logger.js.
 const formatterCache = new Map();
 export function dateFormatter(locale, options) {
   const key = `${locale}|${JSON.stringify(options)}`;

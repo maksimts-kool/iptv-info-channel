@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   buildLivePlaylist, currentLoopPosition, writeLoopState,
-} from '../src/liveloop.js';
+} from '../src/encode/liveloop.js';
 
 function fixture(segmentCount = 5) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iptv-live-loop-'));

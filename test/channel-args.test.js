@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../src/config.js';
-import { introFfmpegArgs, stillFfmpegArgs } from '../src/channel.js';
+import { introFfmpegArgs, stillFfmpegArgs } from '../src/encode/channel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GOLDEN = path.join(__dirname, 'fixtures', 'ffmpeg-args.golden.json');

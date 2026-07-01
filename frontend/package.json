@@ -1,0 +1,21 @@
+{
+  "name": "iptv-info-admin",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "React + Vite + Ant Design admin UI for the IPTV info channel (builds to ../src/public/admin).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "antd": "^5.22.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}

@@ -8,8 +8,8 @@
 import {
   localTimeToDate, accountStatus, daysLeft, formatDate, pluralDays, STATUS_META,
   dateFormatter, xmlEscape,
-} from './util.js';
-import { severityForDay, statusSummary, formatUptime, SEVERITY } from './status.js';
+} from '../util.js';
+import { severityForDay, statusSummary, formatUptime, SEVERITY } from '../render/status.js';
 
 // Re-exported so EPG renderers (epgfoss.js) can share the same escaper.
 export { xmlEscape };

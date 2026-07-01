@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { createFossEpgRouter } from '../src/routes/foss-epg.js';
-import { MATCH_BLOCK_SEP, fossIdHash } from '../src/epgfoss.js';
-import { buildUserPlaylist } from '../src/playlist.js';
+import { createFossEpgRouter } from '../src/http/stream.js';
+import { MATCH_BLOCK_SEP, fossIdHash } from '../src/epg/epgfoss.js';
+import { buildUserPlaylist } from '../src/http/stream.js';
 
 const NOW = new Date('2026-06-13T12:00:00Z');
 const USER = {
