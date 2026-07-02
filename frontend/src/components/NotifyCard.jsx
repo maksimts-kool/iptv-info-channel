@@ -71,7 +71,7 @@ export default function NotifyCard({
 
   return (
     <Card
-      title="Уведомления по почте · email notifications"
+      title="Уведомления по почте"
       extra={data ? (
         <span>
           <span style={{
@@ -108,6 +108,7 @@ export default function NotifyCard({
         columns={LOG_COLUMNS}
         dataSource={data?.log || []}
         pagination={false}
+        scroll={{ x: 'max-content' }}
         locale={{ emptyText: 'Писем пока не отправлялось.' }}
       />
     </Card>

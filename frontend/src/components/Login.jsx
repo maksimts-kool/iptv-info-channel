@@ -22,13 +22,13 @@ export default function Login({ onLogin }) {
     <div style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', padding: 20 }}>
       <Card style={{ width: 360 }}>
         <Typography.Title level={3} style={{ marginTop: 0 }}>IPTV Info Channel</Typography.Title>
-        <Typography.Paragraph type="secondary">Admin sign in</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">Вход администратора</Typography.Paragraph>
         <Form onFinish={submit} layout="vertical" requiredMark={false}>
           <Form.Item name="password" rules={[{ required: true, message: 'Введите пароль' }]}>
-            <Input.Password placeholder="Admin password" size="large" autoFocus />
+            <Input.Password placeholder="Пароль администратора" size="large" autoFocus />
           </Form.Item>
           <Button type="primary" htmlType="submit" size="large" block loading={loading}>
-            Sign in
+            Войти
           </Button>
         </Form>
       </Card>

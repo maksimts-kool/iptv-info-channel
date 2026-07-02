@@ -72,7 +72,7 @@ export default function IncidentsCard({ state, api, withRegen }) {
   const save = async () => {
     const v = await form.validateFields();
     if (v.ends_on && v.ends_on < v.starts_on) {
-      form.setFields([{ name: 'ends_on', errors: ['End date is before start date'] }]);
+      form.setFields([{ name: 'ends_on', errors: ['Дата окончания раньше даты начала'] }]);
       return;
     }
     const payload = {
@@ -83,36 +83,36 @@ export default function IncidentsCard({ state, api, withRegen }) {
       note: (v.note || '').trim(),
     };
     await withRegen(
-      'Saving incident and rebuilding streams',
+      'Сохранение инцидента и пересборка потоков',
       async () => {
         if (editing) await api.patch(`/admin/api/incidents/${editing.id}`, payload);
         else await api.post('/admin/api/incidents', payload);
         setOpen(false);
       },
-      { success: 'Incident saved — streams rebuilding' },
+      { success: 'Инцидент сохранён — потоки пересобираются' },
     );
   };
 
   const resolve = (inc) => withRegen(
-    'Resolving incident and rebuilding streams',
+    'Закрытие инцидента и пересборка потоков',
     () => api.patch(`/admin/api/incidents/${inc.id}`, { ends_on: todayISO() }),
-    { success: 'Incident resolved — streams rebuilding' },
+    { success: 'Инцидент закрыт — потоки пересобираются' },
   );
 
   const remove = (inc) => withRegen(
-    'Deleting incident and rebuilding streams',
+    'Удаление инцидента и пересборка потоков',
     () => api.del(`/admin/api/incidents/${inc.id}`),
-    { success: 'Incident deleted — streams rebuilding' },
+    { success: 'Инцидент удалён — потоки пересобираются' },
   );
 
   return (
     <Card
-      title="Статус сервиса · status board"
+      title="Статус сервиса"
       extra={(
         <Space size="middle">
           {statusEl && !compact ? statusEl : null}
           <Button type="primary" onClick={() => openDialog(null)}>
-            {isMobile ? '+ Инцидент' : '+ Add incident'}
+            {isMobile ? '+ Инцидент' : '+ Добавить инцидент'}
           </Button>
         </Space>
       )}
@@ -144,19 +144,19 @@ export default function IncidentsCard({ state, api, withRegen }) {
             const sev = SEV[inc.severity] || SEV.degraded;
             const actionButtons = [
               inc.ongoing ? (
-                <Popconfirm key="resolve" title="Resolve this incident?" okText="Resolve" onConfirm={() => resolve(inc)}>
-                  <Button size="small">Resolve</Button>
+                <Popconfirm key="resolve" title="Закрыть инцидент?" okText="Закрыть" onConfirm={() => resolve(inc)}>
+                  <Button size="small">Закрыть</Button>
                 </Popconfirm>
               ) : null,
-              <Button key="edit" size="small" onClick={() => openDialog(inc)}>Edit</Button>,
+              <Button key="edit" size="small" onClick={() => openDialog(inc)}>Изменить</Button>,
               <Popconfirm
                 key="delete"
-                title={`Delete incident "${inc.title}"?`}
-                okText="Delete"
+                title={`Удалить инцидент «${inc.title}»?`}
+                okText="Удалить"
                 okButtonProps={{ danger: true }}
                 onConfirm={() => remove(inc)}
               >
-                <Button size="small" danger>Delete</Button>
+                <Button size="small" danger>Удалить</Button>
               </Popconfirm>,
             ].filter(Boolean);
             const meta = (
@@ -192,18 +192,18 @@ export default function IncidentsCard({ state, api, withRegen }) {
 
       <Modal
         open={open}
-        title={editing ? 'Edit incident' : 'Add incident'}
-        okText="Save"
+        title={editing ? 'Изменить инцидент' : 'Добавить инцидент'}
+        okText="Сохранить"
         onOk={save}
         onCancel={() => setOpen(false)}
         style={{ maxWidth: '94vw' }}
         forceRender
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="title" label="Title" rules={[{ required: true, message: 'Title required' }, { max: 100 }]}>
+          <Form.Item name="title" label="Заголовок" rules={[{ required: true, message: 'Укажите заголовок' }, { max: 100 }]}>
             <Input maxLength={100} />
           </Form.Item>
-          <Form.Item name="severity" label="Severity">
+          <Form.Item name="severity" label="Уровень">
             <Select
               options={[
                 { value: 'degraded', label: 'Деградация (жёлтый)' },
@@ -211,13 +211,13 @@ export default function IncidentsCard({ state, api, withRegen }) {
               ]}
             />
           </Form.Item>
-          <Form.Item name="starts_on" label="Start date" rules={[{ required: true, message: 'Start date required' }]}>
+          <Form.Item name="starts_on" label="Дата начала" rules={[{ required: true, message: 'Укажите дату начала' }]}>
             <Input type="date" />
           </Form.Item>
-          <Form.Item name="ends_on" label="End date — blank = ongoing">
+          <Form.Item name="ends_on" label="Дата окончания — пусто = продолжается">
             <Input type="date" />
           </Form.Item>
-          <Form.Item name="note" label="Note (optional)">
+          <Form.Item name="note" label="Заметка (необязательно)">
             <Input.TextArea rows={3} maxLength={280} placeholder="Короткое описание" />
           </Form.Item>
         </Form>

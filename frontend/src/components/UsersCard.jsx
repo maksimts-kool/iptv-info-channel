@@ -61,13 +61,13 @@ export default function UsersCard({
       active: v.active,
     };
     await withRegen(
-      editing ? `Updating ${payload.username}'s stream` : `Creating ${payload.username}'s stream`,
+      editing ? `Обновление потока «${payload.username}»` : `Создание потока «${payload.username}»`,
       async () => {
         if (editing) await api.patch(`/admin/api/users/${editing.id}`, payload);
         else await api.post('/admin/api/users', payload);
         setOpen(false);
       },
-      { success: 'Saved — stream rebuilding' },
+      { success: 'Сохранено — поток пересобирается' },
     );
   };
 
@@ -103,19 +103,19 @@ export default function UsersCard({
   };
 
   const columns = [
-    { title: 'User', dataIndex: 'username', render: (v) => <strong>{v}</strong> },
-    { title: 'Plan', dataIndex: 'plan_name' },
-    { title: 'Price', dataIndex: 'price' },
-    { title: 'Expires', dataIndex: 'expires_pretty' },
-    { title: 'Days left', dataIndex: 'days_left', render: (v) => (v === null ? '—' : v) },
-    { title: 'Status', key: 'status', render: (_, u) => <Tag color={u.status_color}>{u.status_label}</Tag> },
+    { title: 'Пользователь', dataIndex: 'username', render: (v) => <strong>{v}</strong> },
+    { title: 'Тариф', dataIndex: 'plan_name' },
+    { title: 'Цена', dataIndex: 'price' },
+    { title: 'Истекает', dataIndex: 'expires_pretty' },
+    { title: 'Осталось дней', dataIndex: 'days_left', render: (v) => (v === null ? '—' : v) },
+    { title: 'Статус', key: 'status', render: (_, u) => <Tag color={u.status_color}>{u.status_label}</Tag> },
     {
-      title: 'Active',
+      title: 'Активен',
       key: 'active',
       render: (_, u) => (
         <Switch
           checked={!!u.active}
-          onChange={(checked) => withRegen(`Updating ${u.username}'s stream`, () => api.patch(`/admin/api/users/${u.id}`, { active: checked }))}
+          onChange={(checked) => withRegen(`Обновление потока «${u.username}»`, () => api.patch(`/admin/api/users/${u.id}`, { active: checked }))}
         />
       ),
     },
@@ -149,11 +149,11 @@ export default function UsersCard({
       },
     },
     {
-      title: 'Links',
+      title: 'Ссылки',
       key: 'links',
       render: (_, u) => (
         <Space>
-          <Button size="small" onClick={() => copy(u.m3u_url)}>Copy m3u</Button>
+          <Button size="small" onClick={() => copy(u.m3u_url)}>Копировать m3u</Button>
           <Button size="small" onClick={() => window.open(u.hls_url, '_blank')}>HLS</Button>
         </Space>
       ),
@@ -163,21 +163,21 @@ export default function UsersCard({
       key: 'actions',
       render: (_, u) => (
         <Space>
-          <Button size="small" onClick={() => openDialog(u)}>Edit</Button>
+          <Button size="small" onClick={() => openDialog(u)}>Изменить</Button>
           <Popconfirm
-            title="Generate a new link? The old m3u URL will stop working."
-            okText="New link"
-            onConfirm={() => withRegen(`Generating ${u.username}'s new stream`, () => api.post(`/admin/api/users/${u.id}/token`), { success: 'New link generated — stream rebuilding' })}
+            title="Сгенерировать новую ссылку? Старый адрес m3u перестанет работать."
+            okText="Новая ссылка"
+            onConfirm={() => withRegen(`Генерация новой ссылки «${u.username}»`, () => api.post(`/admin/api/users/${u.id}/token`), { success: 'Новая ссылка создана — поток пересобирается' })}
           >
-            <Button size="small">New link</Button>
+            <Button size="small">Новая ссылка</Button>
           </Popconfirm>
           <Popconfirm
-            title={`Delete ${u.username}?`}
-            okText="Delete"
+            title={`Удалить пользователя «${u.username}»?`}
+            okText="Удалить"
             okButtonProps={{ danger: true }}
-            onConfirm={() => guarded(() => api.del(`/admin/api/users/${u.id}`), 'User deleted')}
+            onConfirm={() => guarded(() => api.del(`/admin/api/users/${u.id}`), 'Пользователь удалён')}
           >
-            <Button size="small" danger>Delete</Button>
+            <Button size="small" danger>Удалить</Button>
           </Popconfirm>
         </Space>
       ),
@@ -186,8 +186,8 @@ export default function UsersCard({
 
   return (
     <Card
-      title="Users"
-      extra={<Button type="primary" onClick={() => openDialog(null)}>+ Add user</Button>}
+      title="Пользователи"
+      extra={<Button type="primary" onClick={() => openDialog(null)}>+ Добавить пользователя</Button>}
     >
       <Table
         rowKey="id"
@@ -196,22 +196,22 @@ export default function UsersCard({
         dataSource={users}
         pagination={false}
         scroll={{ x: 'max-content' }}
-        locale={{ emptyText: 'No users yet — click “Add user”.' }}
+        locale={{ emptyText: 'Пользователей пока нет — нажмите «Добавить пользователя».' }}
       />
 
       <Modal
         open={open}
-        title={editing ? 'Edit user' : 'Add user'}
-        okText="Save"
+        title={editing ? 'Изменить пользователя' : 'Добавить пользователя'}
+        okText="Сохранить"
         onOk={save}
         onCancel={() => setOpen(false)}
         forceRender
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Username required' }]}>
+          <Form.Item name="username" label="Имя пользователя" rules={[{ required: true, message: 'Укажите имя' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="plan_id" label="Plan" rules={[{ required: true, message: 'Plan required' }]}>
+          <Form.Item name="plan_id" label="Тариф" rules={[{ required: true, message: 'Выберите тариф' }]}>
             <Select
               options={plans.map((p) => ({
                 value: p.id,
@@ -219,10 +219,10 @@ export default function UsersCard({
               }))}
             />
           </Form.Item>
-          <Form.Item name="expires_at" label="Expiration date">
+          <Form.Item name="expires_at" label="Дата окончания">
             <Input type="date" />
           </Form.Item>
-          <Form.Item name="active" label="Active" valuePropName="checked">
+          <Form.Item name="active" label="Активен" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

@@ -17,7 +17,7 @@ import UsersCard from './components/UsersCard.jsx';
 const { Header, Content } = Layout;
 
 const HIDDEN = {
-  visible: false, complete: false, title: '', detail: '', showProgress: false, percent: 0, count: '',
+  visible: false, complete: false, title: '', percent: 0, count: '', indeterminate: false,
 };
 
 export default function App() {
@@ -32,18 +32,16 @@ export default function App() {
   const complete = useRef(false);
   const completeTimer = useRef(null);
 
-  const showPending = useCallback((title = 'Updating channel streams') => {
+  // Concise, generic label the instant a change is saved; the poll below refines
+  // it (bulk vs single) within a beat. Any title callers pass is ignored on
+  // purpose — the banner stays short ("just updating") by design.
+  const showPending = useCallback(() => {
     clearTimeout(completeTimer.current);
     inProgress.current = true;
     complete.current = false;
     setGen({
-      visible: true,
-      complete: false,
-      title,
-      detail: 'Your changes are saved. FFmpeg is rendering new video segments in the background, so IPTV playback updates only after encoding finishes.',
-      showProgress: false,
-      percent: 0,
-      count: 'Waiting for the encoder…',
+      visible: true, complete: false, title: 'Обновление потоков',
+      percent: 0, count: '', indeterminate: true,
     });
   }, []);
 
@@ -58,19 +56,14 @@ export default function App() {
     inProgress.current = false;
     complete.current = true;
     setGen({
-      visible: true,
-      complete: true,
-      title: 'Stream update complete',
-      detail: 'Encoding finished. The updated channel stream is ready for IPTV playback.',
-      showProgress: true,
-      percent: 100,
-      count: 'Completed',
+      visible: true, complete: true, title: 'Готово',
+      percent: 100, count: '', indeterminate: false,
     });
     clearTimeout(completeTimer.current);
     completeTimer.current = setTimeout(() => {
       complete.current = false;
       setGen(HIDDEN);
-    }, 5000);
+    }, 2500);
   }, []);
 
   const renderGen = useCallback((status) => {
@@ -83,24 +76,22 @@ export default function App() {
     inProgress.current = true;
     complete.current = false;
     const names = (status.active_users || []).map((u) => u.username).filter(Boolean);
-    const next = {
-      visible: true,
-      complete: false,
-      title: status.bulk ? 'Rebuilding all channel streams' : `Updating ${names[0] || 'channel'} stream`,
-      detail: 'FFmpeg is encoding video in the background. Existing streams stay online, but saved changes appear in IPTV playback only when the new stream is ready.',
-      showProgress: false,
-      percent: 0,
-      count: '',
-    };
-    if (status.bulk?.total) {
-      const completed = Math.min(status.bulk.completed, status.bulk.total);
-      next.showProgress = true;
-      next.percent = Math.round((completed / status.bulk.total) * 100);
-      next.count = `${completed} of ${status.bulk.total} streams encoded${names.length ? ` · Now: ${names.join(', ')}` : ''}`;
+    const bulk = status.bulk;
+    if (bulk?.total) {
+      // Real progress: the encoder finishes users one by one (channel.js).
+      const completed = Math.min(bulk.completed, bulk.total);
+      setGen({
+        visible: true, complete: false, title: 'Пересборка потоков',
+        percent: Math.round((completed / bulk.total) * 100),
+        count: `${completed} / ${bulk.total}`, indeterminate: false,
+      });
     } else {
-      next.count = names.length ? `Encoding: ${names.join(', ')}` : 'Preparing stream encoding…';
+      // A single encode reports no sub-progress — show an honest indeterminate bar.
+      setGen({
+        visible: true, complete: false, title: 'Обновление потока',
+        percent: 0, count: names.join(', '), indeterminate: true,
+      });
     }
-    setGen(next);
   }, [showComplete, clearPending]);
 
   const refreshGen = useCallback(async () => {
@@ -142,7 +133,7 @@ export default function App() {
         setAuthed(true);
       } catch (e) {
         if (e instanceof AuthError) setAuthed(false);
-        else { setAuthed(true); message.error(`Load failed: ${e.message}`); }
+        else { setAuthed(true); message.error(`Ошибка загрузки: ${e.message}`); }
       }
     })();
   }, [reloadAll, message]);
@@ -169,11 +160,11 @@ export default function App() {
   }, []);
 
   const rebuildAll = useCallback(async () => {
-    showPending('Rebuilding all channel streams');
-    message.info('Rebuilding all streams…');
+    showPending('Пересборка всех потоков канала');
+    message.info('Пересобираем все потоки…');
     try {
       await api.post('/admin/api/regenerate-all');
-      message.success('All streams rebuilt');
+      message.success('Все потоки пересобраны');
       await refreshGen();
     } catch (e) {
       if (e instanceof AuthError) { setAuthed(false); return; }
@@ -202,21 +193,23 @@ export default function App() {
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{ position: 'sticky', top: 0, zIndex: 10, paddingInline: 20 }}>
         <div style={{
-          maxWidth: 1100, height: '100%', margin: '0 auto', display: 'flex',
-          alignItems: 'center', justifyContent: 'space-between', gap: 16,
+          maxWidth: 1100, minHeight: '100%', margin: '0 auto', display: 'flex',
+          alignItems: 'center', justifyContent: 'space-between', gap: '8px 16px', flexWrap: 'wrap',
         }}
         >
-          <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
-            📺 IPTV Info Channel <span style={{ opacity: 0.6, fontWeight: 400 }}>· admin</span>
-          </Typography.Text>
-          <Space size="middle">
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
+              📺 IPTV Info Channel <span style={{ opacity: 0.6, fontWeight: 400 }}>· админ</span>
+            </Typography.Text>
             {state?.publicBaseUrl ? (
-              <Typography.Text style={{ color: 'rgba(255,255,255,0.65)' }}>
+              <Typography.Text style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13 }} ellipsis>
                 {state.publicBaseUrl}
               </Typography.Text>
             ) : null}
-            <Button onClick={rebuildAll} loading={busy}>Rebuild all streams</Button>
-            <Button onClick={handleLogout}>Log out</Button>
+          </div>
+          <Space size="small" wrap>
+            <Button onClick={rebuildAll} loading={busy}>Пересобрать все потоки</Button>
+            <Button onClick={handleLogout}>Выйти</Button>
           </Space>
         </div>
       </Header>

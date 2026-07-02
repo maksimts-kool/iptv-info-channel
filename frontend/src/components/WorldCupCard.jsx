@@ -12,20 +12,23 @@ function FixtureRow({ fx }) {
   const score = fx.hasScore ? `${fx.home.score} : ${fx.away.score}` : '—';
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', borderBottom: '1px solid #f0f0f0',
+      display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 12px',
+      padding: '8px 0', borderBottom: '1px solid #f0f0f0',
     }}
     >
-      <div style={{ minWidth: 96 }}>
+      <div style={{ minWidth: 72 }}>
         <div>{fx.dateLabel}</div>
         {fx.time ? <Typography.Text type="secondary">{fx.time}</Typography.Text> : null}
       </div>
-      <Typography.Text type="secondary" style={{ minWidth: 90 }}>{fx.stageLabel}</Typography.Text>
-      <div style={{ flex: 1, textAlign: 'center' }}>
+      <Typography.Text type="secondary" style={{ minWidth: 84 }}>{fx.stageLabel}</Typography.Text>
+      {/* flex-basis lets the score block wrap onto its own full-width line on a
+          narrow screen instead of the team names collapsing to one char wide. */}
+      <div style={{ flex: '1 1 180px', minWidth: 0, textAlign: 'center' }}>
         <Typography.Text strong={fx.home.winner}>{fx.home.label}</Typography.Text>
         <span style={{ margin: '0 10px', fontVariantNumeric: 'tabular-nums' }}>{score}</span>
         <Typography.Text strong={fx.away.winner}>{fx.away.label}</Typography.Text>
       </div>
-      <Tag color={STATUS_COLOR[fx.statusKey] || 'default'}>{fx.statusLabel}</Tag>
+      <Tag color={STATUS_COLOR[fx.statusKey] || 'default'} style={{ marginInlineEnd: 0 }}>{fx.statusLabel}</Tag>
     </div>
   );
 }
@@ -106,9 +109,9 @@ export default function WorldCupCard({
 
   return (
     <Card
-      title="Чемпионат мира 2026 · World Cup"
+      title="Чемпионат мира 2026"
       extra={(
-        <Space>
+        <Space wrap>
           <span>
             <span style={{
               display: 'inline-block', width: 10, height: 10, borderRadius: '50%', marginRight: 8,

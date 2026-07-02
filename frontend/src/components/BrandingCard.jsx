@@ -14,22 +14,22 @@ export default function BrandingCard({ state, api, withRegen }) {
   }, [state?.settings, form]);
 
   const save = () => withRegen(
-    'Saving branding and rebuilding streams',
+    'Сохранение оформления и пересборка потоков',
     () => api.patch('/admin/api/settings', form.getFieldsValue()),
-    { success: 'Branding saved — streams rebuilding', reload: false },
+    { success: 'Оформление сохранено — потоки пересобираются', reload: false },
   );
 
   return (
-    <Card title="Branding">
+    <Card title="Оформление">
       <Form form={form} layout="vertical">
         <Space size="large" align="end" wrap>
-          <Form.Item name="brand_name" label="Service name" style={{ minWidth: 260, marginBottom: 0 }}>
+          <Form.Item name="brand_name" label="Название сервиса" style={{ minWidth: 260, marginBottom: 0 }}>
             <Input />
           </Form.Item>
-          <Form.Item name="tagline" label="Tagline" style={{ minWidth: 260, marginBottom: 0 }}>
+          <Form.Item name="tagline" label="Слоган" style={{ minWidth: 260, marginBottom: 0 }}>
             <Input />
           </Form.Item>
-          <Button type="primary" onClick={save}>Save branding</Button>
+          <Button type="primary" onClick={save}>Сохранить оформление</Button>
         </Space>
       </Form>
     </Card>
