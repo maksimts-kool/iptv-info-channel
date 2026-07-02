@@ -129,7 +129,7 @@ export default function IncidentsCard({ state, api, withRegen }) {
           {days.map((d) => (
             <Tooltip key={d.date} title={d.date}>
               <span style={{
-                flex: '1 1 0', minWidth: 3, maxWidth: 8, height: 22, borderRadius: 2, background: d.color,
+                flex: '1 1 0', minWidth: 3, height: 22, borderRadius: 2, background: d.color,
               }}
               />
             </Tooltip>
