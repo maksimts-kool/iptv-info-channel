@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography,
+  Button, Card, Checkbox, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography,
 } from 'antd';
 import { AuthError } from '../api.js';
 
@@ -17,6 +17,9 @@ export default function UsersCard({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form] = Form.useForm();
+  const [subOpen, setSubOpen] = useState(false);
+  const [subUser, setSubUser] = useState(null);
+  const [subForm] = Form.useForm();
 
   const copy = async (text) => {
     try {
@@ -68,6 +71,37 @@ export default function UsersCard({
     );
   };
 
+  const openSubDialog = (u) => {
+    const sub = subByUser.get(u.id);
+    setSubUser(u);
+    subForm.setFieldsValue({
+      email: sub?.email || '',
+      expiry: sub ? !!sub.options.expiry : true,
+      server: sub ? !!sub.options.server : false,
+      verified: sub ? !!sub.verified : true,
+    });
+    setSubOpen(true);
+  };
+
+  const saveSub = async () => {
+    const v = await subForm.validateFields();
+    try {
+      const res = await api.put(`/admin/api/users/${subUser.id}/subscriber`, {
+        email: v.email.trim(),
+        options: { expiry: v.expiry, server: v.server },
+        verified: v.verified,
+      });
+      setSubOpen(false);
+      message.success(res.sentVerification
+        ? 'Сохранено — клиенту отправлено письмо для подтверждения'
+        : 'Подписка сохранена');
+      await reload();
+    } catch (e) {
+      if (e instanceof AuthError) onAuthError();
+      else message.error(e.message);
+    }
+  };
+
   const columns = [
     { title: 'User', dataIndex: 'username', render: (v) => <strong>{v}</strong> },
     { title: 'Plan', dataIndex: 'plan_name' },
@@ -90,7 +124,13 @@ export default function UsersCard({
       key: 'sub',
       render: (_, u) => {
         const sub = subByUser.get(u.id);
-        if (!sub) return <Typography.Text type="secondary">—</Typography.Text>;
+        if (!sub) {
+          return (
+            <Button size="small" type="link" style={{ paddingLeft: 0 }} onClick={() => openSubDialog(u)}>
+              + Добавить
+            </Button>
+          );
+        }
         return (
           <Space direction="vertical" size={0}>
             <span>
@@ -98,9 +138,12 @@ export default function UsersCard({
               {sub.verified ? null : <Tag color="orange" style={{ marginLeft: 6 }}>не подтв.</Tag>}
             </span>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>{subOptLabels(sub.options)}</Typography.Text>
-            <Popconfirm title={`Отписать ${u.username}?`} okText="Отписать" onConfirm={() => guarded(() => api.del(`/admin/api/users/${u.id}/subscriber`), 'Подписчик удалён')}>
-              <Button size="small" type="link" style={{ paddingLeft: 0 }}>Отписать</Button>
-            </Popconfirm>
+            <Space size={0}>
+              <Button size="small" type="link" style={{ paddingLeft: 0 }} onClick={() => openSubDialog(u)}>Изменить</Button>
+              <Popconfirm title={`Отписать ${u.username}?`} okText="Отписать" onConfirm={() => guarded(() => api.del(`/admin/api/users/${u.id}/subscriber`), 'Подписчик удалён')}>
+                <Button size="small" type="link" danger>Отписать</Button>
+              </Popconfirm>
+            </Space>
           </Space>
         );
       },
@@ -182,6 +225,46 @@ export default function UsersCard({
           <Form.Item name="active" label="Active" valuePropName="checked">
             <Switch />
           </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={subOpen}
+        title={subUser ? `Подписка: ${subUser.username}` : 'Подписка'}
+        okText="Сохранить"
+        onOk={saveSub}
+        onCancel={() => setSubOpen(false)}
+        forceRender
+      >
+        <Form form={subForm} layout="vertical">
+          <Form.Item
+            name="email"
+            label="Электронная почта"
+            rules={[
+              { required: true, message: 'Введите адрес' },
+              { type: 'email', message: 'Некорректный адрес' },
+            ]}
+          >
+            <Input type="email" placeholder="you@example.com" />
+          </Form.Item>
+          <Form.Item label="Темы уведомлений">
+            <Space direction="vertical">
+              <Checkbox checked disabled>Продление подписки (обязательно)</Checkbox>
+              <Form.Item name="expiry" valuePropName="checked" noStyle>
+                <Checkbox>Подписка скоро истекает</Checkbox>
+              </Form.Item>
+              <Form.Item name="server" valuePropName="checked" noStyle>
+                <Checkbox>Статус сервера</Checkbox>
+              </Form.Item>
+            </Space>
+          </Form.Item>
+          <Form.Item name="verified" valuePropName="checked" noStyle>
+            <Checkbox>Подтвердить без письма (не отправлять запрос подтверждения)</Checkbox>
+          </Form.Item>
+          <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+            Если снять галочку, клиенту уйдёт письмо со ссылкой для подтверждения,
+            и уведомления начнут приходить только после подтверждения.
+          </Typography.Text>
         </Form>
       </Modal>
     </Card>

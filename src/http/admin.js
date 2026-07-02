@@ -608,6 +608,34 @@ router.post('/api/notifications/test', async (req, res) => {
   }
 });
 
+// Admin-managed subscriber for a user: add an address, change its topics, and
+// optionally mark it verified without the double opt-in email (the admin vouches
+// for the address). Same store as the public /sub flow — an unchanged, already
+// verified address keeps its verified state; a new/changed address drops to
+// unverified and either gets a verification link (default) or is marked verified
+// straight away when `verified: true` is sent (no email at all).
+router.put('/api/users/:id/subscriber', (req, res) => {
+  const id = Number(req.params.id);
+  const user = Users.get(id);
+  if (!user) return res.status(404).json({ error: 'not found' });
+  const { error, value } = notify.validateSubscription(req.body || {});
+  if (error) return res.status(400).json({ error });
+  const markVerified = req.body?.verified === true;
+  let sub = Subscribers.upsert(id, value);
+  let sentVerification = false;
+  if (markVerified) {
+    if (!sub.verified) sub = Subscribers.markVerified(id);
+  } else if (!sub.verified) {
+    // Double opt-in, same as the public sign-up: mail the verification link.
+    fireNotify(() => notify.sendVerification(user, sub), 'verification email failed');
+    sentVerification = true;
+  }
+  log.info('admin', 'subscriber saved', { user_id: id, verified: sub.verified, markVerified });
+  res.json({
+    ok: true, email: sub.email, options: sub.options, verified: !!sub.verified, sentVerification,
+  });
+});
+
 // Manually remove a user's subscriber.
 router.delete('/api/users/:id/subscriber', (req, res) => {
   const id = Number(req.params.id);
