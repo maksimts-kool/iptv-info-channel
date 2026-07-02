@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Button, Card, Empty, Form, Input, List, Modal, Popconfirm, Select, Space, Tag, Tooltip, Typography,
+  Button, Card, Empty, Form, Grid, Input, List, Modal, Popconfirm, Select, Space, Tag, Tooltip, Typography,
 } from 'antd';
 
 const SEV = {
@@ -40,6 +40,22 @@ export default function IncidentsCard({ state, api, withRegen }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form] = Form.useForm();
+
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.sm; // < 576px
+  const compact = !screens.md; // < 768px — header/actions restack
+
+  const statusEl = status ? (
+    <span style={{ whiteSpace: 'nowrap' }}>
+      <Dot color={status.color} />
+      {`${status.label} · ${formatPct(status.uptimePct)} аптайм`}
+    </span>
+  ) : null;
+
+  // Keep the strip a single clean row on every device: fewer days on small
+  // screens, and let each bar flex-fill the available width.
+  const maxDays = isMobile ? 30 : compact ? 60 : 90;
+  const days = (status?.days || []).slice(-maxDays);
 
   const openDialog = (inc) => {
     setEditing(inc || null);
@@ -94,22 +110,26 @@ export default function IncidentsCard({ state, api, withRegen }) {
       title="Статус сервиса · status board"
       extra={(
         <Space size="middle">
-          {status ? (
-            <span>
-              <Dot color={status.color} />
-              {`${status.label} · ${formatPct(status.uptimePct)} аптайм`}
-            </span>
-          ) : null}
-          <Button type="primary" onClick={() => openDialog(null)}>+ Add incident</Button>
+          {statusEl && !compact ? statusEl : null}
+          <Button type="primary" onClick={() => openDialog(null)}>
+            {isMobile ? '+ Инцидент' : '+ Add incident'}
+          </Button>
         </Space>
       )}
     >
-      {status?.days?.length ? (
-        <div style={{ display: 'flex', gap: 2, marginBottom: 16, flexWrap: 'wrap' }} title="Последние 90 дней">
-          {status.days.map((d) => (
+      {statusEl && compact ? (
+        <div style={{ marginBottom: 12 }}>{statusEl}</div>
+      ) : null}
+
+      {days.length ? (
+        <div
+          style={{ display: 'flex', gap: 2, marginBottom: 16 }}
+          title={`Последние ${maxDays} дней`}
+        >
+          {days.map((d) => (
             <Tooltip key={d.date} title={d.date}>
               <span style={{
-                display: 'inline-block', width: 6, height: 22, borderRadius: 2, background: d.color,
+                flex: '1 1 0', minWidth: 3, maxWidth: 8, height: 22, borderRadius: 2, background: d.color,
               }}
               />
             </Tooltip>
@@ -122,38 +142,48 @@ export default function IncidentsCard({ state, api, withRegen }) {
           dataSource={incidents}
           renderItem={(inc) => {
             const sev = SEV[inc.severity] || SEV.degraded;
-            return (
-              <List.Item
-                actions={[
-                  inc.ongoing ? (
-                    <Popconfirm key="resolve" title="Resolve this incident?" okText="Resolve" onConfirm={() => resolve(inc)}>
-                      <Button size="small">Resolve</Button>
-                    </Popconfirm>
-                  ) : null,
-                  <Button key="edit" size="small" onClick={() => openDialog(inc)}>Edit</Button>,
-                  <Popconfirm
-                    key="delete"
-                    title={`Delete incident "${inc.title}"?`}
-                    okText="Delete"
-                    okButtonProps={{ danger: true }}
-                    onConfirm={() => remove(inc)}
-                  >
-                    <Button size="small" danger>Delete</Button>
-                  </Popconfirm>,
-                ].filter(Boolean)}
+            const actionButtons = [
+              inc.ongoing ? (
+                <Popconfirm key="resolve" title="Resolve this incident?" okText="Resolve" onConfirm={() => resolve(inc)}>
+                  <Button size="small">Resolve</Button>
+                </Popconfirm>
+              ) : null,
+              <Button key="edit" size="small" onClick={() => openDialog(inc)}>Edit</Button>,
+              <Popconfirm
+                key="delete"
+                title={`Delete incident "${inc.title}"?`}
+                okText="Delete"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => remove(inc)}
               >
-                <List.Item.Meta
-                  avatar={<Tag color={sev.color} style={{ marginTop: 4 }}>{sev.label}</Tag>}
-                  title={inc.title}
-                  description={(
-                    <Typography.Text type="secondary">
-                      {incidentRangeText(inc)}
-                      {inc.note ? ` · ${inc.note}` : ''}
-                    </Typography.Text>
-                  )}
-                />
-              </List.Item>
+                <Button size="small" danger>Delete</Button>
+              </Popconfirm>,
+            ].filter(Boolean);
+            const meta = (
+              <List.Item.Meta
+                avatar={<Tag color={sev.color} style={{ marginTop: 4 }}>{sev.label}</Tag>}
+                title={inc.title}
+                description={(
+                  <Typography.Text type="secondary">
+                    {incidentRangeText(inc)}
+                    {inc.note ? ` · ${inc.note}` : ''}
+                  </Typography.Text>
+                )}
+              />
             );
+            // On wide screens keep AntD's right-aligned action row; on narrow
+            // screens stack the buttons under the content so nothing overflows.
+            if (compact) {
+              return (
+                <List.Item>
+                  <div style={{ width: '100%' }}>
+                    {meta}
+                    <Space wrap style={{ marginTop: 8 }}>{actionButtons}</Space>
+                  </div>
+                </List.Item>
+              );
+            }
+            return <List.Item actions={actionButtons}>{meta}</List.Item>;
           }}
         />
       ) : (
@@ -166,6 +196,7 @@ export default function IncidentsCard({ state, api, withRegen }) {
         okText="Save"
         onOk={save}
         onCancel={() => setOpen(false)}
+        style={{ maxWidth: '94vw' }}
         forceRender
       >
         <Form form={form} layout="vertical">
