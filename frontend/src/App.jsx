@@ -215,7 +215,7 @@ export default function App() {
                 {state.publicBaseUrl}
               </Typography.Text>
             ) : null}
-            <Button onClick={rebuildAll} disabled={busy} loading={busy}>Rebuild all streams</Button>
+            <Button onClick={rebuildAll} loading={busy}>Rebuild all streams</Button>
             <Button onClick={handleLogout}>Log out</Button>
           </Space>
         </div>
