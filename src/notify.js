@@ -100,15 +100,56 @@ export async function sendEmail(message) {
 }
 
 // ---- Templates (Russian; every interpolated value is xmlEscape'd) ----
-function layout(brand, heading, bodyHtml) {
-  return `<!doctype html><html lang="ru"><body style="margin:0;background:#0b1224;font-family:Arial,Helvetica,sans-serif;color:#e6edf7;padding:24px">
-  <div style="max-width:560px;margin:0 auto;background:#0f1830;border:1px solid #24345f;border-radius:16px;padding:28px">
-    <div style="font-size:13px;letter-spacing:2px;color:#7dd3fc;text-transform:uppercase">${xmlEscape(brand)}</div>
-    <h1 style="font-size:23px;margin:12px 0 16px;color:#ffffff">${xmlEscape(heading)}</h1>
-    ${bodyHtml}
-  </div></body></html>`;
+// Visual language mirrors the Ant Design admin UI: light theme, white cards on a
+// #f5f5f5 page, primary #2563eb, Ant status colours. Layout is table-based with
+// inline styles for email-client compatibility (no external CSS, no flexbox).
+const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif";
+const COLORS = {
+  page: '#f5f5f5',
+  card: '#ffffff',
+  border: '#f0f0f0',
+  heading: '#262626',
+  text: '#595959',
+  muted: '#8c8c8c',
+  primary: '#2563eb',
+  success: '#16a34a',
+  error: '#dc2626',
+  warning: '#d97706',
+};
+
+function layout(brand, heading, bodyHtml, { accent = COLORS.primary } = {}) {
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light only"><meta name="supported-color-schemes" content="light"></head>
+<body style="margin:0;padding:0;background:${COLORS.page};font-family:${FONT}">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${COLORS.page};padding:32px 12px">
+    <tr><td align="center">
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:100%;max-width:560px;background:${COLORS.card};border:1px solid ${COLORS.border};border-radius:12px;overflow:hidden">
+        <tr><td style="height:4px;background:${accent};font-size:0;line-height:0">&nbsp;</td></tr>
+        <tr><td style="padding:32px 32px 8px">
+          <div style="font-size:12px;letter-spacing:2px;color:${COLORS.primary};text-transform:uppercase;font-weight:600">${xmlEscape(brand)}</div>
+          <h1 style="font-size:24px;line-height:1.3;margin:12px 0 20px;color:${COLORS.heading};font-weight:600">${xmlEscape(heading)}</h1>
+        </td></tr>
+        <tr><td style="padding:0 32px 8px">${bodyHtml}</td></tr>
+        <tr><td style="padding:20px 32px 28px">
+          <div style="border-top:1px solid ${COLORS.border};padding-top:16px;font-size:12px;line-height:1.6;color:${COLORS.muted}">
+            ${xmlEscape(brand)} · автоматическое уведомление, отвечать на него не нужно.
+          </div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
 }
-const P = (t) => `<p style="color:#9fb3d1;line-height:1.6;margin:0 0 12px">${t}</p>`;
+const P = (t) => `<p style="color:${COLORS.text};font-size:15px;line-height:1.6;margin:0 0 14px">${t}</p>`;
+
+// Email-safe primary button (table cell so Outlook renders the background).
+const button = (label, url) => `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0 18px"><tr><td bgcolor="${COLORS.primary}" style="border-radius:8px">
+  <a href="${xmlEscape(url)}" style="display:inline-block;padding:12px 26px;color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px">${xmlEscape(label)}</a>
+</td></tr></table>`;
+
+// Ant-style callout: subtle tinted box with a coloured left accent bar.
+const callout = (html, color = COLORS.primary) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 16px;background:#fafafa;border:1px solid ${COLORS.border};border-left:3px solid ${color};border-radius:8px"><tr><td style="padding:14px 16px;color:${COLORS.heading};font-size:15px;line-height:1.6">${html}</td></tr></table>`;
+
+const list = (items) => `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 16px">${items.map((o) => `<tr><td style="padding:4px 0;color:${COLORS.text};font-size:15px;line-height:1.5"><span style="color:${COLORS.primary};font-weight:700">&nbsp;•&nbsp;</span>${xmlEscape(o)}</td></tr>`).join('')}</table>`;
 
 export const templates = {
   // Double opt-in: the link the recipient must click to activate the address.
@@ -117,8 +158,8 @@ export const templates = {
       subject: `${brand}: подтвердите адрес для уведомлений`,
       html: layout(brand, 'Подтвердите адрес',
         P('Вы запросили уведомления. Подтвердите этот адрес, чтобы активировать подписку:')
-        + `<p style="margin:0 0 16px"><a href="${xmlEscape(url)}" style="display:inline-block;background:#38bdf8;color:#06243a;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:700">Подтвердить адрес</a></p>`
-        + P(`Если кнопка не работает, откройте ссылку: ${xmlEscape(url)}`)
+        + button('Подтвердить адрес', url)
+        + P(`Если кнопка не работает, откройте ссылку:<br><a href="${xmlEscape(url)}" style="color:${COLORS.primary};word-break:break-all">${xmlEscape(url)}</a>`)
         + P('Если это были не вы — просто проигнорируйте письмо, подписка не активируется.')),
       text: `Подтвердите адрес для уведомлений (${brand}): ${url}`,
     };
@@ -133,8 +174,9 @@ export const templates = {
       subject: `${brand}: подписка на уведомления оформлена`,
       html: layout(brand, 'Вы подписаны на уведомления',
         P('Мы будем присылать письма по выбранным темам:')
-        + `<ul style="color:#e6edf7;line-height:1.8">${opts.map((o) => `<li>${xmlEscape(o)}</li>`).join('')}</ul>`
-        + P('Изменить темы или отписаться можно на той же странице, где вы оформили подписку.')),
+        + list(opts)
+        + P('Изменить темы или отписаться можно на той же странице, где вы оформили подписку.'),
+        { accent: COLORS.success }),
       text: `Вы подписаны на уведомления (${brand}). Темы: ${opts.join(', ')}.`,
     };
   },
@@ -145,7 +187,9 @@ export const templates = {
       subject: `${brand}: подписка скоро истекает`,
       html: layout(brand, 'Подписка скоро истекает',
         P(`Здравствуйте, ${xmlEscape(user.username)}!`)
-        + P(`Ваша подписка истекает <b>${xmlEscape(left)}</b> (${xmlEscape(formatDate(user.expires_at))}). Продлите её, чтобы не потерять доступ.`)),
+        + callout(`Подписка истекает <b style="color:${COLORS.warning}">${xmlEscape(left)}</b><br><span style="color:${COLORS.text};font-size:14px">Дата окончания: ${xmlEscape(formatDate(user.expires_at))}</span>`, COLORS.warning)
+        + P('Продлите её, чтобы не потерять доступ.'),
+        { accent: COLORS.warning }),
       text: `Подписка истекает ${left} (${formatDate(user.expires_at)}). Продлите, чтобы сохранить доступ.`,
     };
   },
@@ -154,18 +198,21 @@ export const templates = {
       subject: `${brand}: подписка продлена`,
       html: layout(brand, 'Подписка продлена',
         P(`Здравствуйте, ${xmlEscape(user.username)}!`)
-        + P(`Новая дата окончания подписки: <b>${xmlEscape(formatDate(user.expires_at))}</b>. Спасибо, что остаётесь с нами!`)),
+        + callout(`Новая дата окончания подписки:<br><b style="color:${COLORS.success}">${xmlEscape(formatDate(user.expires_at))}</b>`, COLORS.success)
+        + P('Спасибо, что остаётесь с нами!'),
+        { accent: COLORS.success }),
       text: `Ваша подписка продлена до ${formatDate(user.expires_at)}.`,
     };
   },
   serverStatus(brand, { phase, incident }) {
     const resolved = phase === 'resolved';
     const heading = resolved ? 'Сервис восстановлен' : 'Проблема в работе сервиса';
+    const accent = resolved ? COLORS.success : COLORS.error;
     return {
       subject: `${brand}: ${resolved ? 'сервис восстановлен' : 'инцидент в работе сервиса'}`,
       html: layout(brand, heading,
-        P(xmlEscape(incident.title))
-        + (incident.note ? P(xmlEscape(incident.note)) : '')),
+        callout(`<b>${xmlEscape(incident.title)}</b>${incident.note ? `<br><span style="color:${COLORS.text};font-size:14px">${xmlEscape(incident.note)}</span>` : ''}`, accent),
+        { accent }),
       text: `${heading}: ${incident.title}${incident.note ? ` — ${incident.note}` : ''}`,
     };
   },
@@ -173,7 +220,8 @@ export const templates = {
     return {
       subject: `${brand}: тестовое письмо`,
       html: layout(brand, 'Тестовое письмо',
-        P('Если вы видите это письмо, отправка уведомлений настроена правильно.')),
+        P('Если вы видите это письмо, отправка уведомлений настроена правильно.')
+        + callout(`<b style="color:${COLORS.success}">✓ Отправка уведомлений работает</b>`, COLORS.success)),
       text: 'Тестовое письмо: отправка уведомлений настроена правильно.',
     };
   },
