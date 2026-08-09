@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { statusSummary, formatUptime, SEVERITY } from '../src/render/status.js';
+import { statusSummary, formatUptime, SEVERITY } from '../../src/render/status.js';
 
 const TZ = 'Europe/Tallinn';
 // A fixed "now": 2026-06-13 in Tallinn (21:00Z is still the 13th locally... use noon).

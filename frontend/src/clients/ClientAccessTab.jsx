@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert, Button, Input, Popconfirm, Segmented, Select, Space, Spin, Switch, Table, Tag, Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 
 // Per-customer channel access.
 //

@@ -2,7 +2,7 @@
 // settings. Merged from the former routes/admin.js (HTTP orchestration) and
 // admin-domain.js (pure validation + view-model shaping). The pure functions
 // stay exported and free of Express/I/O so they remain unit-tested in isolation
-// (test/admin-domain.test.js).
+// (test/http/admin-domain.test.js).
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,12 +10,12 @@ import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import {
   Users, Plans, Settings, Incidents, Subscribers, NotifyLog,
-} from '../data.js';
+} from '../data/store.js';
 import { statusSummary, INCIDENT_SEVERITIES } from '../render/status.js';
 import {
   daysLeft, accountStatus, formatPrice, formatDate, STATUS_META,
-} from '../util.js';
-import * as notify from '../notify.js';
+} from '../core/util.js';
+import * as notify from '../notify/notify.js';
 import {
   generateForUser, generateAll, generationStatus, removeUserHls, syncNotifySettings,
 } from '../encode/channel.js';
@@ -25,7 +25,7 @@ import {
 import catalogRouter from './catalog.js';
 import { renderUserPlaylist } from './stream.js';
 import { Overrides, catalog } from '../playlist/catalog.js';
-import { log } from '../logger.js';
+import { log } from '../core/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // http/ is one level under src/, same as the old routes/, so this still resolves

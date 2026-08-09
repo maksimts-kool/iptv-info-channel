@@ -354,11 +354,12 @@ out by `/admin/api/state`.
 
 Backend source is grouped by concern under `src/`: `playlist/` (m3u parsing +
 the channel catalog), `render/` (SVG frames), `encode/` (ffmpeg + live HLS),
-`http/` (all routes), `epg/` (guides), with
-`config.js`, `data.js`, `util.js`, `logger.js` and `notify.js` at the root. There
-is no backend build step; run the tests with `docker compose --profile test run
---rm test` (or `npm test` on a host with Node 20+). See [CLAUDE.md](CLAUDE.md) for
-the full module map.
+`http/` (all routes), `epg/` (guides), `data/` (the JSON store + its seed CLI),
+`notify/` (e-mail) and `core/` (logger + formatters). Only `server.js` (the entry
+point) and `config.js` sit loose at `src/`; `test/` mirrors the same folders.
+There is no backend build step; run the tests with `docker compose --profile test
+run --rm test` (or `npm test` on a host with Node 20+). See
+[CLAUDE.md](CLAUDE.md) for the full module map.
 
 The admin UI is a **React + Vite + Ant Design** app in `frontend/` (its own
 `package.json`). The Docker build compiles it and copies the output into

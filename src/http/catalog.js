@@ -11,9 +11,9 @@
 // or a toggle is live for the customer on their next playlist refresh.
 //
 // As in admin.js, request validation and response view-models are pure,
-// exported and side-effect-free (test/catalog-api.test.js imports them).
+// exported and side-effect-free (test/http/catalog-api.test.js imports them).
 import express from 'express';
-import { Users, Plans } from '../data.js';
+import { Users, Plans } from '../data/store.js';
 import {
   Sources, Categories, Channels, Overrides,
   queryChannels, refreshSource, refreshAllSources, catalog,
@@ -22,9 +22,9 @@ import {
 import {
   channelCounts, categoryEnabledFor, effectiveEnabled, resolveUserChannels,
 } from '../playlist/model.js';
-import { accountStatus } from '../util.js';
+import { accountStatus } from '../core/util.js';
 import { config } from '../config.js';
-import { log } from '../logger.js';
+import { log } from '../core/logger.js';
 
 // ===========================================================================
 // Pure view models + input validation (no Express, no I/O — unit-tested)

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   Alert, Button, Card, Empty, Form, Input, Modal, Popconfirm, Space, Switch, Table, Tag, Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 
 // Upstream provider playlists. Refreshing one re-downloads the m3u and folds it
 // into the catalog: new channels are added, renames/moves/toggles the admin made

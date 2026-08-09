@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseM3u, buildM3u, parseExtinf, parseAttrs } from '../src/playlist/m3u.js';
+import { parseM3u, buildM3u, parseExtinf, parseAttrs } from '../../src/playlist/m3u.js';
 
 test('parseAttrs reads quoted and bare values', () => {
   assert.deepEqual(

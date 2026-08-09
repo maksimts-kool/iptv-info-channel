@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Button, Card, Input, Space, Switch, Table, Tag, Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 
 const NOTIFY_TYPE = {
   verification: 'Подтверждение адреса',

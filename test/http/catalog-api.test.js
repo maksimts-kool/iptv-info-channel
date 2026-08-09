@@ -1,11 +1,11 @@
 // Pure validation + view-model helpers from the catalog admin API. Same split
-// as test/admin-domain.test.js: these functions carry no Express and no I/O.
+// as test/http/admin-domain.test.js: these functions carry no Express and no I/O.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   validateSource, validateCategory, validateChannelPatch,
   parseChannelQuery, personalRowJson, isLocked, channelJson, categoryJson,
-} from '../src/http/catalog.js';
+} from '../../src/http/catalog.js';
 
 test('validateSource requires a name and an http(s) URL', () => {
   assert.deepEqual(

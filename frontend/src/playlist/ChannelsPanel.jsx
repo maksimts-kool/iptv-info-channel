@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag,
   Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 
 // The channel list. A provider playlist is routinely tens of thousands of rows,
 // so filtering and paging happen on the server (/admin/api/catalog/channels) and

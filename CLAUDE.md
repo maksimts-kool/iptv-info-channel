@@ -21,30 +21,45 @@ Ships with a password-protected web admin (`/admin`) and a Docker image
 (Node + ffmpeg).
 
 UI strings on the rendered cards, status labels and the whole admin UI are
-**Russian** (see `STATUS_META` in [src/util.js](src/util.js) and the SVG text in
+**Russian** (see `STATUS_META` in [src/core/util.js](src/core/util.js) and the SVG text in
 [src/render/overlay.js](src/render/overlay.js)). Keep that language when editing visuals.
 
 ## Layout
 
-Source is grouped by concern, all folders exactly one level under `src/`:
+Source is grouped by concern, **all folders exactly one level under `src/`**, and
+only two files are allowed to sit loose at `src/` — the entry point and the
+config module (its `ROOT` is derived from its own location). Everything else
+belongs in a concern folder; put new modules there rather than at the root.
 
 ```
 src/
-  server.js            # express wiring, landing, health, shutdown
+  server.js            # express wiring, landing, health, shutdown (entry point)
   config.js            # .env parser + typed config (ROOT lives here — do not move)
-  logger.js            # structured logger
-  util.js              # formatters (dateFormatter), STATUS_META, xmlEscape
-  data.js              # JSON-file store: users/plans/incidents/subscribers (+ seedDemo)
-  seed.js              # `npm run seed` CLI shim -> data.seedDemo()
-  notify.js            # email notifications (transport, templates, dispatch)
+  core/    logger.js util.js                      # cross-cutting primitives:
+                       #   logger.js  structured logger
+                       #   util.js    formatters (dateFormatter), STATUS_META, xmlEscape
+  data/    store.js seed.js                       # JSON-file store + its CLI shim:
+                       #   store.js   users/plans/incidents/subscribers (+ seedDemo)
+                       #   seed.js    `npm run seed` -> store.seedDemo()
+  notify/  notify.js                              # email notifications (transport, templates, dispatch)
   playlist/ m3u.js model.js catalog.js            # provider m3u + the channel catalog
   render/  overlay.js status.js                   # SVG frames + their data models
   encode/  channel.js liveloop.js                 # ffmpeg encode + live HLS window
   http/    stream.js subscribe.js admin.js catalog.js auth.js # all HTTP surfaces
   epg/     epg.js epgfoss.js xxhash32.js          # XMLTV + OTT-play FOSS guides
   public/admin/        # built admin UI (Vite output from ../frontend; served by http/admin.js)
+```
 
+`test/` **mirrors that tree** — a test lives in the folder named after the `src/`
+folder it covers (`test/http/catalog-route.test.js` covers `src/http/`), with
+shared fixtures in `test/fixtures/`. `npm test` is a bare `node --test`, which
+recurses, so a new subfolder needs no wiring.
+
+```
 frontend/              # React + Vite + Ant Design admin app (own package.json)
+  src/main.jsx         # entry
+  src/App.jsx          # sider shell + hash routing
+  src/lib/             # api.js (fetch wrapper + AuthError) and plans.js helpers
   src/pages/           # one component per nav section (Overview/Playlist/Clients/…)
   src/playlist/        # Sources/Categories/Channels panels of the Playlist section
   src/clients/         # the per-customer drawer and its tabs
@@ -70,7 +85,7 @@ npm start                       # run server (src/server.js)
 npm run dev                     # run with --watch
 npm run seed                    # create demo users
 npm test                        # node --test (built-in runner)
-node --test test/util.test.js   # a single test file
+node --test test/core/util.test.js   # a single test file
 ```
 
 No build step, no linter, no TypeScript on the backend. Pure ESM
@@ -79,7 +94,7 @@ cover the pure-logic modules (`util`, `encode/liveloop`, `epg/epg`,
 `epg/epgfoss`, `render/status`, `epg/xxhash32`, `playlist/m3u`,
 `playlist/model`, and the `.m3u`-playlist builders plus the admin/catalog-domain
 pure fns living in `http/`) plus route/integration tests for the FOSS endpoints
-and, in [test/catalog-route.test.js](test/catalog-route.test.js), a full pass
+and, in [test/http/catalog-route.test.js](test/http/catalog-route.test.js), a full pass
 over the catalog through the real routers with a throwaway `DATA_DIR` (import a
 provider playlist from a local stub server, curate it, personalise a customer,
 assert the resulting `.m3u` — including the expiry gate). That file sets
@@ -87,7 +102,7 @@ assert the resulting `.m3u` — including the expiry gate). That file sets
 encodes fail instantly instead of racing its teardown. The frontend has no
 backend tests (it is a client rewrite against `/admin/api`). The
 ffmpeg encode has no live render test, but
-[test/channel-args.test.js](test/channel-args.test.js) pins the exact ffmpeg
+[test/encode/channel-args.test.js](test/encode/channel-args.test.js) pins the exact ffmpeg
 argv against a golden snapshot so the arg builders can be refactored safely (the
 rationale + how to regenerate the golden live in a comment atop the builders in
 [src/encode/channel.js](src/encode/channel.js)). The `.dockerignore` deliberately
@@ -97,7 +112,7 @@ ships `test/` into the image so the suite runs in the `test` compose service.
 
 Request/data flow, entry point [src/server.js](src/server.js):
 
-1. **Data** — [src/data.js](src/data.js) is a JSON-file store, **not** a real
+1. **Data** — [src/data/store.js](src/data/store.js) is a JSON-file store, **not** a real
    database (the project predates this and some history/comments still say
    "SQLite"). State lives in `DATA_DIR/db.json` (`plans`, `users`, `incidents`,
    `subscribers`, `settings`) with atomic writes (tmp + rename) and a
@@ -197,7 +212,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    so the looped VOD tiles cleanly with no runt segment; the still card absorbs
    the sub-segment rounding slack. **The exported arg builders
    (`introFfmpegArgs`/`stillFfmpegArgs`) are pinned by a byte-identity snapshot
-   ([test/channel-args.test.js](test/channel-args.test.js)); a comment atop them
+   ([test/encode/channel-args.test.js](test/encode/channel-args.test.js)); a comment atop them
    explains the rule and how to regenerate — never rewrite the snapshot silently.**
    A bottom-right "Далее через N" countdown to the next
    slide change is baked in via `drawtext` (`slideTimerFilters`, toggle
@@ -259,7 +274,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    outage), derived from incidents via `severityForDay`; `<sub-title>`/`<desc>`
    carry that user's subscription status "as of" the day (sampled at local noon
    so it decrements across the guide) plus 90-day uptime and any incident
-   details. Pure logic, unit-tested ([test/epg.test.js](test/epg.test.js)) and
+   details. Pure logic, unit-tested ([test/epg/epg.test.js](test/epg/epg.test.js)) and
    built **live on request** (not pre-encoded) so days-left/status stay fresh
    without regeneration. Timestamps are local-midnight XMLTV
    (`YYYYMMDDHHMMSS +ZZZZ`) with a DST-correct offset; interpolated text is
@@ -281,7 +296,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    (`EPG_FOSS_PROVIDER_ID`, `EPG_FOSS_UPSTREAM_MATCH_URL`). See the README for the
    `.m3u` attributes and the **leading-`=`** requirement on `foss-tvg`/`tvg-source`.
 
-9. **Email notifications** — [src/notify.js](src/notify.js) is the whole feature
+9. **Email notifications** — [src/notify/notify.js](src/notify/notify.js) is the whole feature
    in one module: transport, templates, dispatch and validation. The intro slide
    carries a per-user QR (`qrPanelSvg` in render/overlay.js) to
    `/sub/:token` ([src/http/subscribe.js](src/http/subscribe.js)), where a
@@ -297,13 +312,13 @@ Request/data flow, entry point [src/server.js](src/server.js):
    instead of sending. Three triggers: **server status** (admin incident
    raised/resolved, opt-in), **expiring soon** (`expirySweep()` from the daily
    cron, opt-in, once per expiry date via a `last_expiry_notice` dedup marker),
-   and **renewal** (admin pushes expiry later — mandatory). Data lives in `data.js`
+   and **renewal** (admin pushes expiry later — mandatory). Data lives in `data/store.js`
    (`Subscribers`, one per `user_id`; `NotifyLog` capped ring buffer); the global
    on/off flag is a `Settings` value (`notify_enabled`) overlaid onto
    `config.notify.enabled` by `syncNotifySettings()` (an admin
    toggle overlaid onto the env default). The `/sub` write endpoints are rate-limited (per-IP + per-token) so
    the confirmation email can't be used as a spam relay. Pure logic is
-   unit-tested ([test/notify.test.js](test/notify.test.js)); the admin card lives
+   unit-tested ([test/notify/notify.test.js](test/notify/notify.test.js)); the admin card lives
    in `src/public/admin/`.
 
 10. **Admin** — [src/http/admin.js](src/http/admin.js) is a cookie-auth JSON
@@ -314,7 +329,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    route is HTTP-only orchestration; request validation and
    response view-models are pure functions in the **same file** (formerly
    `admin-domain.js`), kept exported and side-effect-free so
-   [test/admin-domain.test.js](test/admin-domain.test.js) still imports them
+   [test/http/admin-domain.test.js](test/http/admin-domain.test.js) still imports them
    directly.
 
    The **catalog surface** ([src/http/catalog.js](src/http/catalog.js)) is a
@@ -322,7 +337,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    inherits the auth, CSRF and JSON-body middleware and adds none of its own. It
    follows the same pure-fn convention (`validateSource`, `validateChannelPatch`,
    `parseChannelQuery`, `personalRowJson`, `isLocked`, … — see
-   [test/catalog-api.test.js](test/catalog-api.test.js)). Channel listings are
+   [test/http/catalog-api.test.js](test/http/catalog-api.test.js)). Channel listings are
    **paged and filtered server-side**; `/api/state` therefore carries only
    headline catalog *counts*, never the channel rows, because a provider list can
    be tens of thousands of entries and that payload loads on every screen.

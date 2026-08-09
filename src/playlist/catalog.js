@@ -2,17 +2,17 @@
 // channels imported from them, and each customer's personal visibility
 // overrides.
 //
-// Stored in its own file (DATA_DIR/catalog.json) rather than in data.js's
+// Stored in its own file (DATA_DIR/catalog.json) rather than in data/store.js's
 // db.json on purpose: a provider playlist can carry tens of thousands of
 // channels, and both stores rewrite the whole file on every save. Keeping them
 // apart means toggling one user's expiry date doesn't rewrite megabytes of
 // channel rows (and vice versa). Same atomic tmp+rename write and
-// corrupt-file backup-and-reset behaviour as data.js.
+// corrupt-file backup-and-reset behaviour as data/store.js.
 import fs from 'node:fs';
 import path from 'node:path';
 import { customAlphabet } from 'nanoid';
 import { config } from '../config.js';
-import { log } from '../logger.js';
+import { log } from '../core/logger.js';
 import { parseM3u } from './m3u.js';
 import {
   INFO_CATEGORY_ID, INFO_CHANNEL_ID, ensureBuiltins, mergeSourceChannels,
@@ -263,7 +263,7 @@ export const Categories = {
   },
   // Deleting a category deletes the channels in it (they have nowhere to live).
   // Callers must also drop it from the plans that granted it — see
-  // Plans.removeCategory in data.js, wired up in http/catalog.js.
+  // Plans.removeCategory in data/store.js, wired up in http/catalog.js.
   remove: (id) => {
     const category = data.categories.find((c) => c.id === id);
     if (!category || category.builtin) return false;

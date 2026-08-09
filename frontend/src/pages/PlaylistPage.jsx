@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Space, Tabs } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 import SourcesPanel from '../playlist/SourcesPanel.jsx';
 import CategoriesPanel from '../playlist/CategoriesPanel.jsx';
 import ChannelsPanel from '../playlist/ChannelsPanel.jsx';

@@ -6,12 +6,12 @@
 //     the /m3u/match-* protocol)
 // Merged from the former routes/stream.js, playlist.js and routes/foss-epg.js so
 // the whole public playlist/stream concern lives in one file. The pure playlist
-// builders stay exported (unit-tested in test/playlist.test.js).
+// builders stay exported (unit-tested in test/http/playlist.test.js).
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
-import { Users, Settings, Incidents } from '../data.js';
+import { Users, Settings, Incidents } from '../data/store.js';
 import { userHlsDir, ensureUserStream } from '../encode/channel.js';
 import { buildLivePlaylist } from '../encode/liveloop.js';
 import { buildEpgXml, epgChannelId } from '../epg/epg.js';
@@ -19,7 +19,7 @@ import { buildM3u } from '../playlist/m3u.js';
 import {
   channelsForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
 } from '../playlist/catalog.js';
-import { accountStatus } from '../util.js';
+import { accountStatus } from '../core/util.js';
 import {
   fossIdHash,
   buildFossChannelsJson,
@@ -31,7 +31,7 @@ import {
   buildFossLogoSvg,
   normalizeFossProviderId,
 } from '../epg/epgfoss.js';
-import { log } from '../logger.js';
+import { log } from '../core/logger.js';
 
 // ---------------------------------------------------------------------------
 // Per-user .m3u playlist text (pure; unit-tested)
@@ -81,7 +81,7 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
       return {
         name,
         url: streamUrl,
-        // Attribute order is deliberate and matched by test/playlist.test.js.
+        // Attribute order is deliberate and matched by test/http/playlist.test.js.
         // A real logo URL prevents a separate central match-logos request.
         attrs: {
           'tvg-id': tvgId,

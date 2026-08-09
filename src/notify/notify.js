@@ -7,14 +7,14 @@
 // Resend optional — because DigitalOcean blocks outbound SMTP ports. Everything
 // for the feature (transport, templates, dispatch, validation) lives here so it
 // stays in one place. `NOTIFY_DRY_RUN` logs instead of sending for local testing.
-import { config } from './config.js';
+import { config } from '../config.js';
 import {
   Users, Subscribers, Settings, NotifyLog,
-} from './data.js';
+} from '../data/store.js';
 import {
   accountStatus, daysLeft, formatDate, pluralDays, xmlEscape,
-} from './util.js';
-import { log } from './logger.js';
+} from '../core/util.js';
+import { log } from '../core/logger.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { config } from '../src/config.js';
+import { config } from '../../src/config.js';
 import {
   validateSubscription, buildProviderRequest, sendEmail, templates, expiryDue,
   subscribeUrlFor,
-} from '../src/notify.js';
-import { buildBrandSlide1Svg } from '../src/render/overlay.js';
+} from '../../src/notify/notify.js';
+import { buildBrandSlide1Svg } from '../../src/render/overlay.js';
 
 test('validateSubscription accepts a valid email and normalizes it', () => {
   const { value, error } = validateSubscription({ email: '  USER@Example.com ', options: { server: true } });

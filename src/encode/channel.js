@@ -6,18 +6,18 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import cron from 'node-cron';
 import { config } from '../config.js';
-import { Users, Plans, Settings, Incidents } from '../data.js';
+import { Users, Plans, Settings, Incidents } from '../data/store.js';
 import {
   renderBodyPng, renderSlidesPng, renderStatusPng,
   buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
 } from '../render/overlay.js';
 import { statusSummary } from '../render/status.js';
 import { refreshAllSources, describePlans } from '../playlist/catalog.js';
-import * as notify from '../notify.js';
+import * as notify from '../notify/notify.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
-import { elapsedMs, log } from '../logger.js';
+import { elapsedMs, log } from '../core/logger.js';
 
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
@@ -112,12 +112,12 @@ function tileToSegments(seconds) {
 // ffmpeg argument builders (introFfmpegArgs / stillFfmpegArgs).
 //
 // These two exported builders are PINNED by a byte-identity golden snapshot
-// (test/channel-args.test.js against test/fixtures/ffmpeg-args.golden.json).
+// (test/encode/channel-args.test.js against test/fixtures/ffmpeg-args.golden.json).
 // Real strict-player playback can't be exercised in CI, so byte-identical argv
 // is the proof that a refactor of the helpers below changed nothing — the
 // golden must keep passing unchanged. Only when you *intend* to change the
 // encode do you regenerate it, from known-good code, with:
-//   UPDATE_GOLDEN=1 node --test test/channel-args.test.js
+//   UPDATE_GOLDEN=1 node --test test/encode/channel-args.test.js
 // Never rewrite the snapshot silently just to make a red test go green.
 // ---------------------------------------------------------------------------
 

@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   api, AuthError, login, logout, setCsrfToken,
-} from './api.js';
+} from './lib/api.js';
 import Login from './components/Login.jsx';
 import RegenBanner from './components/RegenBanner.jsx';
 import OverviewPage from './pages/OverviewPage.jsx';

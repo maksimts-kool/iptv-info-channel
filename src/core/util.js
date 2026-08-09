@@ -33,7 +33,7 @@ export function xmlEscape(str) {
 //
 // Intl.DateTimeFormat construction dominates the cost of these date helpers and
 // the formatters are immutable, so memoize them by locale + options (timezone
-// included). Shared with epg/epg.js and logger.js.
+// included). Shared with epg/epg.js and core/logger.js.
 const formatterCache = new Map();
 export function dateFormatter(locale, options) {
   const key = `${locale}|${JSON.stringify(options)}`;

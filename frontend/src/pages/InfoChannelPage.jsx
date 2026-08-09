@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import {
   Alert, Button, Card, Col, Row, Space, Statistic, Typography,
 } from 'antd';
-import { api, AuthError } from '../api.js';
+import { api, AuthError } from '../lib/api.js';
 import BrandingCard from '../components/BrandingCard.jsx';
 import IncidentsCard from '../components/IncidentsCard.jsx';
 

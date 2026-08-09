@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { xxhash32 } from '../src/epg/xxhash32.js';
+import { xxhash32 } from '../../src/epg/xxhash32.js';
 
 // OneOfOne/xxhash ChecksumString32 vectors, including 16-byte boundaries.
 const VECTORS = {

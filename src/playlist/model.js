@@ -1,7 +1,7 @@
 // Pure catalog logic: how an upstream playlist merges into the curated catalog,
 // and which channels a given customer may see. No I/O, no module state — the
 // JSON store and the HTTP fetching live in catalog.js, so everything here stays
-// unit-testable in isolation (test/catalog.test.js).
+// unit-testable in isolation (test/playlist/model.test.js).
 
 // The built-in category that carries this server's own info channel. It is the
 // only category an expired or disabled customer keeps, so it can never be

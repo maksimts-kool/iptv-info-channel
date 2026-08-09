@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildUserPlaylist } from '../src/http/stream.js';
-import { fossIdHash } from '../src/epg/epgfoss.js';
-import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../src/playlist/model.js';
+import { buildUserPlaylist } from '../../src/http/stream.js';
+import { fossIdHash } from '../../src/epg/epgfoss.js';
+import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../../src/playlist/model.js';
 
 const USER = { token: 'abc123', username: 'ivan' };
 const CONFIG = {

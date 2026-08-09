@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseM3u } from '../src/playlist/m3u.js';
+import { parseM3u } from '../../src/playlist/m3u.js';
 import {
   INFO_CATEGORY_ID, INFO_CHANNEL_ID,
   ensureBuiltins, mergeSourceChannels, resolveUserChannels,
   effectiveEnabled, categoryEnabledFor, channelKey, categoryKey, channelCounts,
-} from '../src/playlist/model.js';
+} from '../../src/playlist/model.js';
 
 let counter = 0;
 const makeId = () => `id${++counter}`;

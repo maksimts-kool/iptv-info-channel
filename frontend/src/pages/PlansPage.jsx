@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Space, Typography } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 import PlansCard from '../components/PlansCard.jsx';
 
 // Plans are the channel packages, so this page needs the catalog's categories to

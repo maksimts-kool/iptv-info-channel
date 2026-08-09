@@ -3,17 +3,17 @@
 // which can't be done here — so instead we pin the exact argv across config
 // permutations. Any refactor of channel.js's arg builders MUST keep these
 // arrays identical. Regenerate the golden (only from known-good code) with:
-//   UPDATE_GOLDEN=1 node --test test/channel-args.test.js
+//   UPDATE_GOLDEN=1 node --test test/encode/channel-args.test.js
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config } from '../src/config.js';
-import { introFfmpegArgs, stillFfmpegArgs } from '../src/encode/channel.js';
+import { config } from '../../src/config.js';
+import { introFfmpegArgs, stillFfmpegArgs } from '../../src/encode/channel.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const GOLDEN = path.join(__dirname, 'fixtures', 'ffmpeg-args.golden.json');
+const GOLDEN = path.join(__dirname, '..', 'fixtures', 'ffmpeg-args.golden.json');
 
 const PROFILES = {
   default: {

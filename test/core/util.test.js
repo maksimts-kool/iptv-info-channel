@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   accountStatus, daysLeft, localDateString, parseExpiry,
-} from '../src/util.js';
+} from '../../src/core/util.js';
 
 test('localDateString uses the configured Tallinn calendar date', () => {
   const date = new Date('2026-06-09T21:30:00Z');

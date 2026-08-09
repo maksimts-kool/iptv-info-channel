@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import { createFossEpgRouter } from '../src/http/stream.js';
-import { MATCH_BLOCK_SEP, fossIdHash } from '../src/epg/epgfoss.js';
-import { buildUserPlaylist } from '../src/http/stream.js';
-import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../src/playlist/model.js';
+import { createFossEpgRouter } from '../../src/http/stream.js';
+import { MATCH_BLOCK_SEP, fossIdHash } from '../../src/epg/epgfoss.js';
+import { buildUserPlaylist } from '../../src/http/stream.js';
+import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../../src/playlist/model.js';
 
 // The one catalog entry every customer always has: the info channel, which is
 // what carries the FOSS attributes this suite is about.

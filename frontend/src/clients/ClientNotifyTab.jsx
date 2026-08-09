@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import {
   Alert, Button, Checkbox, Form, Input, Popconfirm, Space, Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 
 // One customer's email subscription. Same double opt-in store the public /sub
 // page writes to: a new or changed address is unverified until the recipient

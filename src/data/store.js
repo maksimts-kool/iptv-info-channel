@@ -3,9 +3,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { customAlphabet } from 'nanoid';
-import { config } from './config.js';
-import { log } from './logger.js';
-import { INCIDENT_SEVERITIES } from './render/status.js';
+import { config } from '../config.js';
+import { log } from '../core/logger.js';
+import { INCIDENT_SEVERITIES } from '../render/status.js';
 
 const DB_FILE = path.join(config.dataDir, 'db.json');
 
@@ -396,7 +396,7 @@ export const Settings = {
 
 // ---- Demo seed ----
 // Create a few sample users so the channel is visible immediately. No-op if any
-// user already exists. Used by the `npm run seed` CLI shim (src/seed.js).
+// user already exists. Used by the `npm run seed` CLI shim (src/data/seed.js).
 export function seedDemo() {
   const existing = Users.all();
   if (existing.length > 0) return { skipped: true, existing: existing.length, created: [] };

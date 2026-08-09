@@ -3,8 +3,8 @@ import {
   Alert, Button, Descriptions, Drawer, Form, Input, Popconfirm, Select, Space, Spin, Switch, Tabs,
   Tag, Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
-import { periodSuffix, planOptions } from '../plans.js';
+import { AuthError } from '../lib/api.js';
+import { periodSuffix, planOptions } from '../lib/plans.js';
 import ClientAccessTab from './ClientAccessTab.jsx';
 import ClientNotifyTab from './ClientNotifyTab.jsx';
 

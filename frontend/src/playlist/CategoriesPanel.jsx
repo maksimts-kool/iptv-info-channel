@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   Alert, Button, Card, Form, Input, Modal, Popconfirm, Space, Switch, Table, Tag, Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
+import { AuthError } from '../lib/api.js';
 
 // Categories are the group titles customers see in their player. They are shared
 // across sources (two providers both shipping "Спорт" land in one group), can be

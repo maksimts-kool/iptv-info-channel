@@ -3,8 +3,8 @@ import {
   Button, Card, Form, Input, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tag,
   Typography,
 } from 'antd';
-import { AuthError } from '../api.js';
-import { periodSuffix, planOptions } from '../plans.js';
+import { AuthError } from '../lib/api.js';
+import { periodSuffix, planOptions } from '../lib/plans.js';
 import ClientDrawer from '../clients/ClientDrawer.jsx';
 
 const FILTERS = [

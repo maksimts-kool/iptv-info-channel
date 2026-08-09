@@ -1,10 +1,10 @@
 // Derives the service-status summary (Better Stack–style 90-day uptime strip)
 // from a list of manually-created incidents. Pure logic, no I/O — unit tested.
-import { localDateString } from '../util.js';
+import { localDateString } from '../core/util.js';
 
 // Incident states, worst-last. "operational" is implicit (no incident covers
 // the day); only 'degraded' and 'outage' are ever stored. Colours match the
-// account STATUS_META palette in util.js.
+// account STATUS_META palette in core/util.js.
 export const SEVERITY = {
   operational: { rank: 0, color: '#16a34a', label: 'Работает' },
   degraded: { rank: 1, color: '#d97706', label: 'Деградация' },

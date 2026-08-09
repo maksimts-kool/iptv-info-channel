@@ -59,9 +59,9 @@ async function req(method, url, body, { raw = false } = {}) {
 before(async () => {
   const express = (await import('express')).default;
   const cookieParser = (await import('cookie-parser')).default;
-  const adminRoutes = (await import('../src/http/admin.js')).default;
-  const streamRoutes = (await import('../src/http/stream.js')).default;
-  const { sessionValue, csrfToken } = await import('../src/http/auth.js');
+  const adminRoutes = (await import('../../src/http/admin.js')).default;
+  const streamRoutes = (await import('../../src/http/stream.js')).default;
+  const { sessionValue, csrfToken } = await import('../../src/http/auth.js');
 
   app = express();
   app.use(cookieParser());

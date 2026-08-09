@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Checkbox, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row,
   Select, Space, Tag, Typography,
 } from 'antd';
-import { periodSuffix } from '../plans.js';
+import { periodSuffix } from '../lib/plans.js';
 
 // A plan IS the channel package: the categories selected here are exactly what
 // its customers receive, and the same list is printed on the info channel as

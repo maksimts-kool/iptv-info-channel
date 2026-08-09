@@ -1,7 +1,7 @@
 // CLI shim for `npm run seed`: create a couple of demo users so you can see the
-// channel immediately. The actual seeding lives in data.js (seedDemo); this just
+// channel immediately. The actual seeding lives in store.js (seedDemo); this just
 // prints the result. No-op if any user already exists.
-import { seedDemo } from './data.js';
+import { seedDemo } from './store.js';
 
 const { skipped, existing, created } = seedDemo();
 if (skipped) {

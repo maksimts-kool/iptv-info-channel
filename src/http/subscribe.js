@@ -3,9 +3,9 @@
 // that gates their stream), so it is the only credential — there is no login.
 // One subscription per user. Mounted before the stream routes in server.js.
 import express from 'express';
-import { Users, Subscribers, Settings } from '../data.js';
-import { validateSubscription, sendVerification, sendConfirmation } from '../notify.js';
-import { log } from '../logger.js';
+import { Users, Subscribers, Settings } from '../data/store.js';
+import { validateSubscription, sendVerification, sendConfirmation } from '../notify/notify.js';
+import { log } from '../core/logger.js';
 
 const router = express.Router();
 
