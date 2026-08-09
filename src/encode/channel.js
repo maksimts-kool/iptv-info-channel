@@ -8,11 +8,11 @@ import cron from 'node-cron';
 import { config } from '../config.js';
 import { Users, Plans, Settings, Incidents } from '../data.js';
 import {
-  renderBodyPng, renderSlidesPng, renderStatusPng, renderWorldCupPng,
-  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg, buildWorldCupSlideSvg,
+  renderBodyPng, renderSlidesPng, renderStatusPng,
+  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
 } from '../render/overlay.js';
 import { statusSummary } from '../render/status.js';
-import { getWorldCupSummary, refreshWorldCup } from '../render/worldcup.js';
+import { refreshAllSources, describePlans } from '../playlist/catalog.js';
 import * as notify from '../notify.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
@@ -122,9 +122,9 @@ function tileToSegments(seconds) {
 // ---------------------------------------------------------------------------
 
 // ffmpeg args for an animated channel: brand slide -> (xfade transition) ->
-// info card, with background music. Any global slides present (status board,
-// World Cup bracket) are appended in order as further chained xfades:
-// slide -> card -> status -> worldcup. The account card shows for its own
+// info card, with background music. Any global slides present (currently just
+// the status board) are appended in order as further chained xfades:
+// slide -> card -> status. The account card shows for its own
 // configured duration (config.channel.accountSlideSeconds); the loop total is the sum.
 export function introFfmpegArgs(slides, music, tmpDir) {
   const extras = globalExtras(slides);
@@ -135,11 +135,11 @@ export function introFfmpegArgs(slides, music, tmpDir) {
 
 // The optional global slides appended after the card, in fixed order. Each is
 // { file, seconds }; the seconds come from each slide's own config so different
-// hold times are respected.
+// hold times are respected. The list shape is kept (rather than collapsing to
+// the single status slide) so another global frame can be added back cheaply.
 function globalExtras(slides) {
   const extras = [];
   if (slides.status) extras.push({ file: slides.status, seconds: config.statusSlide.seconds });
-  if (slides.worldcup) extras.push({ file: slides.worldcup, seconds: config.worldcupSlide.seconds });
   return extras;
 }
 
@@ -247,7 +247,7 @@ function introWithExtrasArgs(slide1, card, extras, music, tmpDir) {
 
 // ffmpeg args for a plain still loop (intro disabled). `extras` is the ordered
 // list of global slides ({ file, seconds }) to concatenate after the card with
-// hard cuts: card -> status -> worldcup. Empty `extras` is the bare card loop.
+// hard cuts: card -> status. Empty `extras` is the bare card loop.
 // The card holds for its own configured duration; the loop total is the sum,
 // tiled onto segment boundaries (the still card absorbs the rounding slack).
 export function stillFfmpegArgs(cardPng, extras, music, tmpDir) {
@@ -379,18 +379,16 @@ export function userHlsDir(userId) {
 // 1-vCPU encode when nothing has changed since the last successful generation —
 // e.g. startup pre-gen followed by a manual "regenerate", or rapid double-clicks.
 const SIG_FILE = 'sig';
-function streamSignature(user, settings, plans, music, summary, worldcup, subscribeUrl) {
+function streamSignature(user, settings, plans, music, summary, subscribeUrl) {
   let musicMtime = 0;
   try { musicMtime = fs.statSync(music).mtimeMs; } catch { /* fall back to 0 */ }
   const c = config.channel;
   const svgs = config.intro.enabled
     ? [buildBrandSlide1Svg(settings, subscribeUrl), buildBodySvg(user, plans, settings)]
     : [buildBodySvg(user, plans, settings)];
-  // The global slides depend on external state (incidents + today's date for the
-  // status board; football results + today's date for the bracket), so hashing
-  // their SVGs busts the encode-skip cache whenever that content changes.
+  // The status board depends on external state (incidents + today's date), so
+  // hashing its SVG busts the encode-skip cache whenever that content changes.
   if (summary) svgs.push(buildStatusSlideSvg(summary, settings));
-  if (worldcup) svgs.push(buildWorldCupSlideSvg(worldcup, settings));
   const payload = JSON.stringify({
     // Bump when the encode math (frame durations / loop sizing) changes so the
     // skip-cache re-encodes existing streams even when SVG content is identical.
@@ -405,9 +403,6 @@ function streamSignature(user, settings, plans, music, summary, worldcup, subscr
         : false,
       status: summary
         ? { seconds: config.statusSlide.seconds }
-        : false,
-      worldcup: worldcup
-        ? { seconds: config.worldcupSlide.seconds }
         : false,
     },
     musicMtime,
@@ -475,15 +470,15 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const freshUser = Users.get(user.id);
     if (!freshUser) throw new Error('user not found');
     const settings = Settings.all();
-    const plans = Plans.all();
+    // The plan cards on the card/offer slides list what each plan includes —
+    // which is now its catalog categories, resolved to names here so overlay.js
+    // keeps rendering a plain `features` array.
+    const plans = describePlans(Plans.all());
     const music = await ensureMusic();
     // Global Better Stack–style status board (null when the slide is disabled).
     const summary = config.statusSlide.enabled
       ? statusSummary(Incidents.all(), { tz: config.timezone })
       : null;
-    // Global World Cup 2026 bracket (null when disabled). Cached + shared across
-    // users so a bulk regeneration hits the football API at most once.
-    const worldcup = await getWorldCupSummary();
     // Per-user notification sign-up QR on the intro slide (only when intro is on
     // AND notifications are enabled). Null otherwise leaves the slide unchanged.
     const subscribeUrl = config.intro.enabled && notify.notifyEnabled()
@@ -491,7 +486,7 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
       : null;
 
     const finalDir = userHlsDir(freshUser.id);
-    const signature = streamSignature(freshUser, settings, plans, music, summary, worldcup, subscribeUrl);
+    const signature = streamSignature(freshUser, settings, plans, music, summary, subscribeUrl);
     // Skip the encode entirely when the existing stream already matches.
     if (!force && fs.existsSync(playlistPath(freshUser.id)) && readSig(finalDir) === signature) {
       log.info('channel', 'stream up to date; skipping encode', {
@@ -519,7 +514,7 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, `.build-${freshUser.id}-`));
     try {
       if (config.intro.enabled) {
-        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary, worldcup, subscribeUrl);
+        const slides = await renderSlidesPng(freshUser, settings, tmpDir, plans, summary, subscribeUrl);
         await run(
           FFMPEG,
           introFfmpegArgs(slides, music, tmpDir),
@@ -529,17 +524,12 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
       } else {
         const cardPng = path.join(tmpDir, 'card.png');
         await renderBodyPng(freshUser, settings, cardPng, plans);
-        // Ordered global slides appended after the card (status, then bracket).
+        // Ordered global slides appended after the card (currently the status board).
         const extras = [];
         if (summary) {
           const statusPng = path.join(tmpDir, 'status.png');
           await renderStatusPng(summary, settings, statusPng);
           extras.push({ file: statusPng, seconds: config.statusSlide.seconds });
-        }
-        if (worldcup) {
-          const worldcupPng = path.join(tmpDir, 'worldcup.png');
-          await renderWorldCupPng(worldcup, settings, worldcupPng);
-          extras.push({ file: worldcupPng, seconds: config.worldcupSlide.seconds });
         }
         await run(
           FFMPEG,
@@ -595,9 +585,6 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
 
 export async function generateAll({ reason = 'bulk regeneration' } = {}) {
   const startedAt = Date.now();
-  // Refresh the shared World Cup bracket once up front so the whole batch encodes
-  // the same data and the football API is queried at most once per rebuild.
-  try { await refreshWorldCup(); } catch { /* getWorldCupSummary already degrades */ }
   const users = Users.all();
   const bulkJobId = ++bulkJobSequence;
   const bulkJob = {
@@ -645,17 +632,6 @@ export function removeUserHls(userId) {
   fs.rmSync(userHlsDir(userId), { recursive: true, force: true });
 }
 
-// Apply the admin-saved World Cup slide overrides (enabled / on-screen seconds)
-// onto the live config. The encode path and worldcup.js read config.worldcupSlide
-// directly, so persisting the admin choice here keeps both the env-var default
-// (when unset) and the saved override working. Called at startup and after each
-// admin worldcup update.
-export function syncWorldcupSettings() {
-  const s = Settings.all();
-  if (typeof s.worldcup_enabled === 'boolean') config.worldcupSlide.enabled = s.worldcup_enabled;
-  if (Number.isFinite(s.worldcup_seconds)) config.worldcupSlide.seconds = s.worldcup_seconds;
-}
-
 // Apply the admin-saved notifications on/off flag onto the live config (env var
 // is the fallback when unset). Called at startup and after the admin toggle.
 export function syncNotifySettings() {
@@ -680,6 +656,18 @@ export function startDailyRefresh() {
   const schedule = '5 0 * * *';
   cron.schedule(schedule, async () => {
     log.info('scheduler', 'daily refresh triggered', { schedule });
+    // Pull fresh channel lists from the upstream providers first. Playlists are
+    // built per request, so this needs no stream rebuild — it just keeps the
+    // catalog in step with what the providers now carry.
+    if (config.catalog.autoRefresh) {
+      try {
+        const results = await refreshAllSources();
+        const failed = results.filter((r) => !r.ok).length;
+        log.info('scheduler', 'playlist sources refreshed', { sources: results.length, failed });
+      } catch (e) {
+        log.error('catalog', 'daily source refresh failed', { error: e.message });
+      }
+    }
     await generateAll({ reason: 'daily refresh' });
     // After the rebuild, mail anyone who just entered the expiry window (once).
     try {

@@ -72,7 +72,7 @@ export const config = {
 
   channel: {
     // On-screen seconds for the account (info) card — its own slide duration,
-    // matching how the intro/status/World Cup slides each set their own. The
+    // matching how the intro/status slides each set their own. The
     // loop total is the sum of every enabled slide, rounded up to whole HLS
     // segments (the still card absorbs the small rounding slack).
     accountSlideSeconds: num(process.env.ACCOUNT_SLIDE_SECONDS, 15),
@@ -114,26 +114,20 @@ export const config = {
     // Seconds the status board is held on screen each loop.
     seconds: num(process.env.STATUS_SLIDE_SECONDS, 12),
   },
-  worldcupSlide: {
-    // Auto-updating World Cup 2026 knockout-bracket frame appended to the loop.
-    // Opt-in (off by default) so existing channels are unchanged. Like the
-    // status board it is a single GLOBAL slide shared by every user.
-    enabled: bool(process.env.WORLDCUP_SLIDE_ENABLED, false),
-    // Seconds the bracket is held on screen each loop.
-    seconds: num(process.env.WORLDCUP_SLIDE_SECONDS, 14),
-  },
-  footballApi: {
-    // Free results feed for the World Cup slide. football-data.org by default:
-    // register for a free token at https://www.football-data.org/client/register
-    // and set FOOTBALL_API_TOKEN. Without a token the bracket still renders the
-    // seeding skeleton (group winners / placeholders), just no live teams/scores.
-    token: process.env.FOOTBALL_API_TOKEN || '',
-    base: (process.env.FOOTBALL_API_BASE || 'https://api.football-data.org/v4').replace(/\/+$/, ''),
-    competition: process.env.FOOTBALL_API_COMPETITION || 'WC',
-    // How long a fetched bracket is cached before the next refresh re-fetches it.
-    // The daily 00:05 cron forces a refresh regardless; this bounds lazy single-
-    // user regenerations so they don't each hit the API.
-    ttlMinutes: num(process.env.FOOTBALL_API_TTL_MINUTES, 360),
+  catalog: {
+    // The curated channel catalog served in every customer's .m3u. Upstream
+    // provider playlists are fetched over HTTP, parsed and merged into the
+    // catalog store (data/catalog.json); the admin then renames/regroups/hides
+    // channels without touching the upstream.
+    // Seconds before an upstream playlist fetch is abandoned.
+    fetchTimeoutMs: num(process.env.CATALOG_FETCH_TIMEOUT_MS, 30_000),
+    // Hard cap on a downloaded playlist so a bad URL can't exhaust memory.
+    maxBytes: num(process.env.CATALOG_MAX_BYTES, 32 * 1024 * 1024),
+    // Re-fetch every enabled source in the daily 00:05 cron.
+    autoRefresh: bool(process.env.CATALOG_AUTO_REFRESH),
+    // Display name of the built-in category that carries the info channel. It is
+    // the ONLY category an expired/disabled customer keeps (see catalog.js).
+    infoCategoryName: process.env.INFO_CATEGORY_NAME || 'Информация',
   },
   epg: {
     // XMLTV programme guide advertised via `url-tvg` in each user's .m3u. The

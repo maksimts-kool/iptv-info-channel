@@ -2,16 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parsePriceCents,
-  parseFeatures,
+  parsePlanCategories,
   duplicatePlanName,
-  validateIncident,
-  validateWorldcupSettings,
-  worldcupSummaryJson,
-  planJson,
+  validateIncident,  planJson,
   incidentJson,
   decorateUser,
 } from '../src/http/admin.js';
-import { buildWorldCupModel, BRACKET_2026 } from '../src/render/worldcup.js';
 
 test('parsePriceCents converts euros to integer cents', () => {
   assert.deepEqual(parsePriceCents('4.99'), { cents: 499 });
@@ -27,11 +23,15 @@ test('parsePriceCents rejects empty, non-numeric and negative prices', () => {
   }
 });
 
-test('parseFeatures trims, drops blanks and enforces limits', () => {
-  assert.deepEqual(parseFeatures(['  a ', '', 'b']), { features: ['a', 'b'] });
-  assert.deepEqual(parseFeatures('nope').error, 'features must be an array');
-  assert.equal(parseFeatures(Array(13).fill('x')).error, 'a plan can have at most 12 features');
-  assert.equal(parseFeatures(['x'.repeat(101)]).error, 'each feature must be 100 characters or less');
+test('parsePlanCategories de-duplicates and rejects unknown categories', () => {
+  const known = new Set(['c1', 'c2']);
+  assert.deepEqual(parsePlanCategories([' c1 ', 'c2', 'c1', ''], known), { categoryIds: ['c1', 'c2'] });
+  assert.deepEqual(parsePlanCategories([]), { categoryIds: [] });
+  assert.equal(parsePlanCategories('nope').error, 'category_ids must be an array');
+  // A stale admin tab must not be able to grant a category that no longer exists.
+  assert.equal(parsePlanCategories(['c1', 'gone'], known).error, 'unknown category: gone');
+  // Without a known-set the ids pass through (the store tolerates stale ids).
+  assert.deepEqual(parsePlanCategories(['whatever']), { categoryIds: ['whatever'] });
 });
 
 test('duplicatePlanName matches case-insensitively and honours exceptId', () => {
@@ -68,14 +68,24 @@ test('validateIncident partial mode only touches provided fields', () => {
   assert.deepEqual(validateIncident({}, { partial: true }), { value: {} });
 });
 
-test('planJson shapes a stored plan for the API', () => {
+test('planJson resolves the plan package to category names', () => {
+  const names = new Map([['c1', 'Спорт'], ['c2', 'Новости']]);
   const json = planJson({
     id: 'pro', name: 'Про', price_cents: 699, currency: 'EUR', billing_period: 'month',
-    features: ['a'], sort: 2,
-  });
+    category_ids: ['c1', 'c2'], sort: 2,
+  }, names);
   assert.equal(json.price, '6,99 €');
   assert.equal(json.billing_period, 'month');
-  assert.deepEqual(json.features, ['a']);
+  assert.deepEqual(json.category_ids, ['c1', 'c2']);
+  // `features` is what the on-screen plan cards render — the category names.
+  assert.deepEqual(json.features, ['Спорт', 'Новости']);
+});
+
+test('planJson drops category ids whose category is gone', () => {
+  const json = planJson({ id: 'p', name: 'P', price_cents: 0, category_ids: ['c1', 'stale'] },
+    new Map([['c1', 'Спорт']]));
+  assert.deepEqual(json.features, ['Спорт'], 'no blank bullet for the missing one');
+  assert.deepEqual(json.category_ids, ['c1', 'stale'], 'the raw list is preserved');
 });
 
 test('incidentJson exposes ongoing state and pretty dates', () => {
@@ -85,75 +95,6 @@ test('incidentJson exposes ongoing state and pretty dates', () => {
   const closed = incidentJson({ id: '2', title: 'y', severity: 'degraded', starts_on: '2026-06-01', ends_on: '2026-06-02' });
   assert.equal(closed.ongoing, false);
   assert.match(closed.ends_pretty, /2026/);
-});
-
-test('validateWorldcupSettings accepts a boolean toggle and bounded seconds', () => {
-  assert.deepEqual(
-    validateWorldcupSettings({ enabled: true, seconds: 14 }),
-    { value: { enabled: true, seconds: 14 } },
-  );
-  assert.deepEqual(
-    validateWorldcupSettings({ enabled: false, seconds: 4 }),
-    { value: { enabled: false, seconds: 4 } },
-  );
-});
-
-test('validateWorldcupSettings rejects bad enabled / out-of-range seconds', () => {
-  assert.equal(validateWorldcupSettings({ enabled: 'yes', seconds: 14 }).error, 'enabled must be a boolean');
-  for (const bad of [3, 121, 14.5, 'x', NaN]) {
-    assert.equal(
-      validateWorldcupSettings({ enabled: true, seconds: bad }).error,
-      'seconds must be a whole number between 4 and 120',
-      String(bad),
-    );
-  }
-});
-
-test('validateWorldcupSettings supports partial patches', () => {
-  assert.deepEqual(validateWorldcupSettings({ seconds: 20 }, { partial: true }), { value: { seconds: 20 } });
-  assert.deepEqual(validateWorldcupSettings({ enabled: false }, { partial: true }), { value: { enabled: false } });
-});
-
-test('worldcupSummaryJson shapes the slide model + settings for the admin card', () => {
-  const model = buildWorldCupModel(BRACKET_2026, [], { now: new Date('2026-06-28T12:00:00Z'), tz: 'UTC' });
-  const json = worldcupSummaryJson(model, { enabled: true, seconds: 14, tokenConfigured: false });
-  assert.equal(json.enabled, true);
-  assert.equal(json.seconds, 14);
-  assert.equal(json.tokenConfigured, false);
-  assert.ok(json.headline);
-  assert.ok(Array.isArray(json.fixtures) && json.fixtures.length);
-  const fx = json.fixtures[0];
-  // Compact, escaped-friendly shape with a status key + labelled teams.
-  assert.ok(fx.statusKey && fx.statusLabel);
-  assert.ok('label' in fx.home && 'score' in fx.home && 'winner' in fx.home);
-  assert.equal(typeof fx.hasScore, 'boolean');
-});
-
-test('worldcupSummaryJson hides the kickoff time once a match is finished', () => {
-  const finished = {
-    headline: 'h', updated: 'u', champion: null, notStarted: null,
-    fixtures: [{
-      id: 1, dateLabel: '01 июл', time: '21:00', stageLabel: '1/16 финала',
-      status: { key: 'finished', label: 'завершён' },
-      home: { label: 'A', score: 2, winner: true }, away: { label: 'B', score: 1, winner: false },
-    }, {
-      id: 2, dateLabel: '02 июл', time: '18:00', stageLabel: '1/16 финала',
-      status: { key: 'scheduled', label: 'по расписанию' },
-      home: { label: 'C', score: null, winner: false }, away: { label: 'D', score: null, winner: false },
-    }],
-  };
-  const json = worldcupSummaryJson(finished, { enabled: false, seconds: 14, tokenConfigured: true });
-  assert.equal(json.fixtures[0].time, '');          // finished -> no time
-  assert.equal(json.fixtures[0].hasScore, true);
-  assert.equal(json.fixtures[1].time, '18:00');     // upcoming -> keeps kickoff
-  assert.equal(json.fixtures[1].hasScore, false);
-});
-
-test('worldcupSummaryJson tolerates a null model', () => {
-  const json = worldcupSummaryJson(null, { enabled: false, seconds: 14, tokenConfigured: true });
-  assert.deepEqual(json.fixtures, []);
-  assert.equal(json.champion, null);
-  assert.equal(json.headline, '');
 });
 
 test('decorateUser builds status + playlist URLs', () => {

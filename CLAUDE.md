@@ -4,14 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A multi-user IPTV "info channel" server. Each customer gets a private looping
-**HLS video channel** that displays their account status (plan, price, expiry,
-days left, colour-coded status) over background music, delivered via a per-user
-`.m3u` playlist that plays in any IPTV player / VLC. Ships with a
-password-protected web admin (`/admin`) and a Docker image (Node + ffmpeg).
+A multi-customer **IPTV subscription server**. The admin points it at one or
+more provider `.m3u` URLs, curates the resulting channel catalog (rename,
+re-group, enable/disable), and each customer gets a private `.m3u` built from
+that catalog. **A plan is a channel package**: it holds the list of catalog
+categories its customers receive, with **per-customer exceptions** on top.
 
-UI strings on the rendered cards and status labels are **Russian** (see
-`STATUS_META` in [src/util.js](src/util.js) and the SVG text in
+Every customer playlist also carries a built-in **Информация** category holding
+that customer's personal looping **HLS info channel** (plan, price, expiry, days
+left, colour-coded status over background music). When a subscription expires,
+the info channel is the *only* thing left in their playlist. The info channel
+was the original product and is now one feature inside the playlist server —
+weight new work accordingly.
+
+Ships with a password-protected web admin (`/admin`) and a Docker image
+(Node + ffmpeg).
+
+UI strings on the rendered cards, status labels and the whole admin UI are
+**Russian** (see `STATUS_META` in [src/util.js](src/util.js) and the SVG text in
 [src/render/overlay.js](src/render/overlay.js)). Keep that language when editing visuals.
 
 ## Layout
@@ -24,16 +34,21 @@ src/
   config.js            # .env parser + typed config (ROOT lives here — do not move)
   logger.js            # structured logger
   util.js              # formatters (dateFormatter), STATUS_META, xmlEscape
-  data.js              # JSON-file store (+ seedDemo)
+  data.js              # JSON-file store: users/plans/incidents/subscribers (+ seedDemo)
   seed.js              # `npm run seed` CLI shim -> data.seedDemo()
   notify.js            # email notifications (transport, templates, dispatch)
-  render/  overlay.js status.js worldcup.js       # SVG frames + their data models
+  playlist/ m3u.js model.js catalog.js            # provider m3u + the channel catalog
+  render/  overlay.js status.js                   # SVG frames + their data models
   encode/  channel.js liveloop.js                 # ffmpeg encode + live HLS window
-  http/    stream.js subscribe.js admin.js auth.js # all HTTP surfaces
+  http/    stream.js subscribe.js admin.js catalog.js auth.js # all HTTP surfaces
   epg/     epg.js epgfoss.js xxhash32.js          # XMLTV + OTT-play FOSS guides
   public/admin/        # built admin UI (Vite output from ../frontend; served by http/admin.js)
 
 frontend/              # React + Vite + Ant Design admin app (own package.json)
+  src/pages/           # one component per nav section (Overview/Playlist/Clients/…)
+  src/playlist/        # Sources/Categories/Channels panels of the Playlist section
+  src/clients/         # the per-customer drawer and its tabs
+  src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify cards
 ```
 
 ## Commands
@@ -61,10 +76,16 @@ node --test test/util.test.js   # a single test file
 No build step, no linter, no TypeScript on the backend. Pure ESM
 (`"type": "module"`), Node 20+. Tests use the built-in `node:test` runner and
 cover the pure-logic modules (`util`, `encode/liveloop`, `epg/epg`,
-`epg/epgfoss`, `render/status`, `epg/xxhash32`, `render/worldcup`, and the
-`.m3u`-playlist builders and admin-domain pure fns now living in `http/`) plus
-route/integration tests for the FOSS endpoints. The frontend has no backend
-tests (it is a client rewrite against the unchanged `/admin/api`). The
+`epg/epgfoss`, `render/status`, `epg/xxhash32`, `playlist/m3u`,
+`playlist/model`, and the `.m3u`-playlist builders plus the admin/catalog-domain
+pure fns living in `http/`) plus route/integration tests for the FOSS endpoints
+and, in [test/catalog-route.test.js](test/catalog-route.test.js), a full pass
+over the catalog through the real routers with a throwaway `DATA_DIR` (import a
+provider playlist from a local stub server, curate it, personalise a customer,
+assert the resulting `.m3u` — including the expiry gate). That file sets
+`FFMPEG_PATH` to a non-existent binary so the fire-and-forget info-channel
+encodes fail instantly instead of racing its teardown. The frontend has no
+backend tests (it is a client rewrite against `/admin/api`). The
 ffmpeg encode has no live render test, but
 [test/channel-args.test.js](test/channel-args.test.js) pins the exact ffmpeg
 argv against a golden snapshot so the arg builders can be refactored safely (the
@@ -79,30 +100,80 @@ Request/data flow, entry point [src/server.js](src/server.js):
 1. **Data** — [src/data.js](src/data.js) is a JSON-file store, **not** a real
    database (the project predates this and some history/comments still say
    "SQLite"). State lives in `DATA_DIR/db.json` (`plans`, `users`, `incidents`,
-   `settings`) with atomic writes (tmp + rename) and a corrupt-file
-   backup-and-reset path. Users
+   `subscribers`, `settings`) with atomic writes (tmp + rename) and a
+   corrupt-file backup-and-reset path. Users
    are decorated with their plan's fields on read (mimics an old SQL join).
    Access tokens are unguessable nanoid strings; there is no user login, only
    the per-user URL token and the single admin password. `seedDemo()` (the
    `npm run seed` helper) also lives here.
 
-2. **Render** — [src/render/overlay.js](src/render/overlay.js) builds the channel frames as
+   A **plan carries `category_ids`** — the catalog categories it sells. Plans
+   used to carry a free-text `features` list; that key is now *derived* (the
+   granted categories' names, via `describePlans` in `playlist/catalog.js`) so
+   `render/overlay.js` keeps rendering a plain `features` array and needs no
+   knowledge of the catalog. Old records keep their stale `features` array on
+   disk; nothing reads it.
+
+   The **channel catalog is a second store**
+   ([src/playlist/catalog.js](src/playlist/catalog.js), `DATA_DIR/catalog.json`)
+   with the same atomic-write/corrupt-backup behavior — kept separate because a
+   provider list runs to tens of thousands of channels and both stores rewrite
+   the whole file on every save, so one customer's expiry edit must not rewrite
+   megabytes of channel rows.
+
+2. **Playlist catalog** — the primary domain, three files under `src/playlist/`:
+   - [m3u.js](src/playlist/m3u.js) parses/serializes **provider** extended-M3U
+     text (not the HLS media playlists in `encode/liveloop.js` — don't confuse
+     them). Handles the real-world quirks: the title is split at the last comma
+     *outside quotes* (attribute values contain commas), `group-title` beats a
+     separate `#EXTGRP:` line, and `#EXTVLCOPT`/`#KODIPROP`/`#EXTHTTP`
+     directives are kept verbatim and re-emitted because they are load-bearing
+     for playback.
+   - [model.js](src/playlist/model.js) is the **pure** logic: `ensureBuiltins`
+     (the `Информация` category + info channel), `mergeSourceChannels` and
+     `resolveUserChannels`. No I/O, no module state — unit-tested directly.
+   - [catalog.js](src/playlist/catalog.js) is the store + HTTP fetching:
+     `Sources`, `Categories`, `Channels`, `Overrides`, `queryChannels`
+     (server-side paging/filtering), `refreshSource`/`refreshAllSources`.
+
+   Invariants worth preserving:
+   - **Admin edits beat upstream.** A refresh updates only the stream URL and
+     the passthrough attributes/directives; a rename, a category move and a
+     disable all survive. Channel identity is `tvg-id` when the provider ships
+     one, else the stream URL, scoped per source — so a rotated access token in
+     the URL doesn't duplicate the channel.
+   - **Vanished channels are flagged `missing`, never deleted**, so a truncated
+     download can't destroy the admin's overrides; they return on reappearance.
+   - **A category's visibility has three layers**, resolved by
+     `categoryEnabledFor` in priority order: (1) a **per-customer pin**, (2) the
+     **global enable** (catalog-wide kill switch), (3) the **plan** — whether
+     `plan.category_ids` includes it. A pin is authoritative in both directions:
+     `false` takes away a category the plan grants, `true` grants one it
+     doesn't, absent follows the plan. Channels have only the first two layers
+     (`effectiveEnabled`) and are additionally gated by their category.
+   - **A plan with an empty `category_ids` grants nothing** — deliberately, so a
+     provider adding a category never silently ships it to every customer. The
+     cost is a real setup cliff, so the empty-plan and unsold-category cases are
+     flagged on the Обзор, Тарифы and Категории screens rather than left silent.
+     Deleting a category must also call `Plans.removeCategory` (see
+     `http/catalog.js`) so no plan references a category that is gone.
+   - **The expiry gate is derived, never persisted.** `resolveUserChannels`
+     takes a `locked` flag (account expired or deactivated) and collapses the
+     list to the built-in `Информация` category. Nothing is written when an
+     account lapses, so a renewal restores everything on the next request and
+     can't drift out of sync with a stored "disabled everything" flag. The
+     built-in category therefore cannot be deleted, switched off, or withheld
+     from a customer, and the info channel cannot be moved out of it — the
+     guards for that live in `Categories.update`, `applyChannelFields` and
+     `http/catalog.js`.
+
+3. **Render** — [src/render/overlay.js](src/render/overlay.js) builds the channel frames as
    **SVG** and rasterizes to PNG with `sharp`. Frames: a brand intro slide; a
    "body" that is the account card (`buildCardSvg`) or, for expired accounts, an
    auto-layout plans grid (`buildExpiredPlansSvg`); and (when
    `STATUS_SLIDE_ENABLED`) a global Better Stack–style status board
    (`buildStatusSlideSvg`, fed by `statusSummary()` in
-   [src/render/status.js](src/render/status.js)); and (when the World Cup slide is enabled — via
-   `WORLDCUP_SLIDE_ENABLED` or the admin toggle, see Admin below) a global
-   auto-updating World Cup 2026 **match-list** slide (`buildWorldCupSlideSvg`, fed
-   by `getWorldCupSummary()` in [src/render/worldcup.js](src/render/worldcup.js) — the knockout
-   stage only (1/16 final onward, **no group games**): a static seeding skeleton
-   merged with live results from a free football API, windowed to an adaptive ~6
-   matches around "today" by `buildWorldCupModel`. Before the knockout starts it
-   shows a "playoffs start on <date>" message; once the Final is decided, a
-   champion summary. Cached so a bulk regen calls the API at most once.
-   `getWorldCupSummary()` is the enabled-gated encode feed; `getWorldCupModel()`
-   builds the same model unconditionally for the admin preview). In the final days before expiry the card
+   [src/render/status.js](src/render/status.js)). In the final days before expiry the card
    swaps its lower half for a compact "продлите подписку" plan strip
    (`buildRenewingCardSvg`); healthy cards are unchanged. On the **final valid
    day** (and once expired) the body becomes the full plans grid instead — same
@@ -111,15 +182,17 @@ Request/data flow, entry point [src/server.js](src/server.js):
    All SVGs use a fixed 1280×720 viewBox scaled to the configured output
    resolution.
 
-3. **Encode** — [src/encode/channel.js](src/encode/channel.js) spawns **ffmpeg** to turn the
+4. **Encode** — [src/encode/channel.js](src/encode/channel.js) spawns **ffmpeg** to turn the
    PNG(s) + looped music into HLS segments. Two paths: an intro path
    (slide → `xfade` transition → card, low fps) and a plain still-card path
-   (intro disabled, very low fps). Each enabled global slide (status board, then
-   World Cup match list) is appended as **another frame** — the intro path chains
+   (intro disabled, very low fps). Each enabled global slide (currently just the
+   status board) is appended as **another frame** — the intro path chains
    more `xfade`s, the still path adds more `concat` inputs (`introWithExtrasArgs`
-   / `stillFfmpegArgs` take an ordered `extras` list). Each slide holds for its
+   / `stillFfmpegArgs` take an ordered `extras` list; the list shape is kept
+   rather than collapsed to the single slide so another global frame stays cheap
+   to add). Each slide holds for its
    own configured duration — the account card for `ACCOUNT_SLIDE_SECONDS`, just like
-   the intro/status/World Cup slides set their own — and the loop total is their
+   the intro/status slides set their own — and the loop total is their
    sum, rounded to a whole number of `hlsTime` segments (`tileToSegments`)
    so the looped VOD tiles cleanly with no runt segment; the still card absorbs
    the sub-segment rounding slack. **The exported arg builders
@@ -140,10 +213,11 @@ Request/data flow, entry point [src/server.js](src/server.js):
    - **Atomic swap**: builds into a temp dir on the *same* filesystem as the
      target (cross-device `rename` throws `EXDEV` with a mounted `data/`
      volume), then `rmSync` + `renameSync` over the live dir.
-   - **Daily cron** at 00:05 (`startDailyRefresh`) rebuilds every stream so the
-     "days left" counter and expiry status stay current.
+   - **Daily cron** at 00:05 (`startDailyRefresh`) first re-downloads every
+     enabled playlist source (when `CATALOG_AUTO_REFRESH`), then rebuilds every
+     stream so the "days left" counter and expiry status stay current.
 
-4. **Serve as live** — [src/encode/liveloop.js](src/encode/liveloop.js) presents the
+5. **Serve as live** — [src/encode/liveloop.js](src/encode/liveloop.js) presents the
    pre-generated finite VOD asset as an **endless live HLS channel**: a sliding
    window over the looped segments with monotonically increasing media/
    discontinuity sequence numbers (they must never move backwards across a
@@ -156,23 +230,28 @@ Request/data flow, entry point [src/server.js](src/server.js):
    and `Range` support are all load-bearing and documented in a caution atop the
    file; don't "simplify" the playlist construction without strict-player testing.
 
-5. **Public endpoints** — [src/http/stream.js](src/http/stream.js) (which merges the
+6. **Public endpoints** — [src/http/stream.js](src/http/stream.js) (which merges the
    former `routes/stream.js`, `playlist.js` and `routes/foss-epg.js`):
-   `/u/:token/playlist.m3u` (and `/playlist.m3u?token=`) return the `.m3u`;
+   `/u/:token/playlist.m3u` (and `/playlist.m3u?token=`) return the `.m3u` — the
+   customer's **whole channel list**, resolved from the catalog on every request
+   (no caching, no pre-build) by `renderUserPlaylist`, which applies the expiry
+   gate and hands the resolved entries to the pure exported `buildUserPlaylist`.
+   Upstream `url-tvg` guides from the sources that actually contributed channels
+   are appended comma-separated after ours.
    `/hls/:token/:file` lazily generates (on first request) and serves the
    `index.m3u8` live playlist + `.ts` segments. Segment requests honor HTTP
    `Range` (strict players probe with `Range:` and stall on a plain 200).
    `/u/:token/epg.xml` (and `/epg.xml?token=`) return the **XMLTV programme
    guide** (see EPG below); the `.m3u` header advertises it via `url-tvg` and the
-   `#EXTINF` uses a per-user `tvg-id` (`account-<token>`) matching the EPG
-   `<channel id>`. The `.m3u` text itself is built by the exported
-   `buildUserPlaylist`. When `EPG_FOSS_ENABLED`, the same module's
+   `#EXTINF` of the **info channel** uses a per-user `tvg-id`
+   (`account-<token>`) matching the EPG `<channel id>`; imported channels keep
+   the provider's own `tvg-id`. When `EPG_FOSS_ENABLED`, the same module's
    `createFossEpgRouter`/`fossEpgRouter` additionally serves the
    OTT-play FOSS endpoints — `/foss-epg/u/:token/{channels.json,epg/<hash>.json,
    logo.svg}` plus the `/m3u/match-channels` and `/m3u/match-logos` match
    protocol (see FOSS below).
 
-6. **EPG** — [src/epg/epg.js](src/epg/epg.js) (`buildEpgXml`) synthesises a per-user
+7. **EPG** — [src/epg/epg.js](src/epg/epg.js) (`buildEpgXml`) synthesises a per-user
    XMLTV guide. There's no real schedule (the channel is a looping card), so it
    emits **one `<programme>` per calendar day** over a window
    (`EPG_DAYS_BEHIND`..`EPG_DAYS_AHEAD` around "today"). Each day's `<title>` is
@@ -190,7 +269,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    renderer formats its own timestamps) and consumed by both `buildEpgXml` and
    the OTT-play **FOSS JSON** guide.
 
-7. **FOSS EPG (OTT-play)** — [src/epg/epgfoss.js](src/epg/epgfoss.js) renders a
+8. **FOSS EPG (OTT-play)** — [src/epg/epgfoss.js](src/epg/epgfoss.js) renders a
    token-scoped JSON guide that OTT-play FOSS fetches **directly**
    (`channels.json` + `epg/<xxhash32(tvg-id)>.json`), bypassing the central
    matcher. [src/epg/xxhash32.js](src/epg/xxhash32.js) reproduces OTT-play's Go
@@ -202,7 +281,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    (`EPG_FOSS_PROVIDER_ID`, `EPG_FOSS_UPSTREAM_MATCH_URL`). See the README for the
    `.m3u` attributes and the **leading-`=`** requirement on `foss-tvg`/`tvg-source`.
 
-8. **Email notifications** — [src/notify.js](src/notify.js) is the whole feature
+9. **Email notifications** — [src/notify.js](src/notify.js) is the whole feature
    in one module: transport, templates, dispatch and validation. The intro slide
    carries a per-user QR (`qrPanelSvg` in render/overlay.js) to
    `/sub/:token` ([src/http/subscribe.js](src/http/subscribe.js)), where a
@@ -221,13 +300,13 @@ Request/data flow, entry point [src/server.js](src/server.js):
    and **renewal** (admin pushes expiry later — mandatory). Data lives in `data.js`
    (`Subscribers`, one per `user_id`; `NotifyLog` capped ring buffer); the global
    on/off flag is a `Settings` value (`notify_enabled`) overlaid onto
-   `config.notify.enabled` by `syncNotifySettings()` (mirrors the World Cup
-   pattern). The `/sub` write endpoints are rate-limited (per-IP + per-token) so
+   `config.notify.enabled` by `syncNotifySettings()` (an admin
+   toggle overlaid onto the env default). The `/sub` write endpoints are rate-limited (per-IP + per-token) so
    the confirmation email can't be used as a spam relay. Pure logic is
    unit-tested ([test/notify.test.js](test/notify.test.js)); the admin card lives
    in `src/public/admin/`.
 
-9. **Admin** — [src/http/admin.js](src/http/admin.js) is a cookie-auth JSON
+10. **Admin** — [src/http/admin.js](src/http/admin.js) is a cookie-auth JSON
    API under `/admin/api` plus static UI in `src/public/admin/`. Auth
    ([src/http/auth.js](src/http/auth.js)) is an HMAC of the admin
    password stored in the cookie, so changing `ADMIN_PASSWORD` invalidates all
@@ -236,21 +315,29 @@ Request/data flow, entry point [src/server.js](src/server.js):
    response view-models are pure functions in the **same file** (formerly
    `admin-domain.js`), kept exported and side-effect-free so
    [test/admin-domain.test.js](test/admin-domain.test.js) still imports them
-   directly. Most mutations
-   trigger **fire-and-forget** regeneration; note that plan, branding and
+   directly.
+
+   The **catalog surface** ([src/http/catalog.js](src/http/catalog.js)) is a
+   separate router mounted *inside* `admin.js`'s `/api` sub-router, so it
+   inherits the auth, CSRF and JSON-body middleware and adds none of its own. It
+   follows the same pure-fn convention (`validateSource`, `validateChannelPatch`,
+   `parseChannelQuery`, `personalRowJson`, `isLocked`, … — see
+   [test/catalog-api.test.js](test/catalog-api.test.js)). Channel listings are
+   **paged and filtered server-side**; `/api/state` therefore carries only
+   headline catalog *counts*, never the channel rows, because a provider list can
+   be tens of thousands of entries and that payload loads on every screen.
+   Bulk channel edits accept either `{ids}` or `{filter}` — the latter so
+   "disable all 4 000 results" doesn't ship 4 000 ids from a paged table.
+
+   **Catalog edits do not regenerate anything** (the `.m3u` is rendered per
+   request), which is the main reason this router is separate. Other mutations
+   still trigger **fire-and-forget** regeneration: plan, branding and
    **incident** edits regenerate **all** users (expired users render every
    available plan; the status slide is global), while user edits regenerate just
    that user. Incidents (`/admin/api/incidents`, states `degraded`/`outage`)
-   drive the status board's 90-day uptime strip. A **World Cup** card
-   (`/admin/api/worldcup`) shows a live preview of the global bracket slide
-   (`getWorldCupModel` — built even while the slide is off so it can be
-   previewed) and lets the admin toggle the slide on/off and set its on-screen
-   seconds. Those two flags are stored in `Settings` (`worldcup_enabled` /
-   `worldcup_seconds`) and overlaid onto `config.worldcupSlide` by
-   `syncWorldcupSettings()` (called at startup and after each edit), with the
-   `WORLDCUP_SLIDE_ENABLED`/`WORLDCUP_SLIDE_SECONDS` env vars as the fallback
-   when unset — the encode path keeps reading `config.worldcupSlide.*`, so the
-   ffmpeg golden test is unaffected. The browser UI is a **React + Vite + Ant
+   drive the status board's 90-day uptime strip.
+
+   The browser UI is a **React + Vite + Ant
    Design** app in [frontend/](frontend/) (its own `package.json`) that builds to
    `src/public/admin/` at Docker build time (Vite `base: '/admin/static/'`); the
    route serves that SPA shell at `/admin` with **no server-side auth gate** (the
@@ -259,24 +346,37 @@ Request/data flow, entry point [src/server.js](src/server.js):
    header (`requireCsrf`); the token is handed to the client in `/api/state`. On a
    bare host checkout with no build, `/admin` shows an "Admin UI not built" stub —
    run the Docker image, or `npm run dev` in `frontend/` (its dev server proxies
-   `/admin/api` to the backend). Most mutating actions in the app run through a
-   shared `withRegen` banner/reload lifecycle (frontend `App.jsx` + `RegenBanner`).
+   `/admin/api` to the backend).
+
+   The app is a sider-navigated shell (`App.jsx`) with one page per section —
+   Обзор / Плейлист / Клиенты / Тарифы / Инфоканал / Уведомления — routed off
+   the URL hash (`#/clients`) rather than a router dependency. Mutations that
+   *do* re-encode run through the shared `withRegen` banner/reload lifecycle
+   (`App.jsx` + `RegenBanner`); the playlist screens deliberately save directly
+   instead, since showing an encoding banner for an edit that never encodes
+   would be a lie.
 
 ## Config
 
 Config is loaded by a **dependency-free `.env` parser** in
 [src/config.js](src/config.js) (no `dotenv`); a variable already set in the
 environment wins over the `.env` file (so Docker/compose `environment:` values
-override it). Every variable is documented, grouped into six labeled sections, in
-[.env.example](.env.example); [docker-compose.yml](docker-compose.yml) mirrors
+override it). Every variable is documented, grouped into seven labeled sections,
+in [.env.example](.env.example); [docker-compose.yml](docker-compose.yml) mirrors
 the same grouping. `config.js` **must stay at `src/`** — its `ROOT` is derived
 from its own location and resolves the data dir, music file and `.env` path.
+
+Note that upstream playlist **sources are admin data, not config** — they live in
+`catalog.json` and are managed in the UI. `config.catalog.*` only bounds *how*
+they are fetched (timeout, size cap, daily auto-refresh) and names the built-in
+info category.
 
 ## Security
 
 The model is deliberate; preserve it when editing.
 
-- **Capability-URL access, no user login.** A channel is reached only via an
+- **Capability-URL access, no user login.** A customer's whole playlist — and
+  with it every provider stream URL in it — is reached only via an
   unguessable nanoid **stream token** in the URL (`/u/:token/...`). The token
   *is* the credential, so the URLs are secrets. Prefer the path form
   `/u/:token/...` over `/playlist.m3u?token=` / `/epg.xml?token=` — query strings
@@ -293,6 +393,10 @@ The model is deliberate; preserve it when editing.
   write endpoints are per-IP + per-token rate-limited so the confirmation mail
   can't be a spam relay; set `TRUST_PROXY` behind a proxy so the limiter sees
   real client IPs (and can't be spoofed when directly exposed).
+- **Upstream fetches are bounded.** A playlist source URL must be `http(s)`
+  (`validateSource` rejects `file:`/`data:` before it reaches the fetcher) and
+  the download has both a timeout and a hard byte cap, so a hostile or broken
+  source can't hang the request or exhaust memory.
 - **No outbound SMTP** (mail over an HTTPS API), **atomic DB writes** +
   corrupt-file backup, **`x-powered-by` disabled**, and the container runs as the
   **non-root `node`** user (a bind-mounted `./data` must be writable by uid 1000).

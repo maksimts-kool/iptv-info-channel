@@ -4,6 +4,14 @@ import express from 'express';
 import { createFossEpgRouter } from '../src/http/stream.js';
 import { MATCH_BLOCK_SEP, fossIdHash } from '../src/epg/epgfoss.js';
 import { buildUserPlaylist } from '../src/http/stream.js';
+import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../src/playlist/model.js';
+
+// The one catalog entry every customer always has: the info channel, which is
+// what carries the FOSS attributes this suite is about.
+const INFO_ENTRY = {
+  category: { id: INFO_CATEGORY_ID, name: 'Информация' },
+  channel: { id: INFO_CHANNEL_ID, name: '', attrs: {} },
+};
 
 const NOW = new Date('2026-06-13T12:00:00Z');
 const USER = {
@@ -176,7 +184,7 @@ test('direct JSON and logo endpoints form a complete static source', async (t) =
   const playlist = buildUserPlaylist(USER, { brand_name: 'TestIPTV' }, {
     ...config,
     epg: { ...config.epg, enabled: true, foss: { ...config.epg.foss, enabled: true } },
-  });
+  }, [INFO_ENTRY]);
   const providerBase = /foss-tvg="=infochannel::([^"]+)"/.exec(playlist)?.[1];
   const logoUrl = /tvg-logo="([^"]+)"/.exec(playlist)?.[1];
   assert.equal(providerBase, `${base}/foss-epg/u/abc123/`);

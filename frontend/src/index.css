@@ -14,6 +14,31 @@ body {
   overflow-x: clip;
 }
 
+/* --- App shell (sider + header) ----------------------------------------- */
+.brand-mark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 64px;
+  padding: 0 20px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-inline: 20px;
+}
+
 /* --- Encoding-status banner (RegenBanner) ------------------------------- */
 .regen-banner {
   position: fixed;

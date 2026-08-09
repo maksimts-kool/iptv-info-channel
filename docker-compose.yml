@@ -20,7 +20,13 @@ services:
       # Set to 1 behind a reverse proxy (nginx / DO LB) so the rate limiters see
       # real client IPs. Leave unset on a directly-exposed port.
       TRUST_PROXY: ${TRUST_PROXY:-}
-      # --- 2. Channel look & timing ---
+      # --- 2. Channel catalog (the customer playlist) ---
+      # Provider playlists themselves are added in the admin, not here.
+      CATALOG_FETCH_TIMEOUT_MS: ${CATALOG_FETCH_TIMEOUT_MS:-30000}
+      CATALOG_MAX_BYTES: ${CATALOG_MAX_BYTES:-33554432}
+      CATALOG_AUTO_REFRESH: ${CATALOG_AUTO_REFRESH:-true}
+      INFO_CATEGORY_NAME: ${INFO_CATEGORY_NAME:-Информация}
+      # --- 3. Info channel look & timing ---
       # 720p + low frame rates look identical on a TV but cost far less CPU.
       CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1280}
       CHANNEL_HEIGHT: ${CHANNEL_HEIGHT:-720}
@@ -36,24 +42,17 @@ services:
       INTRO_ENABLED: ${INTRO_ENABLED:-true}
       INTRO_SLIDE_SECONDS: ${INTRO_SLIDE_SECONDS:-4}
       INTRO_TRANSITION: ${INTRO_TRANSITION:-slideleft}
-      # --- 3. Global slides ---
+      # --- 4. Global slides ---
       STATUS_SLIDE_ENABLED: ${STATUS_SLIDE_ENABLED:-true}
       STATUS_SLIDE_SECONDS: ${STATUS_SLIDE_SECONDS:-12}
-      # World Cup 2026 bracket slide. Enable to add the football frame.
-      WORLDCUP_SLIDE_ENABLED: ${WORLDCUP_SLIDE_ENABLED:-false}
-      WORLDCUP_SLIDE_SECONDS: ${WORLDCUP_SLIDE_SECONDS:-14}
-      FOOTBALL_API_TOKEN: ${FOOTBALL_API_TOKEN:-}
-      FOOTBALL_API_BASE: ${FOOTBALL_API_BASE:-https://api.football-data.org/v4}
-      FOOTBALL_API_COMPETITION: ${FOOTBALL_API_COMPETITION:-WC}
-      FOOTBALL_API_TTL_MINUTES: ${FOOTBALL_API_TTL_MINUTES:-360}
-      # --- 4. EPG / programme guide ---
+      # --- 5. EPG / programme guide ---
       EPG_ENABLED: ${EPG_ENABLED:-true}
       EPG_DAYS_AHEAD: ${EPG_DAYS_AHEAD:-7}
       EPG_DAYS_BEHIND: ${EPG_DAYS_BEHIND:-1}
       EPG_FOSS_ENABLED: ${EPG_FOSS_ENABLED:-true}
       EPG_FOSS_PROVIDER_ID: ${EPG_FOSS_PROVIDER_ID:-infochannel}
       EPG_FOSS_UPSTREAM_MATCH_URL: ${EPG_FOSS_UPSTREAM_MATCH_URL:-https://ottp.eu.org}
-      # --- 5. Email notifications ---
+      # --- 6. Email notifications ---
       # DigitalOcean blocks SMTP, so mail goes over a third-party HTTP email API
       # (HTTPS:443). NOTIFY_DRY_RUN=true logs instead of sending.
       NOTIFY_ENABLED: ${NOTIFY_ENABLED:-false}
@@ -62,7 +61,7 @@ services:
       NOTIFY_FROM: ${NOTIFY_FROM:-}
       NOTIFY_FROM_NAME: ${NOTIFY_FROM_NAME:-IPTV Info Channel}
       NOTIFY_DRY_RUN: ${NOTIFY_DRY_RUN:-false}
-      # --- 6. Storage & assets (container paths — do not point outside the volume) ---
+      # --- 7. Storage & assets (container paths — do not point outside the volume) ---
       DATA_DIR: /app/data
       MUSIC_FILE: assets/music/background.mp3
     volumes:

@@ -17,13 +17,14 @@ import {
 } from '../util.js';
 import * as notify from '../notify.js';
 import {
-  generateForUser, generateAll, generationStatus, removeUserHls,
-  syncWorldcupSettings, syncNotifySettings,
+  generateForUser, generateAll, generationStatus, removeUserHls, syncNotifySettings,
 } from '../encode/channel.js';
-import { getWorldCupModel } from '../render/worldcup.js';
 import {
   requireAuth, requireCsrf, csrfToken, checkPassword, setSession, clearSession,
 } from './auth.js';
+import catalogRouter from './catalog.js';
+import { renderUserPlaylist } from './stream.js';
+import { Overrides, catalog } from '../playlist/catalog.js';
 import { log } from '../logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -52,7 +53,11 @@ export function incidentJson(i) {
   };
 }
 
-export function planJson(plan) {
+// `categoryNames` maps category id -> name (from the catalog). A plan's contents
+// ARE its categories: `features` is the resolved list of names, kept under that
+// key because it is what the on-screen plan cards render.
+export function planJson(plan, categoryNames = new Map()) {
+  const categoryIds = plan.category_ids || [];
   return {
     id: plan.id,
     name: plan.name,
@@ -60,7 +65,8 @@ export function planJson(plan) {
     currency: plan.currency,
     billing_period: plan.billing_period || '',
     price: formatPrice(plan.price_cents, plan.currency),
-    features: plan.features || [],
+    category_ids: categoryIds,
+    features: categoryIds.map((id) => categoryNames.get(id)).filter(Boolean),
     sort: plan.sort,
   };
 }
@@ -86,61 +92,7 @@ export function decorateUser(u) {
   };
 }
 
-// Compact view of one World Cup fixture for the admin preview list. Mirrors how
-// the on-air slide renders a row (overlay.js wcFixtureRow): the kickoff time is
-// only meaningful before a match finishes.
-function worldcupFixtureView(fx) {
-  const hasScore = fx.home.score !== null && fx.home.score !== undefined
-    && fx.away.score !== null && fx.away.score !== undefined;
-  return {
-    id: fx.id,
-    dateLabel: fx.dateLabel,
-    time: fx.status.key === 'finished' ? '' : (fx.time || ''),
-    stageLabel: fx.stageLabel,
-    statusKey: fx.status.key,
-    statusLabel: fx.status.label,
-    home: { label: fx.home.label, score: fx.home.score ?? null, winner: !!fx.home.winner },
-    away: { label: fx.away.label, score: fx.away.score ?? null, winner: !!fx.away.winner },
-    hasScore,
-  };
-}
-
-// View model for the admin World Cup card: the slide controls (enabled/seconds),
-// whether a live-results token is configured, and a preview of the same model
-// the channel renders (champion summary / not-started message / fixtures window).
-export function worldcupSummaryJson(model, { enabled, seconds, tokenConfigured } = {}) {
-  return {
-    enabled: !!enabled,
-    seconds,
-    tokenConfigured: !!tokenConfigured,
-    headline: model?.headline || '',
-    updated: model?.updated || '',
-    champion: model?.champion || null,
-    notStarted: model?.notStarted || null,
-    fixtures: (model?.fixtures || []).map(worldcupFixtureView),
-  };
-}
-
 // ---- Input validation (returns { error } or the parsed value) ----
-// Validate the World Cup slide settings (enable toggle + on-screen seconds).
-export function validateWorldcupSettings(body, { partial = false } = {}) {
-  const out = {};
-  const has = (k) => body[k] !== undefined;
-
-  if (!partial || has('enabled')) {
-    if (typeof body.enabled !== 'boolean') return { error: 'enabled must be a boolean' };
-    out.enabled = body.enabled;
-  }
-  if (!partial || has('seconds')) {
-    const seconds = Number(body.seconds);
-    if (!Number.isInteger(seconds) || seconds < 4 || seconds > 120) {
-      return { error: 'seconds must be a whole number between 4 and 120' };
-    }
-    out.seconds = seconds;
-  }
-  return { value: out };
-}
-
 // Parse a price entered in euros into integer cents. Shared by plan create/patch.
 export function parsePriceCents(priceEur) {
   if (priceEur === '' || priceEur === null || priceEur === undefined) {
@@ -151,14 +103,17 @@ export function parsePriceCents(priceEur) {
   return { cents };
 }
 
-export function parseFeatures(value) {
-  if (!Array.isArray(value)) return { error: 'features must be an array' };
-  const features = value.map((feature) => String(feature).trim()).filter(Boolean);
-  if (features.length > 12) return { error: 'a plan can have at most 12 features' };
-  if (features.some((feature) => feature.length > 100)) {
-    return { error: 'each feature must be 100 characters or less' };
+// The category ids a plan grants. `known` is the set of ids that exist in the
+// catalog; unknown ids are rejected rather than silently stored, so a stale
+// admin tab can't create a plan that grants a deleted category.
+export function parsePlanCategories(value, known = null) {
+  if (!Array.isArray(value)) return { error: 'category_ids must be an array' };
+  const ids = [...new Set(value.map((id) => String(id).trim()).filter(Boolean))];
+  if (known) {
+    const unknown = ids.filter((id) => !known.has(id));
+    if (unknown.length) return { error: `unknown category: ${unknown[0]}` };
   }
-  return { features };
+  return { categoryIds: ids };
 }
 
 export function duplicatePlanName(plans, name, exceptId = null) {
@@ -249,6 +204,15 @@ function fireNotify(factory, label) {
 
 const VALID_PERIODS = ['', 'month', 'year'];
 
+// Catalog lookups used when validating / presenting a plan's category package.
+// The built-in Информация category is excluded: every customer has it
+// unconditionally, so selling it in a plan would be meaningless.
+function catalogCategories() {
+  return catalog().categories.filter((c) => !c.builtin);
+}
+const knownCategoryIds = () => new Set(catalogCategories().map((c) => c.id));
+const categoryNameMap = () => new Map(catalogCategories().map((c) => [c.id, c.name]));
+
 // ---------- Auth ----------
 router.post('/login', express.urlencoded({ extended: false }), express.json(), (req, res) => {
   if (loginRateLimited(`login:${req.ip}`)) {
@@ -294,19 +258,35 @@ router.use('/static', express.static(ADMIN_PUBLIC));
 // ---------- JSON API ----------
 // requireCsrf sits after requireAuth: unauth -> 401, authed but forged -> 403.
 router.use('/api', requireAuth, requireCsrf, express.json());
+// Channel-catalog surface (sources, categories, channels, per-customer access).
+// Mounted inside /api so it inherits the auth + CSRF middleware above.
+router.use('/api', catalogRouter);
 
 router.get('/api/state', (req, res) => {
   const incidents = Incidents.all();
+  const overrideCounts = Overrides.countByUser();
+  const channels = catalog().channels;
   res.json({
     csrfToken: csrfToken(),
     publicBaseUrl: config.publicBaseUrl,
     expiringThresholdDays: config.expiringThresholdDays,
     statusSlideEnabled: config.statusSlide.enabled,
-    worldcupSlide: { enabled: config.worldcupSlide.enabled, seconds: config.worldcupSlide.seconds },
     notify: { enabled: config.notify.enabled },
     settings: Settings.all(),
-    plans: Plans.all().map(planJson),
-    users: Users.all().map(decorateUser),
+    plans: Plans.all().map((p) => planJson(p, categoryNameMap())),
+    // Headline catalog numbers only — the channel rows themselves are paged
+    // through /api/catalog/channels, because a provider playlist can be tens of
+    // thousands of rows and this payload loads on every screen.
+    catalog: {
+      sources: catalog().sources.length,
+      categories: catalog().categories.length,
+      channels: channels.filter((c) => !c.missing).length,
+      enabled: channels.filter((c) => !c.missing && c.enabled !== false).length,
+    },
+    users: Users.all().map((u) => ({
+      ...decorateUser(u),
+      personal_overrides: overrideCounts.get(u.id) || 0,
+    })),
     subscribers: Subscribers.all().map((s) => ({
       user_id: s.user_id, email: s.email, options: s.options, verified: !!s.verified,
     })),
@@ -377,13 +357,26 @@ router.delete('/api/users/:id', (req, res) => {
   if (!Users.get(id)) return res.status(404).json({ error: 'not found' });
   Users.remove(id);
   removeUserHls(id);
+  // Drop the customer's personal channel pins alongside the account, so a later
+  // user id reuse can't inherit a stranger's exceptions.
+  Overrides.reset(id);
   log.info('admin', 'user deleted', { user_id: id });
   res.json({ ok: true });
 });
 
-// Create plan -> rebuild streams because expired accounts show every plan.
+// The exact .m3u this customer's player receives — handy for support ("what do
+// they actually see?") without having to open their capability URL.
+router.get('/api/users/:id/playlist', (req, res) => {
+  const user = Users.get(Number(req.params.id));
+  if (!user) return res.status(404).json({ error: 'not found' });
+  return res.json({ text: renderUserPlaylist(user) });
+});
+
+// Create plan. Rebuilds streams because expired accounts show every plan; the
+// category list also changes what its customers receive in their .m3u, but that
+// needs no rebuild (playlists are rendered per request).
 router.post('/api/plans', (req, res) => {
-  const { name, price_eur, billing_period = '', features = [] } = req.body || {};
+  const { name, price_eur, billing_period = '', category_ids = [] } = req.body || {};
   const cleanName = String(name || '').trim();
   if (!cleanName) return res.status(400).json({ error: 'plan name required' });
   if (cleanName.length > 80) return res.status(400).json({ error: 'plan name must be 80 characters or less' });
@@ -391,19 +384,21 @@ router.post('/api/plans', (req, res) => {
   if (price.error) return res.status(400).json({ error: price.error });
   if (!VALID_PERIODS.includes(billing_period)) return res.status(400).json({ error: 'bad billing_period' });
   if (duplicatePlanName(Plans.all(), cleanName)) return res.status(409).json({ error: 'a plan with this name already exists' });
-  const parsedFeatures = parseFeatures(features);
-  if (parsedFeatures.error) return res.status(400).json({ error: parsedFeatures.error });
+  const parsed = parsePlanCategories(category_ids, knownCategoryIds());
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
 
   const plan = Plans.create({
     name: cleanName,
     price_cents: price.cents,
     currency: 'EUR',
     billing_period,
-    features: parsedFeatures.features,
+    category_ids: parsed.categoryIds,
   });
-  log.info('admin', 'plan created', { plan_id: plan.id, name: plan.name });
+  log.info('admin', 'plan created', {
+    plan_id: plan.id, name: plan.name, categories: parsed.categoryIds.length,
+  });
   regenAll('admin plan created');
-  res.status(201).json(planJson(plan));
+  res.status(201).json(planJson(plan, categoryNameMap()));
 });
 
 // Update plan -> rebuild streams because active cards and expired plan grids use it.
@@ -411,7 +406,7 @@ router.patch('/api/plans/:id', (req, res) => {
   const id = req.params.id;
   const plan = Plans.get(id);
   if (!plan) return res.status(404).json({ error: 'not found' });
-  const { price_eur, name, billing_period, features } = req.body || {};
+  const { price_eur, name, billing_period, category_ids: categoryIds } = req.body || {};
   const updates = {};
 
   if (billing_period !== undefined) {
@@ -430,16 +425,16 @@ router.patch('/api/plans/:id', (req, res) => {
     if (duplicatePlanName(Plans.all(), cleanName, id)) return res.status(409).json({ error: 'a plan with this name already exists' });
     updates.name = cleanName;
   }
-  if (features !== undefined) {
-    const parsedFeatures = parseFeatures(features);
-    if (parsedFeatures.error) return res.status(400).json({ error: parsedFeatures.error });
-    updates.features = parsedFeatures.features;
+  if (categoryIds !== undefined) {
+    const parsed = parsePlanCategories(categoryIds, knownCategoryIds());
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    updates.category_ids = parsed.categoryIds;
   }
 
   const updated = Plans.update(id, updates);
   log.info('admin', 'plan updated', { plan_id: id, fields: Object.keys(updates) });
   regenAll('admin plan updated');
-  res.json(planJson(updated));
+  res.json(planJson(updated, categoryNameMap()));
 });
 
 // Delete only unused plans so existing users always keep a valid assignment.
@@ -514,53 +509,6 @@ router.delete('/api/incidents/:id', (req, res) => {
   log.info('admin', 'incident deleted', { incident_id: req.params.id });
   regenAll('admin incident deleted');
   res.json({ ok: true });
-});
-
-// ---------- World Cup slide ----------
-// Live preview of the global World Cup bracket slide plus its current settings.
-// The model is built regardless of the enable toggle so admins can preview it
-// while the slide is switched off; live teams/scores need a football API token.
-async function worldcupResponse({ now = new Date(), force = false } = {}) {
-  const model = await getWorldCupModel({ now, force });
-  return worldcupSummaryJson(model, {
-    enabled: config.worldcupSlide.enabled,
-    seconds: config.worldcupSlide.seconds,
-    tokenConfigured: Boolean(config.footballApi.token),
-  });
-}
-
-router.get('/api/worldcup', async (req, res) => {
-  try {
-    res.json(await worldcupResponse());
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Toggle the slide on/off and set its on-screen seconds. Persisted in Settings
-// (env vars are the fallback) and applied to the live config; rebuilds all
-// streams because the slide is global.
-router.patch('/api/worldcup', (req, res) => {
-  const { error, value } = validateWorldcupSettings(req.body || {});
-  if (error) return res.status(400).json({ error });
-  Settings.set('worldcup_enabled', value.enabled);
-  Settings.set('worldcup_seconds', value.seconds);
-  syncWorldcupSettings();
-  log.info('admin', 'world cup slide settings updated', value);
-  regenAll('admin world cup settings updated');
-  res.json({ enabled: config.worldcupSlide.enabled, seconds: config.worldcupSlide.seconds });
-});
-
-// Force a re-fetch of live results now, then rebuild (only useful when enabled).
-router.post('/api/worldcup/refresh', async (req, res) => {
-  try {
-    const payload = await worldcupResponse({ force: true });
-    log.info('admin', 'world cup results refresh requested');
-    if (config.worldcupSlide.enabled) regenAll('admin world cup results refreshed');
-    res.json(payload);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 // ---------- Email notifications ----------

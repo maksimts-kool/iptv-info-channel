@@ -20,6 +20,9 @@ function nowIso() {
 function defaultData() {
   return {
     seq: 0,
+    // A plan IS the channel package: `category_ids` lists the catalog categories
+    // its customers receive. Seeded empty because the catalog is empty on a
+    // fresh install — the admin picks categories after importing a source.
     plans: [
       {
         id: 'standard',
@@ -27,7 +30,7 @@ function defaultData() {
         price_cents: 499,
         currency: 'EUR',
         sort: 1,
-        features: ['Эстонские каналы', 'Базовый пакет каналов'],
+        category_ids: [],
       },
       {
         id: 'pro',
@@ -35,7 +38,7 @@ function defaultData() {
         price_cents: 699,
         currency: 'EUR',
         sort: 2,
-        features: ['Спортивные каналы', 'Эстонские каналы', 'Расширенный пакет каналов'],
+        category_ids: [],
       },
     ],
     users: [],
@@ -74,7 +77,11 @@ function load() {
   if (data.settings.brand_name === undefined) data.settings.brand_name = 'Мой IPTV-сервис';
   if (data.settings.tagline === undefined) data.settings.tagline = 'Информационный канал аккаунта';
   for (const [index, plan] of data.plans.entries()) {
-    if (!Array.isArray(plan.features)) plan.features = [];
+    // Plans used to carry a free-text `features` list; they now carry the
+    // category ids the plan grants, and the on-screen feature list is derived
+    // from those category names. The old text is left in the record (harmless,
+    // and readable if an admin wants to re-enter it) but is no longer used.
+    if (!Array.isArray(plan.category_ids)) plan.category_ids = [];
     if (!Number.isFinite(plan.sort)) plan.sort = index + 1;
     if (plan.billing_period === undefined) plan.billing_period = '';
   }
@@ -111,14 +118,17 @@ function decorate(u, planById) {
     price_cents: plan.price_cents ?? 0,
     currency: plan.currency ?? 'EUR',
     billing_period: plan.billing_period ?? '',
+    // The categories this customer's plan grants — the base of their channel
+    // list, before their personal overrides and the expiry gate.
+    plan_categories: plan.category_ids ?? [],
   };
 }
 
-function cleanFeatures(features) {
-  if (!Array.isArray(features)) return [];
-  return features
-    .map((feature) => String(feature).trim())
-    .filter(Boolean);
+// De-duplicated list of catalog category ids. Ids of categories that were later
+// deleted are harmless: resolution simply never matches them.
+function cleanCategoryIds(ids) {
+  if (!Array.isArray(ids)) return [];
+  return [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))];
 }
 
 function makePlanId(name) {
@@ -143,14 +153,14 @@ function makePlanId(name) {
 export const Plans = {
   all: () => [...data.plans].sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name)),
   get: (id) => data.plans.find((p) => p.id === id) || null,
-  create: ({ name, price_cents, currency = 'EUR', billing_period = '', features = [] }) => {
+  create: ({ name, price_cents, currency = 'EUR', billing_period = '', category_ids = [] }) => {
     const p = {
       id: makePlanId(name),
       name,
       price_cents,
       currency,
       billing_period,
-      features: cleanFeatures(features),
+      category_ids: cleanCategoryIds(category_ids),
       sort: data.plans.reduce((max, plan) => Math.max(max, Number(plan.sort) || 0), 0) + 1,
     };
     data.plans.push(p);
@@ -163,7 +173,7 @@ export const Plans = {
     for (const key of ['name', 'price_cents', 'currency', 'billing_period', 'sort']) {
       if (fields[key] !== undefined) p[key] = fields[key];
     }
-    if (fields.features !== undefined) p.features = cleanFeatures(fields.features);
+    if (fields.category_ids !== undefined) p.category_ids = cleanCategoryIds(fields.category_ids);
     save();
     return p;
   },
@@ -173,6 +183,16 @@ export const Plans = {
     data.plans.splice(index, 1);
     save();
     return true;
+  },
+  // Drop a deleted category from every plan that granted it.
+  removeCategory: (categoryId) => {
+    let changed = 0;
+    for (const plan of data.plans) {
+      const next = plan.category_ids.filter((id) => id !== categoryId);
+      if (next.length !== plan.category_ids.length) { plan.category_ids = next; changed += 1; }
+    }
+    if (changed) save();
+    return changed;
   },
 };
 

@@ -1,33 +1,69 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  App as AntApp, Button, Layout, Space, Spin, Typography,
+  App as AntApp, Button, Drawer, Grid, Layout, Menu, Space, Spin, Typography,
 } from 'antd';
 import {
   api, AuthError, login, logout, setCsrfToken,
 } from './api.js';
 import Login from './components/Login.jsx';
 import RegenBanner from './components/RegenBanner.jsx';
-import PlansCard from './components/PlansCard.jsx';
-import BrandingCard from './components/BrandingCard.jsx';
-import IncidentsCard from './components/IncidentsCard.jsx';
-import WorldCupCard from './components/WorldCupCard.jsx';
-import NotifyCard from './components/NotifyCard.jsx';
-import UsersCard from './components/UsersCard.jsx';
+import OverviewPage from './pages/OverviewPage.jsx';
+import PlaylistPage from './pages/PlaylistPage.jsx';
+import ClientsPage from './pages/ClientsPage.jsx';
+import PlansPage from './pages/PlansPage.jsx';
+import InfoChannelPage from './pages/InfoChannelPage.jsx';
+import NotifyPage from './pages/NotifyPage.jsx';
 
-const { Header, Content } = Layout;
+const { Header, Content, Sider } = Layout;
+
+// Playlist + client management is the product now; the info channel is one
+// feature inside it, so it sits below them in the navigation.
+const SECTIONS = [
+  { key: 'overview', label: 'Обзор', icon: '📊', title: 'Обзор', Page: OverviewPage },
+  { key: 'playlist', label: 'Плейлист', icon: '📡', title: 'Плейлист', Page: PlaylistPage },
+  { key: 'clients', label: 'Клиенты', icon: '👥', title: 'Клиенты', Page: ClientsPage },
+  { key: 'plans', label: 'Тарифы', icon: '💶', title: 'Тарифы и цены', Page: PlansPage },
+  { key: 'info', label: 'Инфоканал', icon: '📺', title: 'Информационный канал', Page: InfoChannelPage },
+  { key: 'notify', label: 'Уведомления', icon: '✉️', title: 'Уведомления по почте', Page: NotifyPage },
+];
+
+const DEFAULT_SECTION = 'overview';
 
 const HIDDEN = {
   visible: false, complete: false, title: '', percent: 0, count: '', indeterminate: false,
 };
 
+// Section routing lives in the URL hash (#/clients) so a screen can be
+// bookmarked and the browser's back button works — without pulling in a router.
+function sectionFromHash() {
+  const key = window.location.hash.replace(/^#\/?/, '');
+  return SECTIONS.some((s) => s.key === key) ? key : DEFAULT_SECTION;
+}
+
 export default function App() {
   const { message } = AntApp.useApp();
+  const screens = Grid.useBreakpoint();
   const [authed, setAuthed] = useState(null); // null = probing
   const [state, setState] = useState(null);
-  const [reloadToken, setReloadToken] = useState(0); // bumped so WC/notify cards refetch
+  const [reloadToken, setReloadToken] = useState(0); // bumped so pages refetch
   const [gen, setGen] = useState(HIDDEN);
+  const [section, setSection] = useState(sectionFromHash);
+  const [navOpen, setNavOpen] = useState(false);
 
-  // Generation-status banner state machine (ported from the vanilla admin).
+  useEffect(() => {
+    const onHash = () => setSection(sectionFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const go = useCallback((key) => {
+    window.location.hash = `#/${key}`;
+    setSection(key);
+    setNavOpen(false);
+  }, []);
+
+  // Generation-status banner state machine (only the info-channel encode uses
+  // it; catalog edits are served live and never trigger a rebuild).
   const inProgress = useRef(false);
   const complete = useRef(false);
   const completeTimer = useRef(null);
@@ -159,19 +195,12 @@ export default function App() {
     setAuthed(false);
   }, []);
 
-  const rebuildAll = useCallback(async () => {
-    showPending('Пересборка всех потоков канала');
-    message.info('Пересобираем все потоки…');
-    try {
-      await api.post('/admin/api/regenerate-all');
-      message.success('Все потоки пересобраны');
-      await refreshGen();
-    } catch (e) {
-      if (e instanceof AuthError) { setAuthed(false); return; }
-      message.error(e.message);
-      clearPending();
-    }
-  }, [showPending, refreshGen, clearPending, message]);
+  // Note: catalog edits are served live from the .m3u and never re-encode, so
+  // those screens save directly instead of going through `withRegen`.
+  const shared = useMemo(() => ({
+    state, api, withRegen, reload: reloadAll, reloadToken, message, go,
+    onAuthError: () => setAuthed(false),
+  }), [state, withRegen, reloadAll, reloadToken, message, go]);
 
   if (authed === null) {
     return (
@@ -183,50 +212,78 @@ export default function App() {
 
   if (!authed) return <Login onLogin={handleLogin} />;
 
-  const busy = gen.visible && !gen.complete;
-  const shared = {
-    state, api, withRegen, reload: reloadAll, reloadToken, message,
-    onAuthError: () => setAuthed(false),
-  };
+  const active = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
+  const { Page } = active;
+  const compact = !screens.lg;
+
+  const menu = (
+    <Menu
+      mode="inline"
+      theme="dark"
+      selectedKeys={[section]}
+      onClick={({ key }) => go(key)}
+      style={{ borderInlineEnd: 'none' }}
+      items={SECTIONS.map((s) => ({
+        key: s.key,
+        label: (
+          <span>
+            <span style={{ marginRight: 10 }} aria-hidden="true">{s.icon}</span>
+            {s.label}
+          </span>
+        ),
+      }))}
+    />
+  );
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ position: 'sticky', top: 0, zIndex: 10, paddingInline: 20 }}>
-        <div style={{
-          maxWidth: 1100, minHeight: '100%', margin: '0 auto', display: 'flex',
-          alignItems: 'center', justifyContent: 'space-between', gap: '8px 16px', flexWrap: 'wrap',
-        }}
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
-              📺 IPTV Info Channel <span style={{ opacity: 0.6, fontWeight: 400 }}>· админ</span>
-            </Typography.Text>
-            {state?.publicBaseUrl ? (
-              <Typography.Text style={{ color: 'rgba(255,255,255,0.65)', fontSize: 13 }} ellipsis>
-                {state.publicBaseUrl}
-              </Typography.Text>
-            ) : null}
+      {compact ? null : (
+        <Sider width={216} breakpoint="lg" style={{ position: 'sticky', top: 0, height: '100vh' }}>
+          <div className="brand-mark">
+            <span aria-hidden="true">📡</span>
+            <span>IPTV Panel</span>
           </div>
-          <Space size="small" wrap>
-            <Button onClick={rebuildAll} loading={busy}>Пересобрать все потоки</Button>
-            <Button onClick={handleLogout}>Выйти</Button>
+          {menu}
+        </Sider>
+      )}
+      <Layout>
+        <Header className="app-header">
+          <Space size="middle" align="center">
+            {compact ? <Button onClick={() => setNavOpen(true)}>☰</Button> : null}
+            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
+                {active.title}
+              </Typography.Text>
+              {state?.publicBaseUrl ? (
+                <Typography.Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }} ellipsis>
+                  {state.publicBaseUrl}
+                </Typography.Text>
+              ) : null}
+            </div>
           </Space>
+          <Button onClick={handleLogout}>Выйти</Button>
+        </Header>
+        <Content style={{ padding: 24 }}>
+          <div style={{ maxWidth: 1240, margin: '0 auto' }}>
+            <RegenBanner gen={gen} />
+            <Page {...shared} />
+          </div>
+        </Content>
+      </Layout>
+
+      <Drawer
+        open={compact && navOpen}
+        placement="left"
+        width={240}
+        onClose={() => setNavOpen(false)}
+        styles={{ body: { padding: 0, background: '#001529' }, header: { display: 'none' } }}
+      >
+        <div className="brand-mark">
+          <span aria-hidden="true">📡</span>
+          <span>IPTV Panel</span>
         </div>
-      </Header>
-      <Content style={{ padding: 24 }}>
-        <div style={{
-          maxWidth: 1100, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24,
-        }}
-        >
-          <RegenBanner gen={gen} />
-          <PlansCard {...shared} />
-          <BrandingCard {...shared} />
-          <IncidentsCard {...shared} />
-          <WorldCupCard {...shared} />
-          <NotifyCard {...shared} />
-          <UsersCard {...shared} />
-        </div>
-      </Content>
+        {menu}
+      </Drawer>
     </Layout>
   );
 }

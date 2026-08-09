@@ -1,6 +1,7 @@
-// Public HTTP surface for the per-user channel:
-//   - the .m3u playlist text (buildUserPlaylist)
-//   - the HLS stream (.m3u8 / .ts) with Range support
+// Public HTTP surface for a customer's subscription:
+//   - the .m3u playlist text (buildUserPlaylist) — the full curated channel
+//     list from the catalog, led by this server's own info channel
+//   - the HLS stream (.m3u8 / .ts) of that info channel, with Range support
 //   - the OTT-play FOSS endpoints (channels.json / epg/<hash>.json / logo.svg +
 //     the /m3u/match-* protocol)
 // Merged from the former routes/stream.js, playlist.js and routes/foss-epg.js so
@@ -14,6 +15,11 @@ import { Users, Settings, Incidents } from '../data.js';
 import { userHlsDir, ensureUserStream } from '../encode/channel.js';
 import { buildLivePlaylist } from '../encode/liveloop.js';
 import { buildEpgXml, epgChannelId } from '../epg/epg.js';
+import { buildM3u } from '../playlist/m3u.js';
+import {
+  channelsForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
+} from '../playlist/catalog.js';
+import { accountStatus } from '../util.js';
 import {
   fossIdHash,
   buildFossChannelsJson,
@@ -30,19 +36,24 @@ import { log } from '../logger.js';
 // ---------------------------------------------------------------------------
 // Per-user .m3u playlist text (pure; unit-tested)
 // ---------------------------------------------------------------------------
-function attr(value) {
-  return String(value ?? '')
-    .replace(/"/g, "'")
-    .replace(/\r?\n/g, ' ');
-}
 
 export function fossProviderBaseUrl(user, cfg) {
   return `${cfg.publicBaseUrl}/foss-epg/u/${encodeURIComponent(user.token)}/`;
 }
 
-export function buildUserPlaylist(user, settings, cfg) {
+// The customer's whole subscription as one .m3u.
+//
+// `entries` is the already-resolved [{ channel, category }] list from the
+// catalog (resolveUserChannels applied the global settings, this customer's
+// personal overrides and the expiry gate) — this function only turns it into
+// playlist text, so it stays pure and testable. `epgUrls` are extra upstream
+// guides advertised alongside ours.
+//
+// The built-in info channel is the one entry whose URL is per-customer: it
+// points at this server's HLS loop and carries the tvg-id our own EPG uses.
+export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = []) {
   const brand = settings.brand_name || 'Мой IPTV-сервис';
-  const name = `${brand} — ${user.username}`;
+  const infoName = `${brand} — ${user.username}`;
   // NOTE: PUBLIC_BASE_URL is baked into these URLs. On a LAN it must be the host
   // IP the IPTV box can reach — never localhost — or the generated links 404.
   const streamUrl = `${cfg.publicBaseUrl}/hls/${encodeURIComponent(user.token)}/index.m3u8`;
@@ -52,31 +63,60 @@ export function buildUserPlaylist(user, settings, cfg) {
   const providerBase = fossProviderBaseUrl(user, cfg);
   const logoUrl = `${providerBase}logo.svg`;
 
-  const headerAttrs = [];
+  const headerAttrs = {};
   if (cfg.epg.enabled) {
-    headerAttrs.push(`url-tvg="${attr(`${cfg.publicBaseUrl}/u/${user.token}/epg.xml`)}"`);
+    // Ours first; a provider's own guide is appended comma-separated, which is
+    // how players accept several XMLTV sources on one url-tvg.
+    headerAttrs['url-tvg'] = [`${cfg.publicBaseUrl}/u/${user.token}/epg.xml`, ...epgUrls].join(',');
   }
   if (fossEnabled) {
     // The leading "=" on the source definition is required by OTT-play's
     // parser. It makes the player fetch epg/<xxhash(tvg-id)>.json directly.
-    headerAttrs.push(`foss-tvg="=${providerId}::${attr(providerBase)}"`);
+    headerAttrs['foss-tvg'] = `=${providerId}::${providerBase}`;
   }
 
-  // A real logo URL prevents a separate central match-logos request.
-  const channelAttrs = [
-    `tvg-id="${attr(tvgId)}"`,
-    ...(fossEnabled ? [`tvg-source="=${providerId}"`] : []),
-    `tvg-name="${attr(name)}"`,
-    ...(fossEnabled ? [`tvg-logo="${attr(logoUrl)}"`] : []),
-    `group-title="Аккаунт"`,
-  ];
+  const items = entries.map(({ channel, category }) => {
+    if (channel.id === INFO_CHANNEL_ID) {
+      const name = channel.name || infoName;
+      return {
+        name,
+        url: streamUrl,
+        // Attribute order is deliberate and matched by test/playlist.test.js.
+        // A real logo URL prevents a separate central match-logos request.
+        attrs: {
+          'tvg-id': tvgId,
+          ...(fossEnabled ? { 'tvg-source': `=${providerId}` } : {}),
+          'tvg-name': name,
+          ...(fossEnabled ? { 'tvg-logo': logoUrl } : {}),
+          'group-title': category.name,
+        },
+      };
+    }
+    return {
+      name: channel.name,
+      url: channel.url,
+      extras: channel.extras,
+      attrs: { ...channel.attrs, 'group-title': category.name },
+    };
+  });
 
-  return [
-    headerAttrs.length ? `#EXTM3U ${headerAttrs.join(' ')}` : '#EXTM3U',
-    `#EXTINF:-1 ${channelAttrs.join(' ')},${name}`,
-    streamUrl,
-    '',
-  ].join('\n');
+  return buildM3u(items, headerAttrs);
+}
+
+// Resolve everything the playlist builder needs for one customer: which
+// channels they may see (expired/disabled accounts collapse to Информация) and
+// which upstream guides to advertise. Also used by the admin's playlist preview.
+export function renderUserPlaylist(user, settings = Settings.all()) {
+  const status = accountStatus(user, config.expiringThresholdDays);
+  const locked = status === 'expired' || status === 'disabled';
+  // The plan is the base entitlement: a customer sees the categories their plan
+  // grants (an empty plan grants none), then their personal exceptions.
+  const entries = channelsForUser(user.id, { locked, planCategories: planCategorySet(user) });
+  const usedSources = new Set(entries.map((e) => e.channel.source_id).filter(Boolean));
+  const epgUrls = Sources.all()
+    .filter((s) => s.epg_url && usedSources.has(s.id))
+    .map((s) => s.epg_url);
+  return buildUserPlaylist(user, settings, config, entries, epgUrls);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,12 +159,12 @@ function sendPlaylist(req, res, token) {
     log.warn('stream', 'playlist requested with unknown token');
     return res.status(404).type('text/plain').send('Unknown token');
   }
-  const settings = Settings.all();
   res
     .status(200)
     .type('application/x-mpegurl')
+    .set('Cache-Control', 'no-store, no-cache, must-revalidate')
     .set('Content-Disposition', `inline; filename="${user.username}.m3u"`)
-    .send(buildUserPlaylist(user, settings, config));
+    .send(renderUserPlaylist(user));
 }
 
 // GET /playlist.m3u?token=XXXX
