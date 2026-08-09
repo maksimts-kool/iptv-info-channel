@@ -31,7 +31,7 @@ lost access and what a renewal costs.
 - **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin.
 - **Branding intro animation**, configurable (`INTRO_*`) or disablable, and **background music** (bundled track or your own).
 - **Programme guide** — a per-customer XMLTV guide (plus the OTT-play FOSS JSON format) carrying service and account status.
-- **Email notifications** — opt-in expiry warnings and service-status mail, plus mandatory renewal notices, over an HTTP email API.
+- **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API.
 
 ### Operations
 - **Web admin** (`/admin`) — playlist, clients, plans, info channel and notifications.
@@ -148,22 +148,37 @@ the other channels in a combined playlist.
 
 **Обзор** — headline numbers, who is about to expire, current service status.
 
-**Плейлист** — the main screen, three tabs:
+**Плейлист** — the main screen, two tabs:
 
-- *Каналы* — the whole catalog with search, category/source/status filters and
-  paging. Rename a channel, change its category, toggle it on air, add one by
-  hand, or select rows (or the entire filtered set) for a bulk change.
-- *Категории* — rename, reorder, enable/disable, create your own, delete.
+- *Каналы и категории* — the catalog as one structure: each category is a row
+  you expand (click its name or the chevron) to see and edit the channels inside
+  it. Rename a category, reorder it, switch it off; on a channel, rename it,
+  move it to another category or toggle it on air. To change many at once, tick
+  them and use the bar above the list — включить, выключить or move them to
+  another category — with **выбрать все N** to reach the whole category rather
+  than just the current page. Typing in the search box switches the panel to
+  flat results across the whole catalog, where the same selection works over
+  everything matching the filter.
   **Информация** is the built-in category holding the info channel: it can be
   renamed but never deleted or switched off, because it is the fallback an
-  expired customer is left with.
+  expired customer is left with. Imported channels and categories have no delete
+  button on purpose — the next source refresh would bring them straight back, so
+  switching them off is the control that sticks. Only rows you added by hand can
+  be deleted.
 - *Источники* — provider playlist URLs. "Обновить" re-downloads and merges one
-  source; failures are shown on the row rather than silently swallowed.
+  source; failures are shown on the row rather than silently swallowed. Each
+  source also has its own **Авто-обновление** switch and interval (hourly up to
+  weekly, daily by default), so the server keeps the catalog in step with the
+  provider by itself; the row shows when the next download is due.
 
 **Клиенты** — the customer list, with a card per customer covering:
 
-- *Аккаунт* — name, plan, expiry, active toggle, their `.m3u`/HLS links, link
-  re-issue, manual info-channel rebuild.
+- *Аккаунт* — name, plan, expiry, active toggle, their `.m3u` link and link
+  re-issue. **Оплата** is where the expiry date normally comes from: enter how
+  much was paid for ("1 мес.") and the date is worked out from the plan's
+  billing period. Paid time is added on top of what is left, so renewing early
+  costs the customer nothing; a lapsed or open-ended account starts from today.
+  The date field above stays editable for fixing a wrong date by hand.
 - *Каналы клиента* — per-customer access. Every category and channel shows its
   global setting, this customer's pin (**По умолчанию / Включить / Выключить**)
   and the effective result. A pin works both ways: it can withhold a channel
@@ -175,7 +190,7 @@ the other channels in a combined playlist.
 tick-list of categories its customers receive. That same list is what the info
 channel prints as the plan's contents, so a change rebuilds the streams. A plan
 with nothing ticked sells nothing — its customers get only Информация — and that
-is flagged on the Обзор, Тарифы and Категории screens. A plan assigned to
+is flagged on the Обзор, Тарифы and Плейлист screens. A plan assigned to
 customers can't be deleted until they are moved off it.
 
 **Инфоканал** — branding (service name + tagline), incidents feeding the status
@@ -209,7 +224,9 @@ it to `.env` and edit. The most-used settings:
 | `ADMIN_PASSWORD` | `changeme` | Admin panel password. **Change it.** |
 | `SESSION_SECRET` | — | Signs the admin cookie. Use a long random string. |
 | `TRUST_PROXY` | — | Set to `1` behind a reverse proxy so the login / sign-up rate limiters see real client IPs. |
-| `CATALOG_AUTO_REFRESH` | `true` | Re-download every enabled upstream source in the daily 00:05 job. |
+| `CATALOG_AUTO_REFRESH` | `true` | Master switch for unattended re-downloading. Each source's own interval is set in the admin. |
+| `CATALOG_REFRESH_CHECK_MINUTES` | `5` | How often the scheduler looks for a source that has come due (not the refresh interval itself). |
+| `CATALOG_REFRESH_INTERVAL_HOURS` | `24` | Refresh interval a newly added source starts with. |
 | `CATALOG_FETCH_TIMEOUT_MS` | `30000` | Milliseconds before an upstream playlist download is abandoned. |
 | `CATALOG_MAX_BYTES` | `33554432` | Hard cap on a downloaded playlist so a bad URL can not exhaust memory. |
 | `INFO_CATEGORY_NAME` | `Информация` | Name of the built-in category holding the info channel (renameable in the admin too). |

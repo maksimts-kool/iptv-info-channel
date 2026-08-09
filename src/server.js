@@ -9,7 +9,7 @@ import {
   ensureMusic, generateAll, startDailyRefresh, syncNotifySettings,
 } from './encode/channel.js';
 import { Users, Plans } from './data/store.js';
-import { catalog } from './playlist/catalog.js';
+import { catalog, startSourceAutoRefresh } from './playlist/catalog.js';
 import { log } from './core/logger.js';
 
 const app = express();
@@ -73,6 +73,8 @@ const server = app.listen(config.port, async () => {
     log.error('startup', 'channel pre-generation issue', { error: e.message });
   }
   startDailyRefresh();
+  // Unattended playlist re-downloads, on each source's own interval.
+  if (config.catalog.autoRefresh) startSourceAutoRefresh();
   log.info('startup', 'ready');
 });
 

@@ -17,6 +17,7 @@ import { parseM3u } from './m3u.js';
 import {
   INFO_CATEGORY_ID, INFO_CHANNEL_ID, ensureBuiltins, mergeSourceChannels,
   normalizeName, resolveUserChannels, channelCounts,
+  REFRESH_INTERVALS, sourceDueAt, sourceIsDue,
 } from './model.js';
 
 // A plan's `category_ids` as a lookup Set. `null` (no plan) means "unrestricted"
@@ -88,6 +89,19 @@ function load() {
   data.categories ||= [];
   data.channels ||= [];
   data.overrides ||= {};
+  // Backfill the auto-refresh fields on sources created before the scheduler
+  // existed. `last_sync_at` is a display string in UTC; `last_sync_ms` is the
+  // machine-readable stamp the due calculation uses.
+  for (const source of data.sources) {
+    if (source.auto_refresh === undefined) source.auto_refresh = true;
+    if (!Number.isFinite(source.interval_hours)) {
+      source.interval_hours = config.catalog.defaultIntervalHours;
+    }
+    if (source.last_sync_ms === undefined) {
+      const parsed = source.last_sync_at ? Date.parse(`${source.last_sync_at.replace(' ', 'T')}Z`) : NaN;
+      source.last_sync_ms = Number.isNaN(parsed) ? null : parsed;
+    }
+  }
   ensureBuiltins(data, { infoCategoryName: config.catalog.infoCategoryName });
   save();
 }
@@ -112,14 +126,22 @@ export function catalog() {
 export const Sources = {
   all: () => data.sources.map((s) => ({ ...s })),
   get: (id) => data.sources.find((s) => s.id === id) || null,
-  create: ({ name, url, enabled = true }) => {
+  create: ({
+    name, url, enabled = true, auto_refresh: autoRefresh = true, interval_hours: intervalHours,
+  }) => {
     const source = {
       id: makeId(),
       name: normalizeName(name) || 'Источник',
       url: String(url).trim(),
       enabled: !!enabled,
+      // Unattended re-download: on by default, every `interval_hours` hours.
+      auto_refresh: autoRefresh !== false,
+      interval_hours: Number(intervalHours) > 0
+        ? Number(intervalHours)
+        : config.catalog.defaultIntervalHours,
       epg_url: '',
       last_sync_at: null,
+      last_sync_ms: null,
       last_error: null,
       last_count: 0,
       created_at: nowIso(),
@@ -134,9 +156,14 @@ export const Sources = {
     if (fields.name !== undefined) source.name = normalizeName(fields.name) || source.name;
     if (fields.url !== undefined) source.url = String(fields.url).trim();
     if (fields.enabled !== undefined) source.enabled = !!fields.enabled;
+    if (fields.auto_refresh !== undefined) source.auto_refresh = !!fields.auto_refresh;
+    if (Number(fields.interval_hours) > 0) source.interval_hours = Number(fields.interval_hours);
     save();
     return { ...source };
   },
+  // Epoch-ms of the next scheduled automatic refresh, or null when this source
+  // is never refreshed automatically.
+  dueAt: (source) => sourceDueAt(source, { defaultHours: config.catalog.defaultIntervalHours }),
   // Removing a source drops the channels it imported. Categories are shared
   // between sources, so an emptied non-builtin category goes too.
   remove: (id) => {
@@ -187,6 +214,7 @@ export async function refreshSource(id, { fetchImpl } = {}) {
     // the customer playlist can pass it through alongside our own EPG.
     source.epg_url = parsed.headerAttrs['url-tvg'] || parsed.headerAttrs['x-tvg-url'] || '';
     source.last_sync_at = nowIso();
+    source.last_sync_ms = Date.now();
     source.last_error = null;
     source.last_count = parsed.items.length;
     save();
@@ -197,17 +225,20 @@ export async function refreshSource(id, { fetchImpl } = {}) {
   } catch (e) {
     source.last_error = e.message;
     source.last_sync_at = nowIso();
+    // Stamp the failed attempt too, so a permanently broken provider is retried
+    // on its interval instead of on every scheduler tick.
+    source.last_sync_ms = Date.now();
     save();
     log.error('catalog', 'source refresh failed', { source_id: source.id, error: e.message });
     throw e;
   }
 }
 
-// Refresh every enabled source; used by the daily cron and the admin's
-// "refresh all" button. Never throws — one dead provider must not stop the rest.
-export async function refreshAllSources() {
+// Refresh a list of sources one after another. Never throws — one dead provider
+// must not stop the rest.
+async function refreshEach(sources) {
   const results = [];
-  for (const source of data.sources.filter((s) => s.enabled)) {
+  for (const source of sources) {
     try {
       results.push({ id: source.id, ok: true, ...(await refreshSource(source.id)) });
     } catch (e) {
@@ -215,6 +246,47 @@ export async function refreshAllSources() {
     }
   }
   return results;
+}
+
+// Refresh every enabled source now, regardless of its interval — the admin's
+// "refresh all" button.
+export function refreshAllSources() {
+  return refreshEach(data.sources.filter((s) => s.enabled));
+}
+
+// Refresh only the sources whose own interval has elapsed. This is what the
+// scheduler calls; the admin's manual buttons bypass it.
+export async function refreshDueSources({ now = Date.now() } = {}) {
+  const opts = { defaultHours: config.catalog.defaultIntervalHours };
+  const due = data.sources.filter((s) => sourceIsDue(s, now, opts));
+  if (!due.length) return [];
+  const results = await refreshEach(due);
+  log.info('catalog', 'scheduled source refresh finished', {
+    sources: results.length, failed: results.filter((r) => !r.ok).length,
+  });
+  return results;
+}
+
+// Poll for sources that have come due. The tick is deliberately coarse
+// (CATALOG_REFRESH_CHECK_MINUTES): the per-source interval decides *when* a
+// playlist is re-downloaded, this only decides how precisely that moment is hit.
+// Unref'd so it never keeps the process alive on shutdown.
+let autoRefreshTimer = null;
+export function startSourceAutoRefresh({
+  intervalMs = Math.max(1, config.catalog.refreshCheckMinutes) * 60_000,
+} = {}) {
+  if (autoRefreshTimer) return autoRefreshTimer;
+  autoRefreshTimer = setInterval(() => {
+    refreshDueSources().catch(
+      (e) => log.error('catalog', 'scheduled source refresh failed', { error: e.message }),
+    );
+  }, intervalMs);
+  autoRefreshTimer.unref();
+  log.info('catalog', 'source auto-refresh scheduler started', {
+    check_every_minutes: Math.round(intervalMs / 60_000),
+    default_interval_hours: config.catalog.defaultIntervalHours,
+  });
+  return autoRefreshTimer;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,4 +509,4 @@ export function channelsForUser(userId, { locked = false, planCategories = null 
   });
 }
 
-export { INFO_CATEGORY_ID, INFO_CHANNEL_ID };
+export { INFO_CATEGORY_ID, INFO_CHANNEL_ID, REFRESH_INTERVALS };

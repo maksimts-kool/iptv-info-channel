@@ -24,7 +24,10 @@ services:
       # Provider playlists themselves are added in the admin, not here.
       CATALOG_FETCH_TIMEOUT_MS: ${CATALOG_FETCH_TIMEOUT_MS:-30000}
       CATALOG_MAX_BYTES: ${CATALOG_MAX_BYTES:-33554432}
+      # Master switch; the per-source interval is set in the admin.
       CATALOG_AUTO_REFRESH: ${CATALOG_AUTO_REFRESH:-true}
+      CATALOG_REFRESH_CHECK_MINUTES: ${CATALOG_REFRESH_CHECK_MINUTES:-5}
+      CATALOG_REFRESH_INTERVAL_HOURS: ${CATALOG_REFRESH_INTERVAL_HOURS:-24}
       INFO_CATEGORY_NAME: ${INFO_CATEGORY_NAME:-Информация}
       # --- 3. Info channel look & timing ---
       # 720p + low frame rates look identical on a TV but cost far less CPU.

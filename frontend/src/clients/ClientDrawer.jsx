@@ -1,12 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  Alert, Button, Descriptions, Drawer, Form, Input, Popconfirm, Select, Space, Spin, Switch, Tabs,
-  Tag, Typography,
+  Alert, Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space,
+  Spin, Switch, Tabs, Tag, Typography,
 } from 'antd';
+import {
+  CopyOutlined, ExportOutlined, KeyOutlined, WalletOutlined,
+} from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { periodSuffix, planOptions } from '../lib/plans.js';
 import ClientAccessTab from './ClientAccessTab.jsx';
 import ClientNotifyTab from './ClientNotifyTab.jsx';
+
+// "Paid for N ..." — the units the payment endpoint understands. The default is
+// the plan's own billing period, so a monthly plan needs no thought at all.
+const PERIOD_UNITS = [
+  { value: 'month', label: 'мес.' },
+  { value: 'year', label: 'год' },
+  { value: 'day', label: 'дн.' },
+];
 
 // Everything about one customer in one place: the account, the channels they
 // personally get, their email subscription, and the exact playlist their player
@@ -16,7 +27,9 @@ export default function ClientDrawer({
 }) {
   const [tab, setTab] = useState('account');
   const [form] = Form.useForm();
+  const [payForm] = Form.useForm();
   const plans = state?.plans || [];
+  const plan = plans.find((p) => p.id === user?.plan_id) || null;
 
   useEffect(() => {
     if (!user) return;
@@ -29,16 +42,15 @@ export default function ClientDrawer({
     });
   }, [user, form]);
 
-  const guarded = useCallback(async (fn, ok) => {
-    try {
-      await fn();
-      if (ok) message.success(ok);
-      await reload();
-    } catch (e) {
-      if (e instanceof AuthError) onAuthError();
-      else message.error(e.message);
-    }
-  }, [message, reload, onAuthError]);
+  // The payment form defaults to one of whatever the plan is billed in, so
+  // "клиент заплатил" is one click for the normal case.
+  useEffect(() => {
+    if (!user) return;
+    payForm.setFieldsValue({
+      count: 1,
+      period: ['month', 'year', 'day'].includes(plan?.billing_period) ? plan.billing_period : 'month',
+    });
+  }, [user, plan, payForm]);
 
   if (!user) return <Drawer open={false} />;
 
@@ -63,6 +75,21 @@ export default function ClientDrawer({
     } catch {
       window.prompt('Скопируйте ссылку:', text);
     }
+  };
+
+  // Record a payment: the server works the new date out from the plan period and
+  // pushes the expiry, so nobody has to count months in their head.
+  const recordPayment = async (from) => {
+    const v = await payForm.validateFields();
+    await withRegen(
+      `Оплата «${user.username}»`,
+      async () => {
+        const res = await api.post(`/admin/api/users/${user.id}/payment`, {
+          count: v.count, period: v.period, from,
+        });
+        message.success(`Подписка продлена до ${res.user.expires_pretty}`);
+      },
+    );
   };
 
   const locked = user.status === 'expired' || user.status === 'disabled';
@@ -90,7 +117,11 @@ export default function ClientDrawer({
         >
           <Select options={planOptions(plans)} />
         </Form.Item>
-        <Form.Item name="expires_at" label="Подписка действует до" extra="Перенос даты вперёд считается продлением: клиенту уйдёт письмо и каналы включатся обратно.">
+        <Form.Item
+          name="expires_at"
+          label="Подписка действует до"
+          extra="Обычно эту дату ставит блок «Оплата» ниже. Здесь её можно поправить вручную, если дата неверная. Перенос вперёд считается продлением: клиенту уйдёт письмо и каналы включатся обратно."
+        >
           <Input type="date" />
         </Form.Item>
         <Form.Item name="active" label="Активен" valuePropName="checked">
@@ -99,46 +130,67 @@ export default function ClientDrawer({
         <Button type="primary" onClick={save}>Сохранить</Button>
       </Form>
 
+      <Card size="small" title={<Space><WalletOutlined />Оплата</Space>}>
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            {`Отметьте оплаченный срок — дата окончания посчитается сама${
+              plan?.billing_period ? ` по периоду тарифа (${periodSuffix(plan.billing_period).replace('/', '')})` : ''
+            }. Оплаченное время прибавляется к текущей дате, поэтому досрочное продление не съедает остаток.`}
+          </Typography.Text>
+          <Form form={payForm} layout="inline" style={{ rowGap: 8 }}>
+            <Form.Item name="count" label="Заплатили за" rules={[{ required: true }]}>
+              <InputNumber min={1} max={120} precision={0} style={{ width: 90 }} />
+            </Form.Item>
+            <Form.Item name="period" rules={[{ required: true }]}>
+              <Select options={PERIOD_UNITS} style={{ width: 100 }} />
+            </Form.Item>
+            <Form.Item>
+              <Space wrap>
+                <Button type="primary" onClick={() => recordPayment('expiry')}>
+                  Продлить
+                </Button>
+                <Popconfirm
+                  title="Отсчитать срок от сегодняшнего дня?"
+                  description="Остаток текущей подписки при этом сгорает."
+                  okText="Отсчитать от сегодня"
+                  onConfirm={() => recordPayment('today')}
+                >
+                  <Button>С сегодняшнего дня</Button>
+                </Popconfirm>
+              </Space>
+            </Form.Item>
+          </Form>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {user.expires_at
+              ? `Сейчас действует до ${user.expires_pretty}`
+              : 'Срок сейчас не ограничен — первая же отметка об оплате поставит дату от сегодняшнего дня.'}
+          </Typography.Text>
+        </Space>
+      </Card>
+
       <Descriptions bordered size="small" column={1} title="Ссылки">
         <Descriptions.Item label="Плейлист (m3u)">
           <Space direction="vertical" size={4} style={{ width: '100%' }}>
             <Typography.Text code style={{ fontSize: 12, wordBreak: 'break-all' }}>{user.m3u_url}</Typography.Text>
             <Space>
-              <Button size="small" onClick={() => copy(user.m3u_url)}>Копировать</Button>
-              <Button size="small" onClick={() => window.open(user.m3u_url, '_blank')}>Открыть</Button>
+              <Button size="small" icon={<CopyOutlined />} onClick={() => copy(user.m3u_url)}>Копировать</Button>
+              <Button size="small" icon={<ExportOutlined />} onClick={() => window.open(user.m3u_url, '_blank')}>Открыть</Button>
             </Space>
           </Space>
         </Descriptions.Item>
-        <Descriptions.Item label="Инфоканал (HLS)">
-          <Space>
-            <Button size="small" onClick={() => copy(user.hls_url)}>Копировать</Button>
-            <Button size="small" onClick={() => window.open(user.hls_url, '_blank')}>Открыть</Button>
-          </Space>
-        </Descriptions.Item>
         <Descriptions.Item label="Обслуживание">
-          <Space wrap>
-            <Popconfirm
-              title="Сгенерировать новую ссылку?"
-              description="Старый адрес m3u сразу перестанет работать — клиенту нужно будет отдать новый."
-              okText="Новая ссылка"
-              onConfirm={() => withRegen(
-                `Новая ссылка «${user.username}»`,
-                () => api.post(`/admin/api/users/${user.id}/token`),
-                { success: 'Ссылка перевыпущена' },
-              )}
-            >
-              <Button size="small" danger>Перевыпустить ссылку</Button>
-            </Popconfirm>
-            <Button
-              size="small"
-              onClick={() => guarded(
-                () => api.post(`/admin/api/users/${user.id}/regenerate`),
-                'Инфоканал пересобран',
-              )}
-            >
-              Пересобрать инфоканал
-            </Button>
-          </Space>
+          <Popconfirm
+            title="Сгенерировать новую ссылку?"
+            description="Старый адрес m3u сразу перестанет работать — клиенту нужно будет отдать новый."
+            okText="Новая ссылка"
+            onConfirm={() => withRegen(
+              `Новая ссылка «${user.username}»`,
+              () => api.post(`/admin/api/users/${user.id}/token`),
+              { success: 'Ссылка перевыпущена' },
+            )}
+          >
+            <Button size="small" danger icon={<KeyOutlined />}>Перевыпустить ссылку</Button>
+          </Popconfirm>
         </Descriptions.Item>
       </Descriptions>
     </Space>

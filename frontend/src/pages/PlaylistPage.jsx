@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Space, Tabs } from 'antd';
 import { AuthError } from '../lib/api.js';
+import { count } from '../lib/format.js';
 import SourcesPanel from '../playlist/SourcesPanel.jsx';
-import CategoriesPanel from '../playlist/CategoriesPanel.jsx';
-import ChannelsPanel from '../playlist/ChannelsPanel.jsx';
+import CatalogPanel from '../playlist/CatalogPanel.jsx';
 
 // The main playlist: where the upstream m3u comes from, how it is grouped, and
 // which channels are on air. Everything here is served to customers live — no
 // stream re-encode is involved, so saves are plain saves.
 export default function PlaylistPage({ api, message, onAuthError, reload }) {
   const [catalog, setCatalog] = useState(null);
-  const [tab, setTab] = useState('channels');
+  const [tab, setTab] = useState('catalog');
   const [error, setError] = useState('');
 
   const loadCatalog = useCallback(async () => {
@@ -43,14 +43,11 @@ export default function PlaylistPage({ api, message, onAuthError, reload }) {
         onChange={setTab}
         items={[
           {
-            key: 'channels',
-            label: `Каналы${catalog ? ` (${catalog.totals.channels})` : ''}`,
-            children: <ChannelsPanel {...shared} />,
-          },
-          {
-            key: 'categories',
-            label: `Категории${catalog ? ` (${catalog.totals.categories})` : ''}`,
-            children: <CategoriesPanel {...shared} onOpenChannels={() => setTab('channels')} />,
+            key: 'catalog',
+            label: catalog
+              ? `Каналы и категории (${count(catalog.totals.channels)} / ${count(catalog.totals.categories)})`
+              : 'Каналы и категории',
+            children: <CatalogPanel {...shared} />,
           },
           {
             key: 'sources',

@@ -17,11 +17,12 @@ import { Users, Plans } from '../data/store.js';
 import {
   Sources, Categories, Channels, Overrides,
   queryChannels, refreshSource, refreshAllSources, catalog,
-  planCategorySet, planCountsByCategory, INFO_CATEGORY_ID,
+  planCategorySet, planCountsByCategory, INFO_CATEGORY_ID, REFRESH_INTERVALS,
 } from '../playlist/catalog.js';
 import {
   channelCounts, categoryEnabledFor, effectiveEnabled, resolveUserChannels,
 } from '../playlist/model.js';
+import * as notify from '../notify/notify.js';
 import { accountStatus } from '../core/util.js';
 import { config } from '../config.js';
 import { log } from '../core/logger.js';
@@ -30,12 +31,17 @@ import { log } from '../core/logger.js';
 // Pure view models + input validation (no Express, no I/O — unit-tested)
 // ===========================================================================
 
-export function sourceJson(source) {
+export function sourceJson(source, { dueAt = null } = {}) {
   return {
     id: source.id,
     name: source.name,
     url: source.url,
     enabled: !!source.enabled,
+    auto_refresh: source.auto_refresh !== false,
+    interval_hours: Number(source.interval_hours) || 0,
+    // Epoch-ms of the next unattended re-download; null when this source is
+    // only ever refreshed by hand.
+    next_sync_ms: dueAt,
     epg_url: source.epg_url || '',
     last_sync_at: source.last_sync_at,
     last_error: source.last_error,
@@ -100,6 +106,19 @@ export function validateSource(body, { partial = false } = {}) {
   if (has('enabled')) {
     if (typeof body.enabled !== 'boolean') return { error: 'enabled must be a boolean' };
     out.enabled = body.enabled;
+  }
+  if (has('auto_refresh')) {
+    if (typeof body.auto_refresh !== 'boolean') return { error: 'auto_refresh must be a boolean' };
+    out.auto_refresh = body.auto_refresh;
+  }
+  if (has('interval_hours')) {
+    const hours = Number(body.interval_hours);
+    // Only the intervals the admin UI offers are storable, so a value read back
+    // always matches an option in the dropdown.
+    if (!REFRESH_INTERVALS.includes(hours)) {
+      return { error: `interval_hours must be one of: ${REFRESH_INTERVALS.join(', ')}` };
+    }
+    out.interval_hours = hours;
   }
   return { value: out };
 }
@@ -182,6 +201,35 @@ export function personalCategoryJson(category, override, {
   };
 }
 
+// What a personal-exception patch actually changes for the customer.
+//
+// Comparing effective visibility before and after (rather than reading the
+// patch) means a pin that merely restates what the plan already grants reports
+// nothing — so the customer isn't mailed about a change they can't see. Rows
+// are only the ones the patch touched; `categoryVisibleAfter` gates channels,
+// because a channel in a category the customer can't see is not "added". Pure.
+export function diffOverridePatch({
+  categoryRows = [], channelRows = [], before, after, planCategories = null,
+  categoryVisibleAfter = () => true,
+}) {
+  const out = {
+    addedCategories: [], removedCategories: [], addedChannels: [], removedChannels: [],
+  };
+  for (const category of categoryRows) {
+    if (category.builtin) continue;
+    const was = categoryEnabledFor(category, before.categories[category.id], planCategories);
+    const now = categoryEnabledFor(category, after.categories[category.id], planCategories);
+    if (was !== now) (now ? out.addedCategories : out.removedCategories).push(category.name);
+  }
+  for (const channel of channelRows) {
+    if (channel.builtin || !categoryVisibleAfter(channel.category_id)) continue;
+    const was = effectiveEnabled(channel, before.channels[channel.id]);
+    const now = effectiveEnabled(channel, after.channels[channel.id]);
+    if (was !== now) (now ? out.addedChannels : out.removedChannels).push(channel.name);
+  }
+  return out;
+}
+
 // True when the account itself has switched the playlist off (expired or
 // manually disabled) — everything but Информация is withheld regardless of
 // overrides, and is restored the moment the expiry date moves forward.
@@ -195,6 +243,13 @@ export function isLocked(user, expiringThresholdDays) {
 // ===========================================================================
 
 const router = express.Router();
+
+// Fire-and-forget notification dispatch — a mail provider hiccup must not fail
+// the admin's save (same pattern as http/admin.js).
+function fireNotify(factory, label) {
+  Promise.resolve().then(factory)
+    .catch((e) => log.error('admin', label, { error: e.message }));
+}
 
 function catalogOverview() {
   const counts = channelCounts(catalog());
@@ -210,7 +265,9 @@ function catalogOverview() {
     }));
   const all = catalog().channels;
   return {
-    sources: Sources.all().map(sourceJson),
+    sources: Sources.all().map((s) => sourceJson(s, { dueAt: Sources.dueAt(s) })),
+    refreshIntervals: REFRESH_INTERVALS,
+    autoRefreshEnabled: config.catalog.autoRefresh,
     categories,
     plans: plans.map((p) => ({
       id: p.id, name: p.name, category_ids: p.category_ids || [],
@@ -237,14 +294,15 @@ router.post('/catalog/sources', (req, res) => {
   if (error) return res.status(400).json({ error });
   const source = Sources.create(value);
   log.info('admin', 'playlist source created', { source_id: source.id, name: source.name });
-  res.status(201).json(sourceJson(source));
+  res.status(201).json(sourceJson(source, { dueAt: Sources.dueAt(source) }));
 });
 
 router.patch('/catalog/sources/:id', (req, res) => {
   if (!Sources.get(req.params.id)) return res.status(404).json({ error: 'not found' });
   const { error, value } = validateSource(req.body || {}, { partial: true });
   if (error) return res.status(400).json({ error });
-  res.json(sourceJson(Sources.update(req.params.id, value)));
+  const source = Sources.update(req.params.id, value);
+  res.json(sourceJson(source, { dueAt: Sources.dueAt(source) }));
 });
 
 router.delete('/catalog/sources/:id', (req, res) => {
@@ -438,11 +496,37 @@ router.patch('/users/:id/channels', (req, res) => {
   if (categories[INFO_CATEGORY_ID] === false) {
     return res.status(400).json({ error: 'the info category cannot be withheld from a customer' });
   }
+  const before = Overrides.get(user.id);
   const saved = Overrides.patch(user.id, { categories, channels });
   log.info('admin', 'customer channel access updated', {
     user_id: user.id,
     pinned: Object.keys(saved.categories).length + Object.keys(saved.channels).length,
   });
+
+  // Tell the customer what this exception gave them or took away. Skipped for a
+  // locked account: their playlist is Информация either way until they renew.
+  if (!isLocked(user, config.expiringThresholdDays)) {
+    const planCategories = planCategorySet(user);
+    const rows = (ids, get) => ids.map(get).filter(Boolean);
+    const categoryRows = rows(Object.keys(categories), (id) => Categories.get(id));
+    const channelRows = rows(Object.keys(channels), (id) => Channels.get(id));
+    const diff = diffOverridePatch({
+      categoryRows,
+      channelRows,
+      before,
+      after: saved,
+      planCategories,
+      categoryVisibleAfter: (id) => {
+        const category = Categories.get(id);
+        return !!category && (category.builtin
+          || categoryEnabledFor(category, saved.categories[id], planCategories));
+      },
+    });
+    fireNotify(
+      () => notify.notifyContentChange(user, diff, { planName: user.plan_name }),
+      'personal content notification failed',
+    );
+  }
   return res.json({ ok: true, overrides: saved });
 });
 

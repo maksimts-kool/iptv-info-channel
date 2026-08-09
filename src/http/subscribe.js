@@ -54,7 +54,9 @@ router.get('/sub/:token/status', (req, res) => {
     subscribed: !!sub,
     verified: !!sub?.verified,
     email: sub?.email || '',
-    options: sub?.options || { server: false, expiry: true, renewal: true },
+    options: sub?.options || {
+      server: false, expiry: true, content: true, renewal: true,
+    },
   });
 });
 
@@ -167,6 +169,10 @@ function subscribePage(token) {
       <div class="t">Подписка скоро истекает<small>Напомним заранее, чтобы вы успели продлить</small></div>
     </div>
     <div class="opt">
+      <input id="o-content" type="checkbox" checked>
+      <div class="t">Изменения в списке каналов<small>Когда в ваш пакет добавили или убрали каналы</small></div>
+    </div>
+    <div class="opt">
       <input id="o-server" type="checkbox">
       <div class="t">Статус сервера<small>Сообщим о сбоях и восстановлении сервиса</small></div>
     </div>
@@ -200,6 +206,7 @@ function paint(s){
     : 'Подписаться';
   if(s.email) $('email').value = s.email;
   $('o-expiry').checked = s.options.expiry;
+  $('o-content').checked = s.options.content !== false;
   $('o-server').checked = s.options.server;
 }
 async function refresh(){ try{ paint(await call('GET','/status')); }catch(e){ note(e.message,false);} }
@@ -208,7 +215,7 @@ $('save').onclick = async () => {
   if(!email){ note('Введите адрес электронной почты', false); return; }
   $('save').disabled = true;
   try{
-    const d = await call('POST','',{ email, options:{ expiry:$('o-expiry').checked, server:$('o-server').checked } });
+    const d = await call('POST','',{ email, options:{ expiry:$('o-expiry').checked, content:$('o-content').checked, server:$('o-server').checked } });
     note(d.message, true); await refresh();
   }catch(e){ note(e.message,false); } finally { $('save').disabled=false; }
 };

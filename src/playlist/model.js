@@ -86,6 +86,33 @@ export function ensureBuiltins(state, { infoCategoryName = 'Информация
 }
 
 // ---------------------------------------------------------------------------
+// Unattended source refreshing
+// ---------------------------------------------------------------------------
+
+// Intervals offered in the admin, in hours. Anything else a client sends is
+// rejected, so a stored interval is always one the UI can show back.
+export const REFRESH_INTERVALS = [1, 2, 3, 6, 12, 24, 48, 72, 168];
+
+// When this source next becomes due for an automatic re-download, as an epoch
+// milliseconds value — or `null` when it is never refreshed automatically
+// (disabled source, or auto-refresh switched off for it).
+//
+// A source that has never been fetched is due immediately. `last_sync_ms` is
+// stamped on every ATTEMPT, success or failure, so a permanently broken
+// provider is retried on its interval rather than on every tick.
+export function sourceDueAt(source, { defaultHours = 24 } = {}) {
+  if (!source || source.enabled === false || source.auto_refresh === false) return null;
+  if (!source.last_sync_ms) return 0;
+  const hours = Number(source.interval_hours) > 0 ? Number(source.interval_hours) : defaultHours;
+  return source.last_sync_ms + hours * 3600_000;
+}
+
+export function sourceIsDue(source, now = Date.now(), options = {}) {
+  const due = sourceDueAt(source, options);
+  return due !== null && now >= due;
+}
+
+// ---------------------------------------------------------------------------
 // Merge an upstream playlist into the catalog
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Button, Card, Input, Space, Switch, Table, Tag, Typography,
+  Badge, Button, Card, Input, Space, Switch, Table, Tag, Typography,
 } from 'antd';
+import { CheckCircleOutlined, SendOutlined } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 
 const NOTIFY_TYPE = {
@@ -9,6 +10,7 @@ const NOTIFY_TYPE = {
   confirmation: 'Подписка оформлена',
   expiry: 'Истечение',
   renewal: 'Продление',
+  content: 'Изменения в каналах',
   server: 'Статус сервера',
   test: 'Тест',
 };
@@ -63,24 +65,25 @@ export default function NotifyCard({
     }
   };
 
-  const cfg = !data ? '' : data.dryRun
-    ? 'тестовый режим — письма не отправляются'
+  const cfg = !data ? null : data.dryRun
+    ? <span>тестовый режим — письма не отправляются</span>
     : data.configured
-      ? `провайдер: ${data.provider} ✓`
-      : 'не настроено — задайте NOTIFY_API_KEY и NOTIFY_FROM';
+      ? (
+        <span>
+          <CheckCircleOutlined style={{ color: '#16a34a', marginRight: 6 }} />
+          {`провайдер: ${data.provider}`}
+        </span>
+      )
+      : <span>не настроено — задайте NOTIFY_API_KEY и NOTIFY_FROM</span>;
 
   return (
     <Card
       title="Уведомления по почте"
       extra={data ? (
-        <span>
-          <span style={{
-            display: 'inline-block', width: 10, height: 10, borderRadius: '50%', marginRight: 8,
-            background: data.enabled ? '#16a34a' : '#8c8c8c',
-          }}
-          />
-          {data.enabled ? 'Включены' : 'Выключены'}
-        </span>
+        <Badge
+          status={data.enabled ? 'success' : 'default'}
+          text={data.enabled ? 'Включены' : 'Выключены'}
+        />
       ) : null}
     >
       <Space size="large" align="center" wrap style={{ marginBottom: 16 }}>
@@ -96,10 +99,15 @@ export default function NotifyCard({
             onChange={(e) => setTestEmail(e.target.value)}
             style={{ width: 220 }}
           />
-          <Button onClick={sendTest}>Отправить тест</Button>
+          <Button icon={<SendOutlined />} onClick={sendTest}>Отправить тест</Button>
         </Space.Compact>
         <Typography.Text type="secondary">
-          {error ? `Не удалось загрузить: ${error}` : `${cfg} · подписчиков: ${data?.subscribers?.length ?? 0}`}
+          {error ? `Не удалось загрузить: ${error}` : (
+            <>
+              {cfg}
+              {` · подписчиков: ${data?.subscribers?.length ?? 0}`}
+            </>
+          )}
         </Typography.Text>
       </Space>
       <Table

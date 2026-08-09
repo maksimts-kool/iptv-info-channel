@@ -3,6 +3,7 @@ import {
   Alert, Button, Card, Checkbox, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row,
   Select, Space, Tag, Typography,
 } from 'antd';
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { periodSuffix } from '../lib/plans.js';
 
 // A plan IS the channel package: the categories selected here are exactly what
@@ -60,7 +61,11 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
   return (
     <Card
       title="Тарифы и пакеты каналов"
-      extra={<Button type="primary" onClick={() => openDialog(null)}>+ Добавить тариф</Button>}
+      extra={(
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => openDialog(null)}>
+          Добавить тариф
+        </Button>
+      )}
     >
       {!sellable.length ? (
         <Alert
@@ -98,14 +103,16 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
                   )}
                   extra={(
                     <Space>
-                      <Button size="small" onClick={() => openDialog(p)}>Изменить</Button>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openDialog(p)}>
+                        Изменить
+                      </Button>
                       <Popconfirm
                         title={`Удалить тариф «${p.name}»?`}
                         okText="Удалить"
                         okButtonProps={{ danger: true }}
                         onConfirm={() => remove(p)}
                       >
-                        <Button size="small" danger>Удалить</Button>
+                        <Button size="small" danger icon={<DeleteOutlined />}>Удалить</Button>
                       </Popconfirm>
                     </Space>
                   )}

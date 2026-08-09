@@ -123,8 +123,17 @@ export const config = {
     fetchTimeoutMs: num(process.env.CATALOG_FETCH_TIMEOUT_MS, 30_000),
     // Hard cap on a downloaded playlist so a bad URL can't exhaust memory.
     maxBytes: num(process.env.CATALOG_MAX_BYTES, 32 * 1024 * 1024),
-    // Re-fetch every enabled source in the daily 00:05 cron.
+    // Master switch for unattended source refreshing. Each source then carries
+    // its own `auto_refresh` flag and `interval_hours` (managed in the admin);
+    // a scheduler ticks every CATALOG_REFRESH_CHECK_MINUTES and re-downloads
+    // whatever has gone longer than its interval since the last attempt.
     autoRefresh: bool(process.env.CATALOG_AUTO_REFRESH),
+    // How often the scheduler looks for a source that has come due. This is not
+    // the refresh interval — that is per source — just the polling granularity.
+    refreshCheckMinutes: num(process.env.CATALOG_REFRESH_CHECK_MINUTES, 5),
+    // Interval a newly added source starts with (hours). 24 keeps the old
+    // once-a-day behaviour as the default.
+    defaultIntervalHours: num(process.env.CATALOG_REFRESH_INTERVAL_HOURS, 24),
     // Display name of the built-in category that carries the info channel. It is
     // the ONLY category an expired/disabled customer keeps (see catalog.js).
     infoCategoryName: process.env.INFO_CATEGORY_NAME || 'Информация',

@@ -3,6 +3,10 @@ import {
   App as AntApp, Button, Drawer, Grid, Layout, Menu, Space, Spin, Typography,
 } from 'antd';
 import {
+  DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LogoutOutlined, MailOutlined,
+  MenuOutlined, PlaySquareOutlined, TeamOutlined, WifiOutlined,
+} from '@ant-design/icons';
+import {
   api, AuthError, login, logout, setCsrfToken,
 } from './lib/api.js';
 import Login from './components/Login.jsx';
@@ -18,13 +22,17 @@ const { Header, Content, Sider } = Layout;
 
 // Playlist + client management is the product now; the info channel is one
 // feature inside it, so it sits below them in the navigation.
+//
+// Icons are Ant Design's icon set (vector, themed with the rest of the UI and
+// identical on every platform) rather than emoji, which render as a different
+// picture on every OS and sit off the text baseline.
 const SECTIONS = [
-  { key: 'overview', label: 'Обзор', icon: '📊', title: 'Обзор', Page: OverviewPage },
-  { key: 'playlist', label: 'Плейлист', icon: '📡', title: 'Плейлист', Page: PlaylistPage },
-  { key: 'clients', label: 'Клиенты', icon: '👥', title: 'Клиенты', Page: ClientsPage },
-  { key: 'plans', label: 'Тарифы', icon: '💶', title: 'Тарифы и цены', Page: PlansPage },
-  { key: 'info', label: 'Инфоканал', icon: '📺', title: 'Информационный канал', Page: InfoChannelPage },
-  { key: 'notify', label: 'Уведомления', icon: '✉️', title: 'Уведомления по почте', Page: NotifyPage },
+  { key: 'overview', label: 'Обзор', Icon: DashboardOutlined, title: 'Обзор', Page: OverviewPage },
+  { key: 'playlist', label: 'Плейлист', Icon: PlaySquareOutlined, title: 'Плейлист', Page: PlaylistPage },
+  { key: 'clients', label: 'Клиенты', Icon: TeamOutlined, title: 'Клиенты', Page: ClientsPage },
+  { key: 'plans', label: 'Тарифы', Icon: EuroCircleOutlined, title: 'Тарифы и цены', Page: PlansPage },
+  { key: 'info', label: 'Инфоканал', Icon: DesktopOutlined, title: 'Информационный канал', Page: InfoChannelPage },
+  { key: 'notify', label: 'Уведомления', Icon: MailOutlined, title: 'Уведомления по почте', Page: NotifyPage },
 ];
 
 const DEFAULT_SECTION = 'overview';
@@ -225,12 +233,8 @@ export default function App() {
       style={{ borderInlineEnd: 'none' }}
       items={SECTIONS.map((s) => ({
         key: s.key,
-        label: (
-          <span>
-            <span style={{ marginRight: 10 }} aria-hidden="true">{s.icon}</span>
-            {s.label}
-          </span>
-        ),
+        icon: <s.Icon />,
+        label: s.label,
       }))}
     />
   );
@@ -240,7 +244,7 @@ export default function App() {
       {compact ? null : (
         <Sider width={216} breakpoint="lg" style={{ position: 'sticky', top: 0, height: '100vh' }}>
           <div className="brand-mark">
-            <span aria-hidden="true">📡</span>
+            <WifiOutlined />
             <span>IPTV Panel</span>
           </div>
           {menu}
@@ -249,7 +253,9 @@ export default function App() {
       <Layout>
         <Header className="app-header">
           <Space size="middle" align="center">
-            {compact ? <Button onClick={() => setNavOpen(true)}>☰</Button> : null}
+            {compact ? (
+              <Button icon={<MenuOutlined />} aria-label="Меню" onClick={() => setNavOpen(true)} />
+            ) : null}
             <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
               <Typography.Text strong style={{ color: '#fff', fontSize: 16 }}>
                 {active.title}
@@ -261,7 +267,7 @@ export default function App() {
               ) : null}
             </div>
           </Space>
-          <Button onClick={handleLogout}>Выйти</Button>
+          <Button icon={<LogoutOutlined />} onClick={handleLogout}>Выйти</Button>
         </Header>
         <Content style={{ padding: 24 }}>
           <div style={{ maxWidth: 1240, margin: '0 auto' }}>
@@ -279,7 +285,7 @@ export default function App() {
         styles={{ body: { padding: 0, background: '#001529' }, header: { display: 'none' } }}
       >
         <div className="brand-mark">
-          <span aria-hidden="true">📡</span>
+          <WifiOutlined />
           <span>IPTV Panel</span>
         </div>
         {menu}

@@ -59,9 +59,9 @@ recurses, so a new subfolder needs no wiring.
 frontend/              # React + Vite + Ant Design admin app (own package.json)
   src/main.jsx         # entry
   src/App.jsx          # sider shell + hash routing
-  src/lib/             # api.js (fetch wrapper + AuthError) and plans.js helpers
+  src/lib/             # api.js (fetch wrapper + AuthError), plans.js, format.js
   src/pages/           # one component per nav section (Overview/Playlist/Clients/…)
-  src/playlist/        # Sources/Categories/Channels panels of the Playlist section
+  src/playlist/        # SourcesPanel + CatalogPanel (categories with channels nested)
   src/clients/         # the per-customer drawer and its tabs
   src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify cards
 ```
@@ -145,11 +145,23 @@ Request/data flow, entry point [src/server.js](src/server.js):
      directives are kept verbatim and re-emitted because they are load-bearing
      for playback.
    - [model.js](src/playlist/model.js) is the **pure** logic: `ensureBuiltins`
-     (the `Информация` category + info channel), `mergeSourceChannels` and
-     `resolveUserChannels`. No I/O, no module state — unit-tested directly.
+     (the `Информация` category + info channel), `mergeSourceChannels`,
+     `resolveUserChannels` and the auto-refresh due calculation
+     (`sourceDueAt`/`sourceIsDue`). No I/O, no module state — unit-tested directly.
    - [catalog.js](src/playlist/catalog.js) is the store + HTTP fetching:
      `Sources`, `Categories`, `Channels`, `Overrides`, `queryChannels`
-     (server-side paging/filtering), `refreshSource`/`refreshAllSources`.
+     (server-side paging/filtering), `refreshSource`/`refreshAllSources`/
+     `refreshDueSources` and the `startSourceAutoRefresh` scheduler.
+
+   **Sources refresh themselves.** Each source row carries `auto_refresh` and
+   `interval_hours` (admin-managed, alongside `last_sync_ms` — stamped on every
+   *attempt*, success or failure, so a dead provider is retried on its interval
+   rather than on every tick). `startSourceAutoRefresh()` (wired in
+   `server.js`, gated on `CATALOG_AUTO_REFRESH`) polls every
+   `CATALOG_REFRESH_CHECK_MINUTES` and refreshes whatever has come due; the
+   00:05 cron calls the same `refreshDueSources` as a safety net for intervals
+   that elapsed while the process was down. The polling tick is *not* the
+   refresh interval — that is per source.
 
    Invariants worth preserving:
    - **Admin edits beat upstream.** A refresh updates only the stream URL and
@@ -159,6 +171,10 @@ Request/data flow, entry point [src/server.js](src/server.js):
      the URL doesn't duplicate the channel.
    - **Vanished channels are flagged `missing`, never deleted**, so a truncated
      download can't destroy the admin's overrides; they return on reappearance.
+     For the same reason the admin UI offers **no delete for an imported**
+     channel or category — the next refresh would just bring it back, so the
+     honest control is the enable switch. Only rows created by hand (`custom`)
+     can be deleted; the `DELETE` routes still exist and still work for those.
    - **A category's visibility has three layers**, resolved by
      `categoryEnabledFor` in priority order: (1) a **per-customer pin**, (2) the
      **global enable** (catalog-wide kill switch), (3) the **plan** — whether
@@ -309,10 +325,17 @@ Request/data flow, entry point [src/server.js](src/server.js):
    mail an unconsenting address. `expiryDue`/dispatch all gate on `verified`. Mail is sent over a
    **third-party HTTP email API** (Brevo default, Resend optional — `NOTIFY_*`
    env) because DigitalOcean blocks outbound SMTP ports; `NOTIFY_DRY_RUN` logs
-   instead of sending. Three triggers: **server status** (admin incident
+   instead of sending. Four triggers: **server status** (admin incident
    raised/resolved, opt-in), **expiring soon** (`expirySweep()` from the daily
    cron, opt-in, once per expiry date via a `last_expiry_notice` dedup marker),
-   and **renewal** (admin pushes expiry later — mandatory). Data lives in `data/store.js`
+   **renewal** (admin pushes expiry later, or records a payment — mandatory),
+   and **content** (the customer's channel package changed — opt-in, the
+   `content` option; subscribers predating the topic are grandfathered on).
+   The content trigger fires from two places and both diff **effective
+   visibility**, never the raw edit, so a change the customer cannot see mails
+   nothing: a plan's `category_ids` edit (`planCategoryDiff` in `http/admin.js`,
+   skipping customers who have pinned that category and locked accounts) and a
+   personal exception (`diffOverridePatch` in `http/catalog.js`). Data lives in `data/store.js`
    (`Subscribers`, one per `user_id`; `NotifyLog` capped ring buffer); the global
    on/off flag is a `Settings` value (`notify_enabled`) overlaid onto
    `config.notify.enabled` by `syncNotifySettings()` (an admin
@@ -344,6 +367,18 @@ Request/data flow, entry point [src/server.js](src/server.js):
    Bulk channel edits accept either `{ids}` or `{filter}` — the latter so
    "disable all 4 000 results" doesn't ship 4 000 ids from a paged table.
 
+   **Subscriptions are dated by payment, not by hand.**
+   `POST /admin/api/users/:id/payment` takes `{ count, period, from }` — all
+   optional, defaulting to one of the plan's own `billing_period` — and pushes
+   `expires_at` out by that much, so nobody counts months in their head. Paid
+   time **stacks on the existing date** (renewing early never burns the
+   remainder); a lapsed or open-ended account starts from today instead, and
+   `from: 'today'` forces that. The arithmetic is `addPeriod` in `core/util.js`
+   (clamping 31 янв + 1 мес to 28 фев) via the pure `validatePayment` /
+   `paymentExpiry` in `admin.js`. It is a separate endpoint rather than part of
+   `PATCH /users/:id` so a payment bot can call it with an empty body; the
+   manual date field stays for fixing a wrong date.
+
    **Catalog edits do not regenerate anything** (the `.m3u` is rendered per
    request), which is the main reason this router is separate. Other mutations
    still trigger **fire-and-forget** regeneration: plan, branding and
@@ -371,6 +406,31 @@ Request/data flow, entry point [src/server.js](src/server.js):
    instead, since showing an encoding banner for an edit that never encodes
    would be a lie.
 
+   Two UI conventions worth keeping:
+   - **Icons come from `@ant-design/icons`, never emoji.** Emoji render as a
+     different picture per OS and sit off the text baseline; the icon set is
+     vector and themed with the rest of AntD.
+   - **Counts go through `count()` in `lib/format.js`.** AntD's `<Statistic>`
+     groups its own `value` but leaves `suffix` alone, which is how
+     "1,308 / 1310" happened — pass `formatter={count}` *and* build the suffix
+     with the same helper.
+
+   The Плейлист section is two tabs: **Каналы и категории** (`CatalogPanel` — a
+   category is a row you expand to load that category's channels; typing in the
+   search box switches the whole panel to flat, server-filtered results) and
+   **Источники**. Channels are never all in the browser at once — a provider
+   list is tens of thousands of rows, so every view is a server-side page.
+
+   Bulk changes are **selection-driven**: tick rows in either table, then act on
+   them from the bar above it. Because a page is only 25–50 rows, that bar also
+   offers "выбрать все N", which switches the request from `{ids}` to
+   `{filter}` — the same server-side path, so switching off a 4 000-channel
+   result set never ships 4 000 ids. Category rows deliberately carry *no*
+   bulk buttons of their own: acting on channels the row isn't showing is what
+   the selection replaces. Expansion is driven by the category name and a
+   full-size chevron button (AntD's default 16px +/- glyph was too small to
+   aim at), both calling `toggleCategory`.
+
 ## Config
 
 Config is loaded by a **dependency-free `.env` parser** in
@@ -382,9 +442,10 @@ the same grouping. `config.js` **must stay at `src/`** — its `ROOT` is derived
 from its own location and resolves the data dir, music file and `.env` path.
 
 Note that upstream playlist **sources are admin data, not config** — they live in
-`catalog.json` and are managed in the UI. `config.catalog.*` only bounds *how*
-they are fetched (timeout, size cap, daily auto-refresh) and names the built-in
-info category.
+`catalog.json` and are managed in the UI, including each one's auto-refresh
+interval. `config.catalog.*` only bounds *how* they are fetched (timeout, size
+cap, the auto-refresh master switch + polling granularity + the interval a new
+source starts with) and names the built-in info category.
 
 ## Security
 

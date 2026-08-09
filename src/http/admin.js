@@ -13,7 +13,7 @@ import {
 } from '../data/store.js';
 import { statusSummary, INCIDENT_SEVERITIES } from '../render/status.js';
 import {
-  daysLeft, accountStatus, formatPrice, formatDate, STATUS_META,
+  daysLeft, accountStatus, formatPrice, formatDate, localDateString, addPeriod, STATUS_META,
 } from '../core/util.js';
 import * as notify from '../notify/notify.js';
 import {
@@ -116,11 +116,59 @@ export function parsePlanCategories(value, known = null) {
   return { categoryIds: ids };
 }
 
+// Which categories a plan edit added to / took away from its customers. Pure —
+// the caller turns the ids into names and decides who to tell.
+export function planCategoryDiff(beforeIds = [], afterIds = []) {
+  const before = new Set(beforeIds);
+  const after = new Set(afterIds);
+  return {
+    added: [...after].filter((id) => !before.has(id)),
+    removed: [...before].filter((id) => !after.has(id)),
+  };
+}
+
 export function duplicatePlanName(plans, name, exceptId = null) {
   const normalized = name.trim().toLocaleLowerCase();
   return plans.some((plan) => (
     plan.id !== exceptId && plan.name.trim().toLocaleLowerCase() === normalized
   ));
+}
+
+const PAYMENT_PERIODS = ['day', 'month', 'year'];
+const MAX_PAYMENT_UNITS = 120;
+
+// Validate a "customer paid for N periods" request. `period` defaults to the
+// plan's own billing period so the common case — a monthly plan, one month paid
+// — is just `{}`; a plan with no period is billed by the month.
+export function validatePayment(body = {}, plan = null) {
+  const count = body.count === undefined ? 1 : Number(body.count);
+  if (!Number.isInteger(count) || count < 1 || count > MAX_PAYMENT_UNITS) {
+    return { error: `count must be a whole number between 1 and ${MAX_PAYMENT_UNITS}` };
+  }
+  const period = body.period === undefined || body.period === ''
+    ? (PAYMENT_PERIODS.includes(plan?.billing_period) ? plan.billing_period : 'month')
+    : String(body.period);
+  if (!PAYMENT_PERIODS.includes(period)) {
+    return { error: `period must be one of: ${PAYMENT_PERIODS.join(', ')}` };
+  }
+  if (body.from !== undefined && body.from !== 'expiry' && body.from !== 'today') {
+    return { error: "from must be 'expiry' or 'today'" };
+  }
+  return { value: { count, period, from: body.from || 'expiry' } };
+}
+
+// The new expiry date a payment produces.
+//
+// Paid time is added on top of whatever the customer still has, so renewing
+// early never costs them the remaining days — but a lapsed account restarts
+// from today rather than back-dating the new period onto an expiry that has
+// already passed. An open-ended account (no expiry) also starts from today:
+// recording a payment is what puts it on a subscription clock in the first
+// place. `from: 'today'` forces that behaviour explicitly.
+export function paymentExpiry(user, { period, count, from = 'expiry' }, today) {
+  const current = user.expires_at || '';
+  const base = from === 'today' || !current || current < today ? today : current;
+  return addPeriod(base, period, count);
 }
 
 // Shared incident field validation; returns { error } or { value } for a
@@ -212,6 +260,29 @@ function catalogCategories() {
 }
 const knownCategoryIds = () => new Set(catalogCategories().map((c) => c.id));
 const categoryNameMap = () => new Map(catalogCategories().map((c) => [c.id, c.name]));
+
+// Mail the customers of a plan whose category package just changed.
+//
+// Two groups are deliberately left out. A customer with a personal pin on a
+// category doesn't follow the plan for it, so the plan edit changed nothing for
+// them; and an expired/disabled customer sees only Информация either way, so
+// telling them their package grew would be a lie. Globally switched-off
+// categories are skipped for the same reason.
+async function notifyPlanCategoryChange(plan, diff) {
+  const visible = new Map(catalogCategories().filter((c) => c.enabled !== false).map((c) => [c.id, c.name]));
+  for (const user of Users.all()) {
+    if (user.plan_id !== plan.id) continue;
+    const status = accountStatus(user, config.expiringThresholdDays);
+    if (status === 'expired' || status === 'disabled') continue;
+    const pinned = Overrides.get(user.id).categories;
+    const names = (ids) => ids
+      .filter((id) => pinned[id] === undefined && visible.has(id))
+      .map((id) => visible.get(id));
+    await notify.notifyContentChange(user, {
+      addedCategories: names(diff.added), removedCategories: names(diff.removed),
+    }, { planName: plan.name });
+  }
+}
 
 // ---------- Auth ----------
 router.post('/login', express.urlencoded({ extended: false }), express.json(), (req, res) => {
@@ -327,6 +398,35 @@ router.patch('/api/users/:id', (req, res) => {
   res.json(decorateUser(u));
 });
 
+// Record a payment: push the expiry date out by N billing periods instead of
+// making the admin work out the date by hand. Kept as its own endpoint (rather
+// than folded into PATCH /users/:id) so it can also be called by a payment bot
+// or a script — the body is just `{}` for "one more plan period".
+router.post('/api/users/:id/payment', (req, res) => {
+  const id = Number(req.params.id);
+  const user = Users.get(id);
+  if (!user) return res.status(404).json({ error: 'not found' });
+
+  const { error, value } = validatePayment(req.body || {}, Plans.get(user.plan_id));
+  if (error) return res.status(400).json({ error });
+  const today = localDateString(new Date(), config.timezone);
+  const expiresAt = paymentExpiry(user, value, today);
+  if (!expiresAt) return res.status(400).json({ error: 'could not compute the new expiry date' });
+
+  const updated = Users.update(id, { expires_at: expiresAt });
+  log.info('admin', 'payment recorded', {
+    user_id: id, username: updated.username, ...value, from_date: user.expires_at, expires_at: expiresAt,
+  });
+  regen(id, 'admin payment recorded');
+  // Same mandatory renewal notice the manual date change sends.
+  if (!user.expires_at || expiresAt > user.expires_at) {
+    fireNotify(() => notify.notifyRenewal(updated), 'renewal notification failed');
+  }
+  return res.json({
+    ok: true, previous_expires_at: user.expires_at || null, ...value, user: decorateUser(updated),
+  });
+});
+
 // Regenerate access token (invalidates old m3u link)
 router.post('/api/users/:id/token', (req, res) => {
   const id = Number(req.params.id);
@@ -431,9 +531,17 @@ router.patch('/api/plans/:id', (req, res) => {
     updates.category_ids = parsed.categoryIds;
   }
 
+  // Snapshot before the write: the category diff drives the customer emails.
+  const categoriesBefore = [...(plan.category_ids || [])];
   const updated = Plans.update(id, updates);
   log.info('admin', 'plan updated', { plan_id: id, fields: Object.keys(updates) });
   regenAll('admin plan updated');
+  if (updates.category_ids !== undefined) {
+    const diff = planCategoryDiff(categoriesBefore, updated.category_ids);
+    if (diff.added.length || diff.removed.length) {
+      fireNotify(() => notifyPlanCategoryChange(updated, diff), 'plan content notification failed');
+    }
+  }
   res.json(planJson(updated, categoryNameMap()));
 });
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { config } from '../../src/config.js';
 import {
   validateSubscription, buildProviderRequest, sendEmail, templates, expiryDue,
-  subscribeUrlFor,
+  subscribeUrlFor, capNames, contentChangeSummary,
 } from '../../src/notify/notify.js';
 import { buildBrandSlide1Svg } from '../../src/render/overlay.js';
 
@@ -12,7 +12,41 @@ test('validateSubscription accepts a valid email and normalizes it', () => {
   assert.equal(error, undefined);
   assert.equal(value.email, 'user@example.com');
   // Renewal is mandatory and always forced on regardless of input.
-  assert.deepEqual(value.options, { server: true, expiry: false, renewal: true });
+  assert.deepEqual(value.options, {
+    server: true, expiry: false, content: false, renewal: true,
+  });
+});
+
+test('capNames keeps a long list readable', () => {
+  assert.deepEqual(capNames(['a', 'b']), ['a', 'b']);
+  const capped = capNames(Array.from({ length: 20 }, (_, i) => `ch${i}`));
+  assert.equal(capped.length, 13);
+  assert.equal(capped.at(-1), '…и ещё 8 позиций');
+});
+
+test('contentChangeSummary reports null when nothing changed', () => {
+  assert.equal(contentChangeSummary({}), null);
+  assert.equal(contentChangeSummary({ addedCategories: [], removedChannels: [] }), null);
+  assert.deepEqual(contentChangeSummary({ addedCategories: ['Спорт'] }), {
+    addedCategories: ['Спорт'], removedCategories: [], addedChannels: [], removedChannels: [],
+  });
+});
+
+test('contentChange template names both directions of a mixed change', () => {
+  const message = templates.contentChange('Бренд', {
+    user: { username: 'Алиса' },
+    planName: 'Про',
+    change: {
+      addedCategories: ['Спорт'], removedCategories: [],
+      addedChannels: [], removedChannels: ['НТВ'],
+    },
+  });
+  assert.match(message.subject, /изменения в списке каналов/);
+  assert.match(message.html, /Список каналов изменился/);
+  assert.match(message.html, /Спорт/);
+  assert.match(message.html, /НТВ/);
+  assert.match(message.text, /Добавлены категории: Спорт/);
+  assert.match(message.text, /Убраны каналы: НТВ/);
 });
 
 test('validateSubscription rejects bad emails', () => {

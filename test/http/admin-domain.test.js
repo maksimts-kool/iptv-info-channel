@@ -7,7 +7,60 @@ import {
   validateIncident,  planJson,
   incidentJson,
   decorateUser,
+  validatePayment,
+  paymentExpiry,
+  planCategoryDiff,
 } from '../../src/http/admin.js';
+
+test('validatePayment defaults to one of the plan billing period', () => {
+  assert.deepEqual(validatePayment({}, { billing_period: 'month' }).value,
+    { count: 1, period: 'month', from: 'expiry' });
+  assert.deepEqual(validatePayment({ count: 3 }, { billing_period: 'year' }).value,
+    { count: 3, period: 'year', from: 'expiry' });
+  // A plan with no billing period is billed monthly.
+  assert.equal(validatePayment({}, { billing_period: '' }).value.period, 'month');
+  assert.equal(validatePayment({}, null).value.period, 'month');
+  // An explicit period overrides the plan.
+  assert.equal(validatePayment({ period: 'day' }, { billing_period: 'month' }).value.period, 'day');
+});
+
+test('validatePayment rejects nonsense counts and periods', () => {
+  assert.match(validatePayment({ count: 0 }).error, /between 1 and/);
+  assert.match(validatePayment({ count: 2.5 }).error, /between 1 and/);
+  assert.match(validatePayment({ count: 999 }).error, /between 1 and/);
+  assert.match(validatePayment({ period: 'week' }).error, /period must be one of/);
+  assert.match(validatePayment({ from: 'yesterday' }).error, /from must be/);
+});
+
+test('paymentExpiry stacks paid time on top of an unexpired subscription', () => {
+  const today = '2026-08-10';
+  // Renewing early keeps the remaining days.
+  assert.equal(
+    paymentExpiry({ expires_at: '2026-09-01' }, { period: 'month', count: 1 }, today),
+    '2026-10-01',
+  );
+  // A lapsed account restarts from today, not from the date it lapsed on.
+  assert.equal(
+    paymentExpiry({ expires_at: '2026-05-01' }, { period: 'month', count: 1 }, today),
+    '2026-09-10',
+  );
+  // An open-ended account gets its first date from today.
+  assert.equal(
+    paymentExpiry({ expires_at: null }, { period: 'year', count: 1 }, today),
+    '2027-08-10',
+  );
+  // …and 'today' forces that even when time is left.
+  assert.equal(
+    paymentExpiry({ expires_at: '2026-12-01' }, { period: 'month', count: 1, from: 'today' }, today),
+    '2026-09-10',
+  );
+});
+
+test('planCategoryDiff reports what a plan edit gave and took away', () => {
+  assert.deepEqual(planCategoryDiff(['a', 'b'], ['b', 'c']), { added: ['c'], removed: ['a'] });
+  assert.deepEqual(planCategoryDiff(['a'], ['a']), { added: [], removed: [] });
+  assert.deepEqual(planCategoryDiff([], ['a']), { added: ['a'], removed: [] });
+});
 
 test('parsePriceCents converts euros to integer cents', () => {
   assert.deepEqual(parsePriceCents('4.99'), { cents: 499 });

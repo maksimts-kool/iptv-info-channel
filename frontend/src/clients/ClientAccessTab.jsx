@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Button, Input, Popconfirm, Segmented, Select, Space, Spin, Switch, Table, Tag, Typography,
+  Alert, Button, Input, Popconfirm, Segmented, Select, Space, Spin, Table, Tag, Typography,
 } from 'antd';
 import { AuthError } from '../lib/api.js';
 
@@ -119,6 +119,9 @@ export default function ClientAccessTab({ user, api, message, onAuthError, reloa
           : <Typography.Text type="secondary">не входит</Typography.Text>;
       },
     },
+    // The dropdown is the whole control. There used to be a switch beside it
+    // doing the same job in fewer words, which just meant two widgets that could
+    // disagree on screen — "Выдать/Забрать/По тарифу" says what a switch can't.
     {
       title: 'Исключение для клиента',
       key: 'pin',
@@ -131,20 +134,6 @@ export default function ClientAccessTab({ user, api, message, onAuthError, reloa
           value={pinValue(c.override)}
           options={PIN_OPTIONS}
           onChange={(v) => patch({ categories: { [c.id]: pinPayload(v) } })}
-        />
-      ),
-    },
-    // Quick switch for the common case: take one category away from this client.
-    {
-      title: '',
-      key: 'quick',
-      width: 60,
-      render: (_, c) => (
-        <Switch
-          size="small"
-          disabled={c.builtin || saving}
-          checked={c.effective}
-          onChange={(on) => patch({ categories: { [c.id]: on } })}
         />
       ),
     },

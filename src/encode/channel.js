@@ -12,7 +12,7 @@ import {
   buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
 } from '../render/overlay.js';
 import { statusSummary } from '../render/status.js';
-import { refreshAllSources, describePlans } from '../playlist/catalog.js';
+import { refreshDueSources, describePlans } from '../playlist/catalog.js';
 import * as notify from '../notify/notify.js';
 import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
@@ -656,12 +656,14 @@ export function startDailyRefresh() {
   const schedule = '5 0 * * *';
   cron.schedule(schedule, async () => {
     log.info('scheduler', 'daily refresh triggered', { schedule });
-    // Pull fresh channel lists from the upstream providers first. Playlists are
-    // built per request, so this needs no stream rebuild — it just keeps the
-    // catalog in step with what the providers now carry.
+    // Pull fresh channel lists from any upstream provider that has come due.
+    // Sources are normally re-downloaded by their own interval scheduler
+    // (startSourceAutoRefresh); this nightly pass is the safety net that also
+    // catches a source whose interval elapsed while the process was down.
+    // Playlists are built per request, so this needs no stream rebuild.
     if (config.catalog.autoRefresh) {
       try {
-        const results = await refreshAllSources();
+        const results = await refreshDueSources();
         const failed = results.filter((r) => !r.ok).length;
         log.info('scheduler', 'playlist sources refreshed', { sources: results.length, failed });
       } catch (e) {

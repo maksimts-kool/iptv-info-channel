@@ -3,8 +3,11 @@ import {
   Button, Card, Form, Input, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tag,
   Typography,
 } from 'antd';
+import {
+  CopyOutlined, DeleteOutlined, FolderOpenOutlined, PlusOutlined,
+} from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
-import { periodSuffix, planOptions } from '../lib/plans.js';
+import { periodSuffix, planOptions, expiryForPlan } from '../lib/plans.js';
 import ClientDrawer from '../clients/ClientDrawer.jsx';
 
 const FILTERS = [
@@ -61,11 +64,22 @@ export default function ClientsPage(shared) {
     }
   };
 
+  // Pre-fill the expiry from the plan's billing period, so a monthly plan needs
+  // no date arithmetic to create a customer. Still a plain date input — an
+  // unusual first period is just typed over.
   const openCreate = () => {
     form.setFieldsValue({
-      username: '', plan_id: plans[0]?.id, expires_at: '', active: true,
+      username: '',
+      plan_id: plans[0]?.id,
+      expires_at: plans[0] ? expiryForPlan(plans[0]) : '',
+      active: true,
     });
     setCreateOpen(true);
+  };
+
+  const onPlanPicked = (planId) => {
+    const picked = plans.find((p) => p.id === planId);
+    if (picked) form.setFieldsValue({ expires_at: expiryForPlan(picked) });
   };
 
   const create = async () => {
@@ -171,15 +185,17 @@ export default function ClientsPage(shared) {
       width: 240,
       render: (_, u) => (
         <Space wrap>
-          <Button size="small" onClick={() => copy(u.m3u_url)}>Копировать m3u</Button>
-          <Button size="small" onClick={() => setOpenId(u.id)}>Открыть</Button>
+          <Button size="small" icon={<CopyOutlined />} onClick={() => copy(u.m3u_url)}>m3u</Button>
+          <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setOpenId(u.id)}>
+            Открыть
+          </Button>
           <Popconfirm
             title={`Удалить клиента «${u.username}»?`}
             okText="Удалить"
             okButtonProps={{ danger: true }}
             onConfirm={() => guarded(() => api.del(`/admin/api/users/${u.id}`), 'Клиент удалён')}
           >
-            <Button size="small" danger>Удалить</Button>
+            <Button size="small" danger icon={<DeleteOutlined />}>Удалить</Button>
           </Popconfirm>
         </Space>
       ),
@@ -192,8 +208,8 @@ export default function ClientsPage(shared) {
     <Card
       title={`Клиенты (${users.length})`}
       extra={(
-        <Button type="primary" disabled={!plans.length} onClick={openCreate}>
-          + Добавить клиента
+        <Button type="primary" icon={<PlusOutlined />} disabled={!plans.length} onClick={openCreate}>
+          Добавить клиента
         </Button>
       )}
     >
@@ -243,9 +259,13 @@ export default function ClientsPage(shared) {
             <Input />
           </Form.Item>
           <Form.Item name="plan_id" label="Тариф" rules={[{ required: true, message: 'Выберите тариф' }]}>
-            <Select options={planOptions(plans)} />
+            <Select options={planOptions(plans)} onChange={onPlanPicked} />
           </Form.Item>
-          <Form.Item name="expires_at" label="Подписка действует до">
+          <Form.Item
+            name="expires_at"
+            label="Подписка действует до"
+            extra="Подставлено по периоду тарифа от сегодняшнего дня. Можно изменить или очистить — тогда срок будет без ограничения."
+          >
             <Input type="date" />
           </Form.Item>
           <Form.Item name="active" label="Активен" valuePropName="checked">

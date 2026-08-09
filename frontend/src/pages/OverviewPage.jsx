@@ -1,4 +1,5 @@
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { count } from '../lib/format.js';
 
 // Landing screen: the numbers that answer "is anything wrong right now?" and
 // shortcuts into the two sections that matter day to day.
@@ -46,13 +47,16 @@ export default function OverviewPage({ state, go }) {
 
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
-          <Card size="small"><Statistic title="Клиентов" value={users.length} /></Card>
+          <Card size="small">
+            <Statistic title="Клиентов" value={users.length} formatter={count} />
+          </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic
               title="Активных"
               value={counts.active || 0}
+              formatter={count}
               valueStyle={{ color: '#16a34a' }}
             />
           </Card>
@@ -62,13 +66,21 @@ export default function OverviewPage({ state, go }) {
             <Statistic
               title="Истекают / истекли"
               value={(counts.expiring || 0) + (counts.expired || 0)}
+              formatter={count}
               valueStyle={{ color: (counts.expiring || counts.expired) ? '#d97706' : undefined }}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
-            <Statistic title="Каналов в эфире" value={catalog.enabled ?? 0} suffix={`/ ${catalog.channels ?? 0}`} />
+            {/* Both halves go through the same formatter — AntD groups `value`
+                but not `suffix`, which is how "1,308 / 1310" happened. */}
+            <Statistic
+              title="Каналов в эфире"
+              value={catalog.enabled ?? 0}
+              formatter={count}
+              suffix={`/ ${count(catalog.channels)}`}
+            />
           </Card>
         </Col>
       </Row>
@@ -107,9 +119,9 @@ export default function OverviewPage({ state, go }) {
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Card title="Каталог" extra={<Button size="small" onClick={() => go('playlist')}>Открыть</Button>}>
               <Row gutter={16}>
-                <Col span={8}><Statistic title="Источников" value={catalog.sources ?? 0} /></Col>
-                <Col span={8}><Statistic title="Категорий" value={catalog.categories ?? 0} /></Col>
-                <Col span={8}><Statistic title="Каналов" value={catalog.channels ?? 0} /></Col>
+                <Col span={8}><Statistic title="Источников" value={catalog.sources ?? 0} formatter={count} /></Col>
+                <Col span={8}><Statistic title="Категорий" value={catalog.categories ?? 0} formatter={count} /></Col>
+                <Col span={8}><Statistic title="Каналов" value={catalog.channels ?? 0} formatter={count} /></Col>
               </Row>
             </Card>
             <Card title="Состояние сервиса" extra={<Button size="small" onClick={() => go('info')}>Инциденты</Button>}>

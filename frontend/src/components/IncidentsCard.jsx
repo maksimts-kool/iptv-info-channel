@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Button, Card, Empty, Form, Grid, Input, List, Modal, Popconfirm, Select, Space, Tag, Tooltip, Typography,
 } from 'antd';
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 
 const SEV = {
   degraded: { label: 'Деградация', color: '#d97706' },
@@ -111,8 +112,8 @@ export default function IncidentsCard({ state, api, withRegen }) {
       extra={(
         <Space size="middle">
           {statusEl && !compact ? statusEl : null}
-          <Button type="primary" onClick={() => openDialog(null)}>
-            {isMobile ? '+ Инцидент' : '+ Добавить инцидент'}
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openDialog(null)}>
+            {isMobile ? 'Инцидент' : 'Добавить инцидент'}
           </Button>
         </Space>
       )}
@@ -148,7 +149,7 @@ export default function IncidentsCard({ state, api, withRegen }) {
                   <Button size="small">Закрыть</Button>
                 </Popconfirm>
               ) : null,
-              <Button key="edit" size="small" onClick={() => openDialog(inc)}>Изменить</Button>,
+              <Button key="edit" size="small" icon={<EditOutlined />} onClick={() => openDialog(inc)}>Изменить</Button>,
               <Popconfirm
                 key="delete"
                 title={`Удалить инцидент «${inc.title}»?`}
@@ -156,7 +157,7 @@ export default function IncidentsCard({ state, api, withRegen }) {
                 okButtonProps={{ danger: true }}
                 onConfirm={() => remove(inc)}
               >
-                <Button size="small" danger>Удалить</Button>
+                <Button size="small" danger icon={<DeleteOutlined />}>Удалить</Button>
               </Popconfirm>,
             ].filter(Boolean);
             const meta = (

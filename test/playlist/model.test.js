@@ -5,7 +5,39 @@ import {
   INFO_CATEGORY_ID, INFO_CHANNEL_ID,
   ensureBuiltins, mergeSourceChannels, resolveUserChannels,
   effectiveEnabled, categoryEnabledFor, channelKey, categoryKey, channelCounts,
+  sourceDueAt, sourceIsDue,
 } from '../../src/playlist/model.js';
+
+test('a source that has never synced is due immediately', () => {
+  const source = { enabled: true, auto_refresh: true, interval_hours: 24, last_sync_ms: null };
+  assert.equal(sourceDueAt(source), 0);
+  assert.equal(sourceIsDue(source, Date.now()), true);
+});
+
+test('a source comes due one interval after its last attempt', () => {
+  const hour = 3600_000;
+  const source = {
+    enabled: true, auto_refresh: true, interval_hours: 6, last_sync_ms: 1_000_000,
+  };
+  assert.equal(sourceDueAt(source), 1_000_000 + 6 * hour);
+  assert.equal(sourceIsDue(source, 1_000_000 + 5 * hour), false);
+  assert.equal(sourceIsDue(source, 1_000_000 + 6 * hour), true);
+});
+
+test('auto-refresh is never scheduled for a disabled or opted-out source', () => {
+  const base = { enabled: true, auto_refresh: true, interval_hours: 1, last_sync_ms: 1 };
+  assert.equal(sourceDueAt({ ...base, enabled: false }), null);
+  assert.equal(sourceDueAt({ ...base, auto_refresh: false }), null);
+  assert.equal(sourceIsDue({ ...base, auto_refresh: false }, Date.now()), false);
+});
+
+test('a source with no stored interval falls back to the configured default', () => {
+  const hour = 3600_000;
+  const source = { enabled: true, auto_refresh: true, last_sync_ms: 1_000_000 };
+  assert.equal(sourceDueAt(source, { defaultHours: 12 }), 1_000_000 + 12 * hour);
+  // …and to 24h when the caller passes no default either.
+  assert.equal(sourceDueAt(source), 1_000_000 + 24 * hour);
+});
 
 let counter = 0;
 const makeId = () => `id${++counter}`;

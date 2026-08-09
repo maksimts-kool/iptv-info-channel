@@ -2,7 +2,9 @@ import { useCallback, useState } from 'react';
 import {
   Alert, Button, Card, Col, Row, Space, Statistic, Typography,
 } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
 import { api, AuthError } from '../lib/api.js';
+import { count } from '../lib/format.js';
 import BrandingCard from '../components/BrandingCard.jsx';
 import IncidentsCard from '../components/IncidentsCard.jsx';
 
@@ -38,7 +40,9 @@ export default function InfoChannelPage(shared) {
 
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
-          <Card size="small"><Statistic title="Потоков" value={state?.users?.length ?? 0} /></Card>
+          <Card size="small">
+            <Statistic title="Потоков" value={state?.users?.length ?? 0} formatter={count} />
+          </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
@@ -56,7 +60,9 @@ export default function InfoChannelPage(shared) {
                 Пересборка нужна, если что-то на карточке выглядит устаревшим.
                 Обычно она запускается сама: при правках и ежедневно в 00:05.
               </Typography.Text>
-              <Button onClick={rebuildAll} loading={busy}>Пересобрать все потоки</Button>
+              <Button icon={<ReloadOutlined />} onClick={rebuildAll} loading={busy}>
+                Пересобрать все потоки
+              </Button>
             </Space>
           </Card>
         </Col>

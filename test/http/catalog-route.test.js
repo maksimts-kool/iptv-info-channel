@@ -367,6 +367,61 @@ test("the per-customer view separates 'not in the plan' from 'switched off'", as
   await req('PATCH', `/admin/api/plans/${ids.plan}`, { category_ids: [ids.sport, ids.news] });
 });
 
+test('a source carries an auto-refresh schedule through the API', async () => {
+  const before = (await req('GET', '/admin/api/catalog')).body.sources
+    .find((s) => s.id === ids.source);
+  // On by default, daily, with a next run already scheduled from the import.
+  assert.equal(before.auto_refresh, true);
+  assert.equal(before.interval_hours, 24);
+  assert.ok(before.next_sync_ms > Date.now());
+
+  const patched = await req('PATCH', `/admin/api/catalog/sources/${ids.source}`, {
+    interval_hours: 6,
+  });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.body.interval_hours, 6);
+  // The next run moves in with the shorter interval.
+  assert.ok(patched.body.next_sync_ms < before.next_sync_ms);
+
+  // Switching auto-refresh off stops scheduling it at all.
+  const off = await req('PATCH', `/admin/api/catalog/sources/${ids.source}`, {
+    auto_refresh: false,
+  });
+  assert.equal(off.body.next_sync_ms, null);
+
+  // An interval the UI doesn't offer is refused rather than stored.
+  const bad = await req('PATCH', `/admin/api/catalog/sources/${ids.source}`, {
+    interval_hours: 5,
+  });
+  assert.equal(bad.status, 400);
+
+  await req('PATCH', `/admin/api/catalog/sources/${ids.source}`, {
+    auto_refresh: true, interval_hours: 24,
+  });
+});
+
+test('recording a payment dates the subscription from the plan period', async () => {
+  await req('PATCH', `/admin/api/plans/${ids.plan}`, { billing_period: 'month' });
+  // Start from a known, still-valid date.
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2099-03-15' });
+
+  // An empty body means "one more of whatever the plan is billed in".
+  const one = await req('POST', `/admin/api/users/${ids.user}/payment`, {});
+  assert.equal(one.status, 200);
+  assert.equal(one.body.period, 'month');
+  assert.equal(one.body.count, 1);
+  assert.equal(one.body.previous_expires_at, '2099-03-15');
+  assert.equal(one.body.user.expires_at, '2099-04-15');
+
+  // Paid time stacks: three more months on top of the new date.
+  const three = await req('POST', `/admin/api/users/${ids.user}/payment`, { count: 3 });
+  assert.equal(three.body.user.expires_at, '2099-07-15');
+
+  assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { count: 0 })).status, 400);
+  assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { period: 'week' })).status, 400);
+  assert.equal((await req('POST', '/admin/api/users/999999/payment', {})).status, 404);
+});
+
 test('mutating catalog calls are rejected without a CSRF token', async () => {
   const saved = csrf;
   csrf = '';

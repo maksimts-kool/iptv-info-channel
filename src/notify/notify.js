@@ -41,7 +41,12 @@ export function validateSubscription(body = {}) {
   }
   const opt = body.options || {};
   return {
-    value: { email, options: { server: !!opt.server, expiry: !!opt.expiry, renewal: true } },
+    value: {
+      email,
+      options: {
+        server: !!opt.server, expiry: !!opt.expiry, content: !!opt.content, renewal: true,
+      },
+    },
   };
 }
 
@@ -168,6 +173,7 @@ export const templates = {
     const opts = [
       'Продление подписки',
       options.expiry ? 'Скоро истекает' : null,
+      options.content ? 'Изменения в списке каналов' : null,
       options.server ? 'Статус сервера' : null,
     ].filter(Boolean);
     return {
@@ -202,6 +208,37 @@ export const templates = {
         + P('Спасибо, что остаётесь с нами!'),
         { accent: COLORS.success }),
       text: `Ваша подписка продлена до ${formatDate(user.expires_at)}.`,
+    };
+  },
+  // What changed in the customer's channel package. `change` carries four
+  // name lists (see notifyContentChange); empty ones are simply left out.
+  contentChange(brand, { user, change, planName = '' }) {
+    const section = (label, names, color) => (names.length
+      ? `<div style="color:${COLORS.heading};font-size:14px;font-weight:600;margin:0 0 6px">${xmlEscape(label)}</div>${list(names)}`
+      : '');
+    const added = change.addedCategories.length + change.addedChannels.length;
+    const removed = change.removedCategories.length + change.removedChannels.length;
+    const heading = added && removed
+      ? 'Список каналов изменился'
+      : (added ? 'В подписку добавлены каналы' : 'Из подписки убраны каналы');
+    return {
+      subject: `${brand}: изменения в списке каналов`,
+      html: layout(brand, heading,
+        P(`Здравствуйте, ${xmlEscape(user.username)}!`)
+        + (planName ? P(`Изменения в вашем тарифе «${xmlEscape(planName)}»:`) : P('Состав вашего пакета каналов обновился:'))
+        + section('Добавлены категории', change.addedCategories)
+        + section('Добавлены каналы', change.addedChannels)
+        + section('Больше не входят категории', change.removedCategories)
+        + section('Больше не входят каналы', change.removedChannels)
+        + P('Изменения уже действуют — обновите плейлист в плеере, если список не поменялся сам.'),
+        { accent: removed && !added ? COLORS.warning : COLORS.primary }),
+      text: [
+        heading,
+        change.addedCategories.length ? `Добавлены категории: ${change.addedCategories.join(', ')}` : '',
+        change.addedChannels.length ? `Добавлены каналы: ${change.addedChannels.join(', ')}` : '',
+        change.removedCategories.length ? `Убраны категории: ${change.removedCategories.join(', ')}` : '',
+        change.removedChannels.length ? `Убраны каналы: ${change.removedChannels.join(', ')}` : '',
+      ].filter(Boolean).join('\n'),
     };
   },
   serverStatus(brand, { phase, incident }) {
@@ -257,6 +294,47 @@ export async function notifyRenewal(user) {
   const sub = Subscribers.byUser(user.id);
   if (!sub || !sub.verified) return;
   await dispatch('renewal', user.id, sub.email, templates.renewal(brandName(), { user }));
+}
+
+// ---- Channel-package changes ----
+
+// Granting a category can add hundreds of channels at once, so a name list is
+// capped and the remainder summarised. Pure.
+const MAX_LISTED = 12;
+export function capNames(names = [], max = MAX_LISTED) {
+  const clean = names.filter(Boolean).map(String);
+  if (clean.length <= max) return clean;
+  const rest = clean.length - max;
+  return [...clean.slice(0, max), `…и ещё ${rest} ${rest === 1 ? 'позиция' : 'позиций'}`];
+}
+
+// Normalize a raw diff into the four capped lists the template renders, or
+// `null` when nothing actually changed. Pure — the callers (a plan edit in
+// admin.js, a personal exception in http/catalog.js) do the diffing.
+export function contentChangeSummary({
+  addedCategories = [], removedCategories = [], addedChannels = [], removedChannels = [],
+} = {}) {
+  const change = {
+    addedCategories: capNames(addedCategories),
+    removedCategories: capNames(removedCategories),
+    addedChannels: capNames(addedChannels),
+    removedChannels: capNames(removedChannels),
+  };
+  const total = Object.values(change).reduce((n, list) => n + list.length, 0);
+  return total ? change : null;
+}
+
+// Tell one customer that their channel package changed. Opt-in (`content`), so
+// an admin doing a big catalog reshuffle doesn't mail everyone who never asked.
+export async function notifyContentChange(user, diff, { planName = '' } = {}) {
+  if (!notifyEnabled()) return false;
+  const change = contentChangeSummary(diff);
+  if (!change) return false;
+  const sub = Subscribers.byUser(user.id);
+  if (!sub || !sub.verified || !sub.options.content) return false;
+  return dispatch('content', user.id, sub.email, templates.contentChange(brandName(), {
+    user, change, planName,
+  }));
 }
 
 // Server-status change ('raised' | 'resolved') to everyone opted into it.

@@ -16,6 +16,8 @@ export default function ClientNotifyTab({
     form.setFieldsValue({
       email: subscriber?.email || '',
       expiry: subscriber ? !!subscriber.options.expiry : true,
+      // Grandfathered on for subscribers stored before this topic existed.
+      content: subscriber ? subscriber.options.content !== false : true,
       server: subscriber ? !!subscriber.options.server : false,
       verified: subscriber ? !!subscriber.verified : true,
     });
@@ -26,7 +28,7 @@ export default function ClientNotifyTab({
     try {
       const res = await api.put(`/admin/api/users/${user.id}/subscriber`, {
         email: v.email.trim(),
-        options: { expiry: v.expiry, server: v.server },
+        options: { expiry: v.expiry, content: v.content, server: v.server },
         verified: v.verified,
       });
       message.success(res.sentVerification
@@ -77,6 +79,9 @@ export default function ClientNotifyTab({
             <Checkbox checked disabled>Продление подписки (обязательно)</Checkbox>
             <Form.Item name="expiry" valuePropName="checked" noStyle>
               <Checkbox>Подписка скоро истекает</Checkbox>
+            </Form.Item>
+            <Form.Item name="content" valuePropName="checked" noStyle>
+              <Checkbox>Изменения в списке каналов (тариф или персональные)</Checkbox>
             </Form.Item>
             <Form.Item name="server" valuePropName="checked" noStyle>
               <Checkbox>Статус сервера</Checkbox>

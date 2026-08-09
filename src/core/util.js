@@ -124,6 +124,31 @@ export function daysLeft(
   return Math.round((expiryDay - currentDay) / (24 * 60 * 60 * 1000));
 }
 
+// Add a billing period to a YYYY-MM-DD date and return the new YYYY-MM-DD.
+//
+// This is what turns "paid for 3 months" into an expiry date, so month
+// arithmetic has to behave the way a human expects: adding a month to the 31st
+// of a month that has no 31st clamps to the last day (31 янв + 1 мес = 28 фев)
+// rather than rolling into the next month. Plain calendar arithmetic in UTC —
+// the date is a calendar day, not an instant, so no timezone is involved.
+// `period` is '' | 'month' | 'year' | 'day'; an empty period counts as months,
+// because a plan with no billing period is still sold by the month.
+export function addPeriod(dateStr, period = 'month', count = 1) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+  if (!match || !Number.isInteger(count)) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+
+  if (period === 'day') {
+    return new Date(Date.UTC(year, month - 1, day + count)).toISOString().slice(0, 10);
+  }
+  const months = period === 'year' ? count * 12 : count;
+  const target = new Date(Date.UTC(year, (month - 1) + months, 1));
+  // Day 0 of the following month is the last day of the target month.
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(day, lastDay));
+  return target.toISOString().slice(0, 10);
+}
+
 // Status: 'active' | 'expiring' | 'expired' | 'disabled'.
 export function accountStatus(
   user,

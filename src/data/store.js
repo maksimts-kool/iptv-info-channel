@@ -95,6 +95,10 @@ function load() {
   // went through the earlier confirm step); new ones default to unverified.
   for (const s of data.subscribers) {
     if (s.verified === undefined) { s.verified = true; s.verify_token = null; changed = true; }
+    // Subscribers predating the "channels changed" topic are opted in: it is
+    // news about the package they are paying for, and they can switch it off on
+    // the same page they subscribed from.
+    if (s.options && s.options.content === undefined) { s.options.content = true; changed = true; }
   }
   if (changed) save();
 }
@@ -257,8 +261,14 @@ export const Users = {
 
 // ---- Notification subscribers (one per user; keyed by user_id) ----
 // Renewal notices are mandatory, so that option is always forced on.
+// `content` = "channels added to / removed from your package".
 function cleanOptions(options = {}) {
-  return { server: !!options.server, expiry: !!options.expiry, renewal: true };
+  return {
+    server: !!options.server,
+    expiry: !!options.expiry,
+    content: !!options.content,
+    renewal: true,
+  };
 }
 
 export const Subscribers = {
