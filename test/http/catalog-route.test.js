@@ -409,7 +409,9 @@ test('the stream gateway serves the provider manifest, rewritten, per request', 
   assert.equal(enabled.status, 200);
   assert.equal(enabled.body.enabled, true);
 
-  const gate = `/c/${ids.token}/${ids.hls}`;
+  // The published link ends in .m3u8 on purpose: ExoPlayer picks its media
+  // source from the URL extension, so an extensionless one plays a black screen.
+  const gate = `/c/${ids.token}/${ids.hls}.m3u8`;
   const infoStream = `https://iptv.example/hls/${ids.token}/index.m3u8`;
 
   // The playlist hands the player our gate link for the HLS channel — and
@@ -443,7 +445,10 @@ test('the stream gateway serves the provider manifest, rewritten, per request', 
   assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
   await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: future });
 
-  assert.equal((await hop(`/c/unknown-token/${ids.hls}`)).status, 404);
+  // Playlists issued before the extension existed must keep working.
+  assert.equal((await get(`/c/${ids.token}/${ids.hls}`)).status, 200);
+
+  assert.equal((await hop(`/c/unknown-token/${ids.hls}.m3u8`)).status, 404);
   // A channel id that no longer exists is a lapsed link, not a crash.
   assert.deepEqual(await hop(`/c/${ids.token}/gone`), { status: 302, location: infoStream });
 

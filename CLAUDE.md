@@ -197,7 +197,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
      re-downloads the playlist, which many players only do on demand. With
      `config.gateway.enabled` (env `STREAM_GATEWAY_ENABLED`, overlaid by the
      admin's `gateway_enabled` setting via `syncGatewaySettings()` in
-     `http/stream.js`) every **HLS** channel is published as `/c/:token/:id`
+     `http/stream.js`) every **HLS** channel is published as `/c/:token/:id.m3u8`
      instead, and that route re-runs `resolveChannelAccess` on **every request**
      before returning the provider's manifest with its URIs rewritten to
      absolute provider URLs (`playlist/hls.js`). Only the manifest passes
@@ -214,6 +214,13 @@ Request/data flow, entry point [src/server.js](src/server.js):
        (`channelStreamUrl` returns the provider URL) rather than gated with a
        redirect that half the customers cannot play. `/api/state` reports the
        gateable count so the admin can see the split.
+     - **The published gate URL must end in `.m3u8`.** ExoPlayer picks its media
+       source from the URL *extension* (`Util.inferContentType`), not from the
+       `Content-Type` we send, so an extensionless link makes it fetch a
+       perfectly good manifest and then decode it as a progressive media file:
+       a black screen with no error, again only on Android. The route strips the
+       suffix and still answers the extensionless form, because playlists issued
+       before it existed are still in players.
      - `resolveChannelAccess` must keep agreeing with `resolveUserChannels` row
        for row (pinned by a test that walks the whole catalog) — the `.m3u`
        lists what one allows and the gate re-checks with the other.

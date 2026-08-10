@@ -29,7 +29,7 @@ services:
       CATALOG_REFRESH_CHECK_MINUTES: ${CATALOG_REFRESH_CHECK_MINUTES:-5}
       CATALOG_REFRESH_INTERVAL_HOURS: ${CATALOG_REFRESH_INTERVAL_HOURS:-24}
       INFO_CATEGORY_NAME: ${INFO_CATEGORY_NAME:-Информация}
-      # Route HLS channels through /c/<token>/<id> so access is re-checked on
+      # Route HLS channels through /c/<token>/<id>.m3u8 so access is re-checked
       # every request instead of only when the player re-downloads the playlist.
       # Also togglable in the admin (Плейлист -> Доступ), which wins over this.
       STREAM_GATEWAY_ENABLED: ${STREAM_GATEWAY_ENABLED:-false}

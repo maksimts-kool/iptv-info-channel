@@ -109,9 +109,11 @@ test('the stream gateway replaces provider URLs with per-customer gate links', (
   const urls = playlist.split('\n').filter((l) => l && !l.startsWith('#'));
   assert.deepEqual(urls, [
     // The account channel already lives on this server; only imported channels
-    // are routed through the gate.
+    // are routed through the gate. The ".m3u8" ending is required: ExoPlayer
+    // picks its media source from the URL extension, and an extensionless link
+    // makes it decode the manifest as if it were video (a black screen).
     'https://iptv.example/hls/abc123/index.m3u8',
-    'https://iptv.example/c/abc123/ch1',
+    'https://iptv.example/c/abc123/ch1.m3u8',
   ]);
   // Everything else about the entry is untouched — name, attributes, directives.
   assert.match(playlist, /#EXTINF:-1 tvg-id="sport1" group-title="Спорт",Спорт 1 HD/);
@@ -134,6 +136,6 @@ test('a non-HLS channel is never gated, because that would need a redirect', () 
   };
 
   const playlist = buildUserPlaylist(USER, {}, gated, entries(hlsEntry, ts));
-  assert.match(playlist, /^https:\/\/iptv\.example\/c\/abc123\/ch1$/m);
+  assert.match(playlist, /^https:\/\/iptv\.example\/c\/abc123\/ch1\.m3u8$/m);
   assert.match(playlist, /^http:\/\/provider\/live\/2\.ts$/m);
 });

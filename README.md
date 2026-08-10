@@ -117,7 +117,7 @@ Switch the **stream gateway** on (admin → Плейлист → Доступ, o
 `STREAM_GATEWAY_ENABLED=true`) and every **HLS** channel is published as
 
 ```
-http://<host>:9222/c/<token>/<channel id>
+http://<host>:9222/c/<token>/<channel id>.m3u8
 ```
 
 On every request the server re-resolves that customer's entitlement — the plan,
@@ -323,7 +323,7 @@ it to `.env` and edit. The most-used settings:
 | `CATALOG_FETCH_TIMEOUT_MS` | `30000` | Milliseconds before an upstream playlist download is abandoned. |
 | `CATALOG_MAX_BYTES` | `33554432` | Hard cap on a downloaded playlist so a bad URL can not exhaust memory. |
 | `INFO_CATEGORY_NAME` | `Информация` | Name of the built-in category holding the info channel (renameable in the admin too). |
-| `STREAM_GATEWAY_ENABLED` | `false` | Publish HLS channels as `/c/<token>/<id>` so access is re-checked on every request (the manifest is served back rewritten). The admin toggle overrides this. |
+| `STREAM_GATEWAY_ENABLED` | `false` | Publish HLS channels as `/c/<token>/<id>.m3u8` so access is re-checked on every request (the manifest is served back rewritten). The admin toggle overrides this. |
 | `STREAM_GATEWAY_TIMEOUT_MS` / `STREAM_GATEWAY_MAX_BYTES` | `10000` / `4194304` | Bounds on fetching a provider manifest. |
 | `STREAM_GATEWAY_LOG` | `false` | One log line per gate request, with the player's User-Agent. For diagnosing "this device won't play". |
 | `ACCOUNT_SLIDE_SECONDS` | `120` | Seconds the account (info) card is on screen. The loop total is the sum of every enabled slide. |

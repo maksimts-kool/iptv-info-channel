@@ -107,10 +107,11 @@ export function userStreamUrl(user, cfg) {
 // The account channel keeps its own /hls/ URL: it is already served from here
 // and must survive an expired subscription, so routing it through the gate
 // would only add a hop.
+// The ".m3u8" ending is load-bearing, not cosmetic — see the route below.
 export function channelStreamUrl(user, channel, cfg) {
   if (!cfg.gateway?.enabled || channel.builtin || !channel.url) return channel.url;
   if (!isHlsUrl(channel.url)) return channel.url;
-  return `${cfg.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${encodeURIComponent(channel.id)}`;
+  return `${cfg.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${encodeURIComponent(channel.id)}.m3u8`;
 }
 
 // The admin's on/off switch (Settings `gateway_enabled`) overlaid on the env
@@ -282,7 +283,15 @@ router.get('/u/:token/epg.xml', (req, res) => sendEpg(req, res, req.params.token
 // the gateway was on stay in players long after an admin switches it off, and
 // they must keep working. The flag only decides what NEW playlists point at.
 router.get('/c/:token/:id', async (req, res) => {
-  const { token, id } = req.params;
+  const { token } = req.params;
+  // The published link ends in ".m3u8" and the extension is meaningful, not
+  // decoration: ExoPlayer (so every Android player) picks its media source from
+  // the URL EXTENSION via Util.inferContentType, not from the Content-Type we
+  // send. An extensionless URL is inferred as a progressive media file, so the
+  // player downloads a perfectly good HLS manifest and then tries to decode it
+  // as if it were video — a black screen with no error. Older playlists carry
+  // the extensionless form, so both are accepted here.
+  const id = String(req.params.id).replace(/\.m3u8$/i, '');
   const user = Users.getByToken(token);
   if (!user) {
     log.warn('gateway', 'channel requested with unknown token', { channel_id: id });
