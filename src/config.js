@@ -151,6 +151,17 @@ export const config = {
     // switching it on only takes effect once each customer's player
     // re-downloads its playlist.
     enabled: bool(process.env.STREAM_GATEWAY_ENABLED, false),
+    // Log EVERY gate hit (not just refusals) with the client's User-Agent.
+    // Off by default — it is one line per channel switch — but it is the only
+    // way to answer "did that player even reach the server, and what is it?"
+    // when one device plays a channel and another does not.
+    logRequests: bool(process.env.STREAM_GATEWAY_LOG, false),
+    // Fetching a provider HLS manifest happens while the viewer waits for the
+    // channel to open, so this timeout is far shorter than the catalog's.
+    manifestTimeoutMs: num(process.env.STREAM_GATEWAY_TIMEOUT_MS, 10_000),
+    // Hard cap on a fetched manifest. A media playlist is kilobytes; anything
+    // near this is a misconfigured URL, not a channel.
+    manifestMaxBytes: num(process.env.STREAM_GATEWAY_MAX_BYTES, 4 * 1024 * 1024),
   },
   epg: {
     // XMLTV programme guide advertised via `url-tvg` in each user's .m3u. The

@@ -24,7 +24,7 @@ lost access and what a renewal costs.
 - **Plans are the packages** — each plan holds the list of categories it sells, and that is exactly what its customers receive. Change a plan and every customer on it changes with it.
 - **Per-customer exceptions** — on top of the plan, give one customer a category nobody else has, or take one away, without touching the plan or the catalog.
 - **Automatic expiry gate** — an expired or deactivated customer keeps only **Информация**. Renewal restores the full list instantly; there is no state to reset, because visibility is derived on every request.
-- **Stream gateway (optional)** — route channels through this server so access is re-checked on **every channel switch** instead of only when the player re-downloads the playlist. A channel you take away stops playing at once; a customer who opens one they don't have lands on their own info channel. Only a redirect is served — the video still flows straight from the provider.
+- **Stream gateway (optional)** — route HLS channels through this server so access is re-checked on **every request** instead of only when the player re-downloads the playlist. A channel you take away stops playing mid-view; a customer who opens one they don't have lands on their own info channel. Only the manifest passes through — the video still flows straight from the provider.
 
 ### Info channel
 - **Per-customer looping HLS** generated with ffmpeg (h264 + AAC) showing plan, price, expiry, days left and a colour-coded status banner.
@@ -114,16 +114,19 @@ it until their player re-downloads the playlist — and many players only do tha
 when the user asks them to.
 
 Switch the **stream gateway** on (admin → Плейлист → Доступ, or
-`STREAM_GATEWAY_ENABLED=true`) and every imported channel is published as
+`STREAM_GATEWAY_ENABLED=true`) and every **HLS** channel is published as
 
 ```
 http://<host>:9222/c/<token>/<channel id>
 ```
 
-On each channel switch the server re-resolves that customer's entitlement — the
-plan, their personal exceptions, the global switches and the expiry date — and
-answers with a `302` to the provider. **No video is proxied**; the bytes still go
-provider → player, so the cost is one redirect per zap.
+On every request the server re-resolves that customer's entitlement — the plan,
+their personal exceptions, the global switches and the expiry date — and then
+fetches the provider's manifest and returns it with each URI inside rewritten to
+an absolute provider URL. **No video is proxied**: the player takes the segments
+straight from the provider, so only a few kilobytes per refresh pass through
+here. Since a player re-fetches a live media playlist every few seconds, a
+revoked channel stops **mid-view**, not just at the next channel switch.
 
 - A channel the customer may not watch redirects to **their own info channel**
   (plan, expiry, what's on offer) rather than failing with an error.
@@ -135,6 +138,16 @@ provider → player, so the cost is one redirect per zap.
   what plays, not what is listed.
 - Catch-up/archive URLs (`catchup-source`) are passed through from the provider
   and are not routed through the gateway.
+
+**Only HLS (`.m3u8`) channels are gated**, and the admin card shows how many of
+your channels that is. A raw MPEG-TS stream (`…/live/user/pass/123.ts`, or no
+extension at all) has no manifest to rewrite, so the only way to gate it would
+be a redirect from this server's `https` to the provider's `http` — and Android
+players (ExoPlayer/media3) refuse cross-protocol redirects by default, leaving
+the channel buffering forever while a desktop player follows the same redirect
+happily. Those channels are therefore published as direct provider URLs and keep
+the un-gated behaviour: access to them changes only when the player re-downloads
+the playlist.
 
 ### Programme guide (EPG)
 
@@ -310,7 +323,9 @@ it to `.env` and edit. The most-used settings:
 | `CATALOG_FETCH_TIMEOUT_MS` | `30000` | Milliseconds before an upstream playlist download is abandoned. |
 | `CATALOG_MAX_BYTES` | `33554432` | Hard cap on a downloaded playlist so a bad URL can not exhaust memory. |
 | `INFO_CATEGORY_NAME` | `Информация` | Name of the built-in category holding the info channel (renameable in the admin too). |
-| `STREAM_GATEWAY_ENABLED` | `false` | Publish channels as `/c/<token>/<id>` so access is re-checked on every channel switch (302 to the provider). The admin toggle overrides this. |
+| `STREAM_GATEWAY_ENABLED` | `false` | Publish HLS channels as `/c/<token>/<id>` so access is re-checked on every request (the manifest is served back rewritten). The admin toggle overrides this. |
+| `STREAM_GATEWAY_TIMEOUT_MS` / `STREAM_GATEWAY_MAX_BYTES` | `10000` / `4194304` | Bounds on fetching a provider manifest. |
+| `STREAM_GATEWAY_LOG` | `false` | One log line per gate request, with the player's User-Agent. For diagnosing "this device won't play". |
 | `ACCOUNT_SLIDE_SECONDS` | `120` | Seconds the account (info) card is on screen. The loop total is the sum of every enabled slide. |
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
 | `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
@@ -441,9 +456,9 @@ out by `/admin/api/state`.
   server behind **HTTPS** when exposing it off-LAN (`PUBLIC_BASE_URL=https://…`).
 - **The stream gateway is an access check, not DRM.** With it on, the provider's
   URL is only handed out at play time and only to a customer entitled to it,
-  which is what makes a revocation take effect immediately — but the answer is a
-  plain `302`, so anyone who can read their own player's log still sees the
-  provider URL behind a channel they legitimately have.
+  which is what makes a revocation take effect immediately — but the manifest it
+  returns contains the provider's segment URLs in clear, so a customer can still
+  read the provider addresses behind a channel they legitimately have.
 - The e-mail sign-up QR uses a **separate token**, so photographing it can't
   grant stream access, and sign-up is **double opt-in** (no mail is sent to an
   unconfirmed address).

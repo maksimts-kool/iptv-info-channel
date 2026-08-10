@@ -42,7 +42,8 @@ src/
                        #   store.js   users/plans/incidents/subscribers (+ seedDemo)
                        #   seed.js    `npm run seed` -> store.seedDemo()
   notify/  notify.js                              # email notifications (transport, templates, dispatch)
-  playlist/ m3u.js model.js catalog.js            # provider m3u + the channel catalog
+  playlist/ m3u.js model.js catalog.js hls.js     # provider m3u + the channel catalog
+                       #   hls.js     rewrite a provider HLS manifest (gateway)
   render/  overlay.js status.js                   # SVG frames + their data models
   encode/  channel.js liveloop.js                 # ffmpeg encode + live HLS window
   http/    stream.js subscribe.js admin.js catalog.js auth.js # all HTTP surfaces
@@ -92,8 +93,8 @@ No build step, no linter, no TypeScript on the backend. Pure ESM
 (`"type": "module"`), Node 20+. Tests use the built-in `node:test` runner and
 cover the pure-logic modules (`util`, `encode/liveloop`, `epg/epg`,
 `epg/epgfoss`, `render/status`, `epg/xxhash32`, `playlist/m3u`,
-`playlist/model`, and the `.m3u`-playlist builders plus the admin/catalog-domain
-pure fns living in `http/`) plus route/integration tests for the FOSS endpoints
+`playlist/model`, `playlist/hls`, and the `.m3u`-playlist builders plus the
+admin/catalog-domain pure fns living in `http/`) plus route/integration tests for the FOSS endpoints
 and, in [test/http/catalog-route.test.js](test/http/catalog-route.test.js), a full pass
 over the catalog through the real routers with a throwaway `DATA_DIR` (import a
 provider playlist from a local stub server, curate it, personalise a customer,
@@ -196,20 +197,34 @@ Request/data flow, entry point [src/server.js](src/server.js):
      re-downloads the playlist, which many players only do on demand. With
      `config.gateway.enabled` (env `STREAM_GATEWAY_ENABLED`, overlaid by the
      admin's `gateway_enabled` setting via `syncGatewaySettings()` in
-     `http/stream.js`) every imported channel is published as `/c/:token/:id`
-     instead, and that route re-runs `resolveChannelAccess` on **every channel
-     switch** before a `302` to the provider. Nothing is proxied, so the cost is
-     one redirect per zap. Three things to preserve:
+     `http/stream.js`) every **HLS** channel is published as `/c/:token/:id`
+     instead, and that route re-runs `resolveChannelAccess` on **every request**
+     before returning the provider's manifest with its URIs rewritten to
+     absolute provider URLs (`playlist/hls.js`). Only the manifest passes
+     through — segments still go provider → player — and because a player
+     re-fetches a live media playlist every few seconds, a revocation lands
+     mid-view rather than at the next zap. Four things to preserve:
+     - **The gate must not answer with a cross-protocol redirect.** Its first
+       implementation `302`'d to the provider; with this server on https and the
+       provider on http, ExoPlayer/media3 (so: every Android player, including
+       OTT-play on a phone) refuses to follow it by default and the channel
+       buffers forever, while desktop players follow it happily and hide the
+       bug. Serving the manifest is what removes the redirect. **A raw MPEG-TS
+       channel has no manifest**, so it is deliberately *not* gated at all
+       (`channelStreamUrl` returns the provider URL) rather than gated with a
+       redirect that half the customers cannot play. `/api/state` reports the
+       gateable count so the admin can see the split.
      - `resolveChannelAccess` must keep agreeing with `resolveUserChannels` row
        for row (pinned by a test that walks the whole catalog) — the `.m3u`
        lists what one allows and the gate re-checks with the other.
-     - **The `/c/` route is deliberately not gated on the flag.** Playlists
-       handed out while it was on stay in players indefinitely; switching the
-       feature off must not break them. The flag only decides what *new*
-       playlists point at.
-     - A refused channel redirects to the customer's **own info channel**, not
-       a 403: in a player a 403 is an indistinguishable "cannot play", i.e. a
-       support ticket, while the card explains what the subscription covers.
+     - **The `/c/` route is deliberately not gated on the flag**, and it still
+       redirects for non-HLS URLs. Playlists handed out while the flag was on
+       stay in players indefinitely; switching the feature off, or narrowing
+       what gets gated, must not break them.
+     - A refused channel redirects to the customer's **own info channel** (same
+       origin, so no cross-protocol problem), not a 403: in a player a 403 is an
+       indistinguishable "cannot play", i.e. a support ticket, while the card
+       explains what the subscription covers.
      The gateway controls what *plays*, not what is *listed* — a newly added
      channel still appears only when the player re-downloads the playlist.
    - **The expiry gate is derived, never persisted.** `resolveUserChannels`
@@ -316,8 +331,9 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `index.m3u8` live playlist + `.ts` segments. Segment requests honor HTTP
    `Range` (strict players probe with `Range:` and stall on a plain 200).
    `/c/:token/:channelId` is the **stream gateway** (see the catalog invariants
-   above): it re-resolves entitlement per channel switch and `302`s to the
-   provider, or to the customer's own `/hls/` loop when the answer is no.
+   above): it re-resolves entitlement per request and returns the provider's
+   rewritten HLS manifest, or `302`s to the customer's own `/hls/` loop when the
+   answer is no.
    `/u/:token/epg.xml` (and `/epg.xml?token=`) return the **XMLTV programme
    guide** (see EPG below); the `.m3u` header advertises it via `url-tvg` and the
    `#EXTINF` of the **info channel** uses a per-user `tvg-id`
@@ -550,10 +566,10 @@ The model is deliberate; preserve it when editing.
   (`PUBLIC_BASE_URL` should be `https://` there).
 - **The stream gateway is an access check, not DRM.** With it on the provider
   URL is handed out only at play time and only to an entitled customer — that is
-  what makes a revocation effective immediately — but the answer is a plain
-  `302`, so a customer can still read the provider URL of a channel they
-  legitimately have out of their own player's log. Don't document or design it
-  as link protection.
+  what makes a revocation effective immediately — but the manifest it returns
+  names the provider's segments in clear, so a customer can still read the
+  provider addresses behind a channel they legitimately have. Don't document or
+  design it as link protection.
 - **Separate `notify_token`.** The on-screen sign-up QR points at `/sub/:token`
   using a *distinct* token, so photographing the QR can't grant stream access.
   Keep the two token namespaces strictly separate.

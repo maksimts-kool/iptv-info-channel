@@ -16,6 +16,7 @@ import { userHlsDir, ensureUserStream } from '../encode/channel.js';
 import { buildLivePlaylist } from '../encode/liveloop.js';
 import { buildEpgXml, epgChannelId } from '../epg/epg.js';
 import { buildM3u } from '../playlist/m3u.js';
+import { isHlsUrl, rewriteHlsManifest } from '../playlist/hls.js';
 import {
   channelsForUser, channelAccessForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
 } from '../playlist/catalog.js';
@@ -72,21 +73,6 @@ export function fossEpgDirUrl(user, cfg) {
 // ---------------------------------------------------------------------------
 // Stream gateway
 // ---------------------------------------------------------------------------
-// Where the .m3u points for one imported channel.
-//
-// OFF (the default): the provider's own URL. The player then talks straight to
-// the provider, this server never learns that a channel was opened, and a
-// customer who lost access keeps watching until their player re-downloads the
-// playlist — which many players only do when the user asks them to.
-//
-// ON: /c/:token/:id below, where entitlement is resolved again on every channel
-// switch and answered with a 302 to the provider. No video is proxied (the
-// bytes still go provider -> player), so the cost is one redirect per zap, and
-// the gain is that taking a category away stops playback immediately.
-//
-// The account channel keeps its own /hls/ URL: it is already served from here
-// and must survive an expired subscription, so routing it through the gate
-// would only add a hop.
 // This server's own HLS loop for one customer — the account/info channel. Also
 // the gateway's fallback: a customer who opens a channel they may not watch is
 // sent here, so they land on their own card (plan, expiry, what is on offer)
@@ -95,8 +81,35 @@ export function userStreamUrl(user, cfg) {
   return `${cfg.publicBaseUrl}/hls/${encodeURIComponent(user.token)}/index.m3u8`;
 }
 
+// Where the .m3u points for one imported channel.
+//
+// OFF (the default): the provider's own URL. The player then talks straight to
+// the provider, this server never learns that a channel was opened, and a
+// customer who lost access keeps watching until their player re-downloads the
+// playlist — which many players only do when the user asks them to.
+//
+// ON: /c/:token/:id below, which re-resolves entitlement before anything plays.
+// No video is proxied — the bytes still go provider -> player — so the gain
+// (taking a category away stops playback at once) costs no bandwidth.
+//
+// ONLY HLS CHANNELS ARE GATED, and that restriction is load-bearing. The gate's
+// first implementation answered with a 302 to the provider, which breaks on
+// Android whenever this server is https and the provider http: ExoPlayer/media3
+// refuse cross-protocol redirects by default, so the channel buffers forever
+// while a desktop player follows the same redirect happily. An HLS channel does
+// not need a redirect — the gate serves the provider's manifest itself, with
+// the URIs inside rewritten to absolute provider URLs (playlist/hls.js). A raw
+// MPEG-TS stream has no manifest, so gating it would mean either that broken
+// redirect or relaying the video through this server; it is published as a
+// direct provider URL instead and simply keeps the un-gated behaviour, where
+// access changes reach it only on the next playlist download.
+//
+// The account channel keeps its own /hls/ URL: it is already served from here
+// and must survive an expired subscription, so routing it through the gate
+// would only add a hop.
 export function channelStreamUrl(user, channel, cfg) {
   if (!cfg.gateway?.enabled || channel.builtin || !channel.url) return channel.url;
+  if (!isHlsUrl(channel.url)) return channel.url;
   return `${cfg.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${encodeURIComponent(channel.id)}`;
 }
 
@@ -258,16 +271,17 @@ router.get('/u/:token/epg.xml', (req, res) => sendEpg(req, res, req.params.token
 
 // GET /c/:token/:id -> the stream gateway (see channelStreamUrl above).
 //
-// Re-resolves this customer's entitlement to this one channel and answers with
-// a 302 to the provider. Because the check happens per channel switch rather
-// than per playlist download, revoking a category, switching a channel off or
-// letting a subscription lapse stops playback at the next zap — the player
-// never has to re-download the .m3u.
+// Re-resolves this customer's entitlement to this one channel, then serves the
+// provider's rewritten HLS manifest. Because the check happens per request
+// rather than per playlist download, revoking a category, switching a channel
+// off or letting a subscription lapse stops playback without the player ever
+// re-downloading the .m3u — and since a player re-fetches a live media
+// playlist every few seconds, it stops mid-view, not just at the next zap.
 //
 // Deliberately NOT gated on config.gateway.enabled: playlists handed out while
 // the gateway was on stay in players long after an admin switches it off, and
 // they must keep working. The flag only decides what NEW playlists point at.
-router.get('/c/:token/:id', (req, res) => {
+router.get('/c/:token/:id', async (req, res) => {
   const { token, id } = req.params;
   const user = Users.getByToken(token);
   if (!user) {
@@ -291,8 +305,64 @@ router.get('/c/:token/:id', (req, res) => {
     return redirectStream(res, userStreamUrl(user, config));
   }
   if (access.channel.id === INFO_CHANNEL_ID) return redirectStream(res, userStreamUrl(user, config));
-  return redirectStream(res, access.channel.url);
+
+  if (config.gateway.logRequests) {
+    // One line per manifest fetch, opt-in (STREAM_GATEWAY_LOG). The User-Agent
+    // is the point: it identifies which player component is asking, which is
+    // what separates "the device never got here" from "it got here and then
+    // could not use the answer".
+    log.info('gateway', 'channel opened', {
+      user_id: user.id,
+      username: user.username,
+      channel: access.channel.name || access.channel.id,
+      mode: isHlsUrl(access.channel.url) ? 'manifest' : 'redirect',
+      ua: req.get('user-agent') || '',
+    });
+  }
+
+  // Non-HLS: nothing to rewrite, so the redirect is all there is. New playlists
+  // no longer point here for those channels (see channelStreamUrl), but links
+  // already sitting in players must keep doing what they always did.
+  if (!isHlsUrl(access.channel.url)) return redirectStream(res, access.channel.url);
+
+  try {
+    const { text, finalUrl } = await fetchManifest(access.channel.url, req.get('user-agent'));
+    return res
+      .status(200)
+      .set('Cache-Control', 'no-store, no-cache, must-revalidate')
+      .set('Pragma', 'no-cache')
+      .type('application/vnd.apple.mpegurl')
+      .send(rewriteHlsManifest(text, finalUrl));
+  } catch (e) {
+    log.error('gateway', 'upstream manifest fetch failed', {
+      user_id: user.id, channel_id: id, error: e.message,
+    });
+    return res.status(502).type('text/plain').send('Upstream unavailable');
+  }
 });
+
+// Fetch one provider manifest, bounded the way catalog downloads are: a hostile
+// or dead provider must not hang the request or exhaust memory while a viewer
+// waits for a channel to open.
+//
+// The client's User-Agent is forwarded because providers routinely gate on it
+// and answer a bare Node fetch with a 403; a caller that sends none gets the
+// same VLC string the catalog fetcher uses. `finalUrl` is the URL after
+// redirects — relative URIs in the manifest resolve against that, not against
+// what we asked for.
+async function fetchManifest(url, userAgent) {
+  const res = await fetch(url, {
+    redirect: 'follow',
+    headers: { 'User-Agent': userAgent || 'VLC/3.0.20 LibVLC/3.0.20' },
+    signal: AbortSignal.timeout(config.gateway.manifestTimeoutMs),
+  });
+  if (!res.ok) throw new Error(`upstream responded ${res.status}`);
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > config.gateway.manifestMaxBytes) {
+    throw new Error(`manifest is larger than the ${config.gateway.manifestMaxBytes} byte limit`);
+  }
+  return { text: buffer.toString('utf8'), finalUrl: res.url || url };
+}
 
 // 302 + no-store. Players cache aggressively, and a cached redirect would keep
 // a revoked channel playable until the app is restarted — which is exactly the

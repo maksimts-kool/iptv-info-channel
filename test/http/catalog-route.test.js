@@ -33,6 +33,17 @@ const UPSTREAM = [
   'http://provider/3.ts',
 ].join('\n');
 
+const HLS_MANIFEST = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-TARGETDURATION:6',
+  '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"',
+  '#EXTINF:6.000,',
+  'seg_001.ts',
+  '#EXTINF:6.000,',
+  'seg_002.ts',
+].join('\n');
+
 let app;
 let server;
 let base;
@@ -74,7 +85,14 @@ before(async () => {
   csrf = csrfToken();
 
   // A local stand-in for the provider, so the import path is exercised for real.
+  // It also serves one HLS media playlist with RELATIVE segment names, which is
+  // what the stream gateway has to rewrite before a player can use it.
   upstreamServer = http.createServer((r, res) => {
+    if (r.url.startsWith('/live/')) {
+      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+      res.end(HLS_MANIFEST);
+      return;
+    }
     res.writeHead(200, { 'content-type': 'application/x-mpegurl' });
     res.end(UPSTREAM);
   });
@@ -374,30 +392,49 @@ async function hop(url) {
   return { status: res.status, location: res.headers.get('location') };
 }
 
-test('the stream gateway re-checks access on every channel switch', async () => {
+async function get(url) {
+  const res = await fetch(`${base}${url}`, { redirect: 'manual' });
+  return { status: res.status, type: res.headers.get('content-type') || '', text: await res.text() };
+}
+
+test('the stream gateway serves the provider manifest, rewritten, per request', async () => {
+  const upstreamOrigin = new URL(upstreamUrl).origin;
+  const hls = await req('POST', '/admin/api/catalog/channels', {
+    name: 'HLS Channel', url: `${upstreamOrigin}/live/1.m3u8`, category_id: ids.sport,
+  });
+  assert.equal(hls.status, 201);
+  ids.hls = hls.body.id;
+
   const enabled = await req('PATCH', '/admin/api/gateway', { enabled: true });
   assert.equal(enabled.status, 200);
   assert.equal(enabled.body.enabled, true);
 
-  const list = await req('GET', `/admin/api/catalog/channels?category=${ids.sport}`);
-  const sport2 = list.body.rows.find((c) => c.name === 'Sport 2');
-  const gate = `/c/${ids.token}/${sport2.id}`;
+  const gate = `/c/${ids.token}/${ids.hls}`;
   const infoStream = `https://iptv.example/hls/${ids.token}/index.m3u8`;
 
-  // The playlist now hands the player our gate link, not the provider's URL.
+  // The playlist hands the player our gate link for the HLS channel — and
+  // leaves the raw-TS ones pointing straight at the provider, because gating
+  // those would need a cross-protocol redirect no Android player will follow.
   const gated = await req('GET', `/u/${ids.token}/playlist.m3u`, null, { raw: true });
   assert.ok(gated.text.includes(`https://iptv.example${gate}`));
-  assert.doesNotMatch(gated.text, /http:\/\/provider\/2\.ts/);
+  assert.match(gated.text, /^http:\/\/provider\/2\.ts$/m);
+  assert.ok(!gated.text.includes(`${upstreamOrigin}/live/1.m3u8`), 'the provider URL is not exposed');
 
-  // Entitled: straight through to the provider.
-  assert.deepEqual(await hop(gate), { status: 302, location: 'http://provider/2.ts' });
+  // Entitled: the manifest itself, with every relative URI resolved against the
+  // provider — no redirect anywhere in the answer.
+  const manifest = await get(gate);
+  assert.equal(manifest.status, 200);
+  assert.match(manifest.type, /mpegurl/);
+  assert.ok(manifest.text.includes(`${upstreamOrigin}/live/seg_001.ts`));
+  assert.ok(manifest.text.includes(`URI="${upstreamOrigin}/live/key.bin"`), 'the key URI is absolutised too');
+  assert.doesNotMatch(manifest.text, /^seg_001\.ts$/m, 'no relative URI is left behind');
 
-  // Take the channel away — the player's copy of the playlist is now stale, but
-  // the very next zap lands on the customer's own info channel instead.
-  await req('PATCH', `/admin/api/users/${ids.user}/channels`, { channels: { [sport2.id]: false } });
+  // Take the channel away: the player's copy of the playlist is now stale, but
+  // the very next manifest fetch lands on the customer's own info channel.
+  await req('PATCH', `/admin/api/users/${ids.user}/channels`, { channels: { [ids.hls]: false } });
   assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
   await req('POST', `/admin/api/users/${ids.user}/channels/reset`);
-  assert.deepEqual(await hop(gate), { status: 302, location: 'http://provider/2.ts' });
+  assert.equal((await get(gate)).status, 200);
 
   // An expired subscription closes every channel the same way.
   const future = (await req('GET', '/admin/api/state')).body.users
@@ -406,7 +443,7 @@ test('the stream gateway re-checks access on every channel switch', async () => 
   assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
   await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: future });
 
-  assert.equal((await hop(`/c/unknown-token/${sport2.id}`)).status, 404);
+  assert.equal((await hop(`/c/unknown-token/${ids.hls}`)).status, 404);
   // A channel id that no longer exists is a lapsed link, not a crash.
   assert.deepEqual(await hop(`/c/${ids.token}/gone`), { status: 302, location: infoStream });
 
@@ -414,8 +451,18 @@ test('the stream gateway re-checks access on every channel switch', async () => 
   // links already sitting in customers' players keep working.
   await req('PATCH', '/admin/api/gateway', { enabled: false });
   const direct = await req('GET', `/u/${ids.token}/playlist.m3u`, null, { raw: true });
-  assert.match(direct.text, /^http:\/\/provider\/2\.ts$/m);
-  assert.deepEqual(await hop(gate), { status: 302, location: 'http://provider/2.ts' });
+  assert.ok(direct.text.includes(`${upstreamOrigin}/live/1.m3u8`));
+  assert.equal((await get(gate)).status, 200);
+});
+
+test('a dead provider is reported as a bad gateway, not as a hung request', async () => {
+  await req('PATCH', '/admin/api/gateway', { enabled: true });
+  const dead = await req('POST', '/admin/api/catalog/channels', {
+    name: 'Dead HLS', url: 'http://127.0.0.1:1/live/none.m3u8', category_id: ids.sport,
+  });
+  assert.equal((await get(`/c/${ids.token}/${dead.body.id}`)).status, 502);
+  await req('DELETE', `/admin/api/catalog/channels/${dead.body.id}`);
+  await req('PATCH', '/admin/api/gateway', { enabled: false });
 });
 
 test('a source carries an auto-refresh schedule through the API', async () => {

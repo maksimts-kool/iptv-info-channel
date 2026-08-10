@@ -25,6 +25,7 @@ import {
 import catalogRouter from './catalog.js';
 import { renderUserPlaylist, syncGatewaySettings } from './stream.js';
 import { Overrides, catalog } from '../playlist/catalog.js';
+import { isHlsUrl } from '../playlist/hls.js';
 import { log } from '../core/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -354,6 +355,12 @@ router.get('/api/state', (req, res) => {
       categories: catalog().categories.length,
       channels: channels.filter((c) => !c.missing).length,
       enabled: channels.filter((c) => !c.missing && c.enabled !== false).length,
+      // How many channels the stream gateway can actually cover: only HLS ones,
+      // because a raw MPEG-TS stream would need a cross-protocol redirect that
+      // Android players refuse (see channelStreamUrl in http/stream.js). Shown
+      // in the admin so "some channels are still direct" is visible, not a
+      // surprise.
+      gateable: channels.filter((c) => !c.missing && !c.builtin && isHlsUrl(c.url)).length,
     },
     users: Users.all().map((u) => ({
       ...decorateUser(u),

@@ -92,20 +92,20 @@ test('a locked (expired) customer receives only the info channel', () => {
   assert.deepEqual(urls, ['https://iptv.example/hls/abc123/index.m3u8']);
 });
 
+const hlsEntry = {
+  category: { id: 'c1', name: 'Спорт' },
+  channel: {
+    id: 'ch1',
+    name: 'Спорт 1 HD',
+    url: 'http://provider/live/1.m3u8',
+    attrs: { 'tvg-id': 'sport1' },
+    extras: ['#EXTVLCOPT:http-user-agent=Mozilla'],
+  },
+};
+
 test('the stream gateway replaces provider URLs with per-customer gate links', () => {
   const gated = { ...CONFIG, gateway: { enabled: true } };
-  const sport = {
-    category: { id: 'c1', name: 'Спорт' },
-    channel: {
-      id: 'ch1',
-      name: 'Спорт 1 HD',
-      url: 'http://provider/live/1.ts',
-      attrs: { 'tvg-id': 'sport1' },
-      extras: ['#EXTVLCOPT:http-user-agent=Mozilla'],
-    },
-  };
-
-  const playlist = buildUserPlaylist(USER, {}, gated, entries(sport));
+  const playlist = buildUserPlaylist(USER, {}, gated, entries(hlsEntry));
   const urls = playlist.split('\n').filter((l) => l && !l.startsWith('#'));
   assert.deepEqual(urls, [
     // The account channel already lives on this server; only imported channels
@@ -118,6 +118,22 @@ test('the stream gateway replaces provider URLs with per-customer gate links', (
   assert.match(playlist, /#EXTVLCOPT:http-user-agent=Mozilla/);
 
   // …and with the gateway off the same entry points straight at the provider.
-  const direct = buildUserPlaylist(USER, {}, CONFIG, entries(sport));
-  assert.match(direct, /^http:\/\/provider\/live\/1\.ts$/m);
+  const direct = buildUserPlaylist(USER, {}, CONFIG, entries(hlsEntry));
+  assert.match(direct, /^http:\/\/provider\/live\/1\.m3u8$/m);
+});
+
+test('a non-HLS channel is never gated, because that would need a redirect', () => {
+  // The gate answers an HLS channel with the manifest itself; a raw MPEG-TS
+  // stream has no manifest, so gating it would mean a 302 from this server's
+  // https to the provider's http — which Android players refuse to follow,
+  // leaving the channel buffering forever. Such channels stay direct.
+  const gated = { ...CONFIG, gateway: { enabled: true } };
+  const ts = {
+    category: { id: 'c1', name: 'Спорт' },
+    channel: { id: 'ch2', name: 'Спорт 2', url: 'http://provider/live/2.ts', attrs: {} },
+  };
+
+  const playlist = buildUserPlaylist(USER, {}, gated, entries(hlsEntry, ts));
+  assert.match(playlist, /^https:\/\/iptv\.example\/c\/abc123\/ch1$/m);
+  assert.match(playlist, /^http:\/\/provider\/live\/2\.ts$/m);
 });

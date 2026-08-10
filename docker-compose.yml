@@ -29,10 +29,14 @@ services:
       CATALOG_REFRESH_CHECK_MINUTES: ${CATALOG_REFRESH_CHECK_MINUTES:-5}
       CATALOG_REFRESH_INTERVAL_HOURS: ${CATALOG_REFRESH_INTERVAL_HOURS:-24}
       INFO_CATEGORY_NAME: ${INFO_CATEGORY_NAME:-Информация}
-      # Route channels through /c/<token>/<id> so access is re-checked on every
-      # zap instead of only when the player re-downloads the playlist. Also
-      # togglable in the admin (Плейлист -> Доступ), which wins over this.
+      # Route HLS channels through /c/<token>/<id> so access is re-checked on
+      # every request instead of only when the player re-downloads the playlist.
+      # Also togglable in the admin (Плейлист -> Доступ), which wins over this.
       STREAM_GATEWAY_ENABLED: ${STREAM_GATEWAY_ENABLED:-false}
+      STREAM_GATEWAY_TIMEOUT_MS: ${STREAM_GATEWAY_TIMEOUT_MS:-10000}
+      STREAM_GATEWAY_MAX_BYTES: ${STREAM_GATEWAY_MAX_BYTES:-4194304}
+      # Diagnostics: one log line per manifest fetch, with the player's UA.
+      STREAM_GATEWAY_LOG: ${STREAM_GATEWAY_LOG:-false}
       # --- 3. Info channel look & timing ---
       # 720p + low frame rates look identical on a TV but cost far less CPU.
       CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1280}
