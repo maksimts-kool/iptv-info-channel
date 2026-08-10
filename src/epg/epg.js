@@ -1,13 +1,19 @@
 // Builds the per-user XMLTV programme guide (EPG) advertised via `url-tvg` in
 // the .m3u. There is no real "schedule" — the channel is a looping info card —
-// so the guide is synthesised: one programme per calendar day whose TITLE is the
-// service-status headline for that day (operational / degraded / outage) and
-// whose SUB-TITLE + DESC carry the viewer's own subscription status. Players
-// surface the "now" programme in their channel list and info bar, so this turns
-// the EPG into an at-a-glance "is everything OK?" board. Pure logic, no I/O.
+// so the guide is synthesised: one programme per calendar day.
+//
+// A player (Televizo, OTT-play FOSS) shows exactly ONE line of this next to the
+// channel: the programme TITLE. That line is the whole point of the info
+// channel, so it carries the viewer's own subscription status ("✓ Подписка
+// активна · ещё 89 дней"), and the day's service state is folded in only when
+// something is actually wrong — an incident must never be hidden, but "all
+// good" must never crowd out the customer's own status either. The longer
+// SUB-TITLE + DESC, which players show once the programme is opened, carry the
+// expiry date, the plan, the service headline, 90-day uptime and any incident
+// notes. Pure logic, no I/O.
 import {
-  localTimeToDate, accountStatus, daysLeft, formatDate, pluralDays, STATUS_META,
-  dateFormatter, xmlEscape,
+  localTimeToDate, accountStatus, daysLeft, formatDate, formatPrice, periodLabel,
+  pluralDays, dateFormatter, xmlEscape,
 } from '../core/util.js';
 import { severityForDay, statusSummary, formatUptime, SEVERITY } from '../render/status.js';
 
@@ -79,29 +85,74 @@ function dayWindow(todayStr, behind, ahead) {
   return out;
 }
 
-// Service-status title for a day's worst severity (the headline the request is
-// about: "everything good" / "degraded" / "error").
+// Service-status headline for a day's worst severity (the full sentence used in
+// the description; the title uses the short form below).
 const SERVICE_TITLE = {
   operational: '✓ Все сервисы работают',
   degraded: '⚠ Частичная деградация сервиса',
   outage: '✕ Сбой в работе сервиса',
 };
 
-// Short "as of this day" account line for the sub-title.
-function accountLine(user, instant, tz, expiringThresholdDays) {
+// Compact service prefix for the one-line title. `operational` has none on
+// purpose — a healthy service is the normal case and must not eat the row.
+const SERVICE_SHORT = {
+  degraded: '⚠ Перебои в работе',
+  outage: '✕ Сбой сервиса',
+};
+
+const ACCOUNT_TITLE = {
+  active: { icon: '✓', text: 'Подписка активна' },
+  expiring: { icon: '⚠', text: 'Подписка истекает' },
+  expired: { icon: '✕', text: 'Подписка истекла' },
+  disabled: { icon: '✕', text: 'Аккаунт отключён' },
+};
+
+// "ещё 4 дня" / "последний день" / "бессрочно" / "истекла 3 дня назад".
+function remainingText(left) {
+  if (left === null) return 'бессрочно';
+  if (left === 0) return 'последний день';
+  if (left < 0) return `истекла ${-left} ${pluralDays(left)} назад`;
+  return `ещё ${left} ${pluralDays(left)}`;
+}
+
+// The customer's own status "as of this day", short enough for a channel-list
+// row. `left` is sampled at that day's local noon so it decrements across the
+// guide instead of showing today's number on every day.
+function accountShort(user, instant, tz, expiringThresholdDays) {
   const status = accountStatus(user, expiringThresholdDays, instant, tz);
-  const label = STATUS_META[status].label;
-  if (status === 'disabled') return `Аккаунт: ${label}`;
-  if (status === 'expired') return `Подписка: ${label}`;
   const left = daysLeft(user.expires_at, instant, tz);
-  if (left === null) return `Подписка: ${label} · бессрочно`;
-  return `Подписка: ${label} · осталось ${left} ${pluralDays(left)}`;
+  const { icon, text } = ACCOUNT_TITLE[status];
+  // An expired or deactivated account says all it needs to in the label itself.
+  const suffix = status === 'expired' || status === 'disabled' ? '' : ` · ${remainingText(left)}`;
+  return { status, left, icon, text: `${text}${suffix}` };
+}
+
+// The plan the customer is on, with its price — the second thing they look for
+// after "when does this run out".
+function planLine(user) {
+  if (!user.plan_name) return null;
+  const price = user.price_cents
+    ? ` · ${formatPrice(user.price_cents, user.currency)}${periodLabel(user.billing_period)}`
+    : '';
+  return `Тариф: ${user.plan_name}${price}`;
+}
+
+// The concrete expiry date, used as the XMLTV sub-title (players show it right
+// under the title) — the title only carries the relative "ещё N дней".
+function expiryLine(user, account) {
+  if (account.status === 'disabled') return 'Аккаунт отключён администратором';
+  if (!user.expires_at) return 'Подписка бессрочная';
+  return `Действует до ${formatDate(user.expires_at)} · ${remainingText(account.left)}`;
 }
 
 // Semantic daily records shared by the XMLTV and OTT-play JSON renderers. Each
 // record carries the day's calendar bounds (`date`/`next`) and rendered status
 // text; each renderer formats those bounds into its own timestamp shape
 // (`dayStartXmltv` vs. `dayStartUnix`) so neither pays for the other's format.
+//
+// `title` (one line) and `desc` (the detail block) are built HERE rather than in
+// each renderer, so the XMLTV guide and the FOSS JSON guide can never drift into
+// telling the same customer two different things.
 export function eachEpgDay(
   user,
   {
@@ -118,23 +169,45 @@ export function eachEpgDay(
   const window = dayWindow(todayStr, daysBehind, daysAhead);
   const uptimeLine = `Доступность за 90 дней: ${formatUptime(summary.uptimePct)}`;
 
+  const plan = planLine(user);
+
   const days = window.map((date) => {
     const next = nextDay(date);
     const severity = severityForDay(incidents, date, todayStr);
     const noon = dayNoon(date, tz);
-    const account = accountLine(user, noon, tz, expiringThresholdDays);
+    const account = accountShort(user, noon, tz, expiringThresholdDays);
+    const expiry = expiryLine(user, account);
 
     const incidentLines = incidents
       .filter((inc) => inc && SEVERITY[inc.severity] && inc.starts_on
         && inc.starts_on <= date && date <= (inc.ends_on || todayStr))
       .map((inc) => {
-        const span = inc.ends_on ? `${formatDate(inc.starts_on)}–${formatDate(inc.ends_on)}`
-          : `с ${formatDate(inc.starts_on)}, сейчас`;
+        const span = (() => {
+          if (!inc.ends_on) return `с ${formatDate(inc.starts_on)}, сейчас`;
+          if (inc.ends_on === inc.starts_on) return formatDate(inc.starts_on);
+          return `${formatDate(inc.starts_on)}–${formatDate(inc.ends_on)}`;
+        })();
         const note = inc.note ? ` — ${inc.note}` : '';
         return `${SEVERITY[inc.severity].label} (${span}): ${inc.title}${note}`;
       });
 
-    return { date, next, title: SERVICE_TITLE[severity], account, uptimeLine, incidentLines };
+    const service = SERVICE_TITLE[severity];
+    // One line, account first; the service state only elbows in when it is not
+    // "operational", so an incident is still impossible to miss.
+    const title = severity === 'operational'
+      ? `${account.icon} ${account.text}`
+      : `${SERVICE_SHORT[severity]} · ${account.text}`;
+    const desc = [
+      plan,
+      expiry,
+      `Статус сервиса: ${service}`,
+      uptimeLine,
+      ...incidentLines,
+    ].filter(Boolean).join('\n');
+
+    return {
+      date, next, severity, account, title, service, expiry, uptimeLine, incidentLines, desc,
+    };
   });
 
   return { summary, todayStr, tz, days };
@@ -158,13 +231,12 @@ export function buildEpgXml(user, opts = {}) {
   ];
 
   for (const day of days) {
-    const desc = [day.account, day.uptimeLine, ...day.incidentLines].join('\n');
     lines.push(
       `  <programme start="${dayStartXmltv(day.date, tz)}" stop="${dayStartXmltv(day.next, tz)}" channel="${xmlEscape(channelId)}">`,
       `    <title lang="ru">${xmlEscape(day.title)}</title>`,
-      `    <sub-title lang="ru">${xmlEscape(day.account)}</sub-title>`,
-      `    <desc lang="ru">${xmlEscape(desc)}</desc>`,
-      '    <category lang="ru">Статус сервиса</category>',
+      `    <sub-title lang="ru">${xmlEscape(day.expiry)}</sub-title>`,
+      `    <desc lang="ru">${xmlEscape(day.desc)}</desc>`,
+      '    <category lang="ru">Статус подписки</category>',
       '  </programme>',
     );
   }

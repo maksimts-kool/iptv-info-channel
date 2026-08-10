@@ -103,9 +103,19 @@ function withSlideTimer(filter, boundaries) {
 // runt). The account card is the elastic still frame that absorbs the rounding
 // slack; rounding to nearest (not up) keeps that drift to ±half a segment so the
 // card stays close to its configured ACCOUNT_SLIDE_SECONDS instead of ballooning.
+//
+// A loop served as live must also be at least one live window long. Below that
+// the sliding window wraps inside a single playlist — the same segments listed
+// twice, one or two loop discontinuities in every response — so a viewer is
+// permanently sitting on a PTS restart, which is the fragile path for strict
+// players. The card absorbs the difference, exactly as it absorbs the rounding.
+// With the shipped 8-segment window and HLS_TIME=6 that is a 48s floor; drop
+// HLS_TIME if you want the slides to rotate faster than that.
 function tileToSegments(seconds) {
   const seg = config.channel.hlsTime;
-  return Math.max(seg, Math.round(seconds / seg) * seg);
+  const tiled = Math.max(seg, Math.round(seconds / seg) * seg);
+  if (!config.channel.liveLoop) return tiled; // plain VOD: no window to fill
+  return Math.max(tiled, LIVE_WINDOW_SEGMENTS * seg);
 }
 
 // ---------------------------------------------------------------------------

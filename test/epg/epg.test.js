@@ -5,7 +5,16 @@ import { buildEpgXml, epgChannelId } from '../../src/epg/epg.js';
 const TZ = 'Europe/Tallinn';
 // Fixed "now": 2026-06-13 (noon UTC is still the 13th locally).
 const NOW = new Date('2026-06-13T12:00:00Z');
-const USER = { token: 'abc123', username: 'ivan', expires_at: '2026-06-30', active: 1 };
+const USER = {
+  token: 'abc123',
+  username: 'ivan',
+  expires_at: '2026-06-30',
+  active: 1,
+  plan_name: 'Базовый',
+  price_cents: 499,
+  currency: 'EUR',
+  billing_period: 'month',
+};
 const SETTINGS = { brand_name: 'TestIPTV' };
 
 function buildFor(incidents) {
@@ -38,31 +47,68 @@ test('window spans daysBehind..daysAhead with local-midnight boundaries', () => 
   assert.match(xml, /stop="20260616000000 \+0300"/);
 });
 
-test('no incidents → every day shows the operational headline', () => {
+// The title is the ONE line a player shows next to the channel, so it must be
+// the customer's own status — not the (usually boring) service headline.
+test('a healthy day titles the programme with the subscription status', () => {
   const xml = buildFor([]);
   const titles = [...xml.matchAll(/<title[^>]*>([^<]*)<\/title>/g)].map((m) => m[1]);
   assert.equal(titles.length, 4);
-  assert.ok(titles.every((t) => t.includes('Все сервисы работают')));
+  // expires 2026-06-30; on 2026-06-13 that is 17 days, all > threshold → active.
+  assert.ok(titles.every((t) => /^✓ Подписка активна · ещё \d+ дн[а-я]+$/.test(t)), titles.join('|'));
+  // The service headline is still there, in the detail block.
+  assert.match(xml, /Статус сервиса: ✓ Все сервисы работают/);
 });
 
-test('an active outage colours the title and lists the incident in desc', () => {
+test('the title carries the plan-relevant countdown and decrements over days', () => {
+  const xml = buildFor([]);
+  const left = [...xml.matchAll(/<title[^>]*>✓ Подписка активна · ещё (\d+) /g)]
+    .map((m) => Number(m[1]));
+  assert.equal(left.length, 4);
+  // The day-behind (12th) shows one more day left than today (13th).
+  assert.equal(left[0], left[1] + 1);
+});
+
+test('an active outage is folded into the title and detailed in desc', () => {
   const xml = buildFor([
     { id: 'x', severity: 'outage', title: 'Сбой CDN', starts_on: '2026-06-13', ends_on: null, note: 'чиним' },
   ]);
-  // The "today" (2026-06-13) programme is the outage one.
-  assert.match(xml, /<title lang="ru">✕ Сбой в работе сервиса<\/title>/);
+  // The "today" (2026-06-13) programme leads with the outage, then the account.
+  assert.match(xml, /<title lang="ru">✕ Сбой сервиса · Подписка активна · ещё \d+ дн[а-я]+<\/title>/);
+  assert.match(xml, /Статус сервиса: ✕ Сбой в работе сервиса/);
   assert.match(xml, /Сбой \(с 13 июн 2026, сейчас\): Сбой CDN — чиним/);
+  // A day the outage does not cover keeps the plain account title.
+  assert.match(xml, /<title lang="ru">✓ Подписка активна · ещё \d+ дн[а-я]+<\/title>/);
 });
 
-test('subscription status appears as sub-title and decrements over days', () => {
+test('the expiry date is the sub-title and the plan is in the description', () => {
   const xml = buildFor([]);
-  // expires 2026-06-30; on 2026-06-13 that is 17 days, all > threshold → active.
-  assert.match(xml, /<sub-title lang="ru">Подписка: АКТИВЕН · осталось \d+ дн[а-я]+<\/sub-title>/);
-  // The day-behind (12th) shows one more day left than today (13th).
-  const subs = [...xml.matchAll(/<sub-title[^>]*>Подписка: \S+ · осталось (\d+) /g)]
-    .map((m) => Number(m[1]));
-  assert.equal(subs.length, 4);
-  assert.equal(subs[0], subs[1] + 1);
+  assert.match(xml, /<sub-title lang="ru">Действует до 30 июн 2026 · ещё \d+ дн[а-я]+<\/sub-title>/);
+  assert.match(xml, /Тариф: Базовый · 4,99 €\/мес\./);
+  assert.match(xml, /Доступность за 90 дней: /);
+});
+
+test('the last valid day and an open-ended account read correctly', () => {
+  const lastDay = buildEpgXml(
+    { ...USER, expires_at: '2026-06-13' },
+    { settings: SETTINGS, incidents: [], now: NOW, tz: TZ, daysAhead: 0, daysBehind: 0 },
+  );
+  assert.match(lastDay, /<title lang="ru">⚠ Подписка истекает · последний день<\/title>/);
+
+  const forever = buildEpgXml(
+    { ...USER, expires_at: null },
+    { settings: SETTINGS, incidents: [], now: NOW, tz: TZ, daysAhead: 0, daysBehind: 0 },
+  );
+  assert.match(forever, /<title lang="ru">✓ Подписка активна · бессрочно<\/title>/);
+  assert.match(forever, /<sub-title lang="ru">Подписка бессрочная<\/sub-title>/);
+});
+
+test('a deactivated account says so instead of counting days', () => {
+  const xml = buildEpgXml(
+    { ...USER, active: 0 },
+    { settings: SETTINGS, incidents: [], now: NOW, tz: TZ, daysAhead: 0, daysBehind: 0 },
+  );
+  assert.match(xml, /<title lang="ru">✕ Аккаунт отключён<\/title>/);
+  assert.doesNotMatch(xml, /ещё \d+ дн/);
 });
 
 test('values are XML-escaped to keep the document valid', () => {
@@ -85,5 +131,6 @@ test('expired subscription is reflected once the expiry date passes', () => {
     { token: 't', username: 'u', expires_at: '2026-06-10', active: 1 },
     { settings: SETTINGS, incidents: [], now: NOW, tz: TZ, daysAhead: 0, daysBehind: 0 },
   );
-  assert.match(xml, /<sub-title lang="ru">Подписка: ПРОСРОЧЕН<\/sub-title>/);
+  assert.match(xml, /<title lang="ru">✕ Подписка истекла<\/title>/);
+  assert.match(xml, /<sub-title lang="ru">Действует до 10 июн 2026 · истекла 3 дня назад<\/sub-title>/);
 });

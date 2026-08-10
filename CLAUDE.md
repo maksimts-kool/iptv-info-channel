@@ -261,6 +261,25 @@ Request/data flow, entry point [src/server.js](src/server.js):
    and `Range` support are all load-bearing and documented in a caution atop the
    file; don't "simplify" the playlist construction without strict-player testing.
 
+   A second invariant sits next to the monotonic counters: **one media sequence
+   number always reports the same discontinuity number** (`DISCONTINUITY-SEQUENCE`
+   + the tags ahead of it). The wrap tag is therefore emitted only *inside* the
+   window, never before its first segment — that position is already what
+   `DISCONTINUITY-SEQUENCE` states, and counting it twice renumbered the segment
+   as the window slid onto the boundary, which froze ExoPlayer at every loop
+   wrap. Pinned by a test that walks the window across several wraps.
+
+   Because the window is 8 segments, **a loop shorter than `8 × HLS_TIME`
+   would be repeated inside a single playlist** (same segments listed twice,
+   one or two wrap discontinuities in every response — a viewer permanently on
+   a PTS restart). `tileToSegments` in `encode/channel.js` therefore floors the
+   loop at one window whenever `CHANNEL_LIVE_LOOP` is on, and the account card
+   takes up the slack exactly as it takes the rounding slack. The visible
+   consequence is that short slide settings stretch the card: at `HLS_TIME=6`
+   nothing rotates faster than 48s, so **lower `HLS_TIME` — not the slide
+   seconds — to speed the rotation up**. The floor is above every golden
+   profile, so it leaves the pinned ffmpeg argv untouched.
+
 6. **Public endpoints** — [src/http/stream.js](src/http/stream.js) (which merges the
    former `routes/stream.js`, `playlist.js` and `routes/foss-epg.js`):
    `/u/:token/playlist.m3u` (and `/playlist.m3u?token=`) return the `.m3u` — the
@@ -285,25 +304,68 @@ Request/data flow, entry point [src/server.js](src/server.js):
 7. **EPG** — [src/epg/epg.js](src/epg/epg.js) (`buildEpgXml`) synthesises a per-user
    XMLTV guide. There's no real schedule (the channel is a looping card), so it
    emits **one `<programme>` per calendar day** over a window
-   (`EPG_DAYS_BEHIND`..`EPG_DAYS_AHEAD` around "today"). Each day's `<title>` is
-   the service-status headline for that day (✓ operational / ⚠ degraded / ✕
-   outage), derived from incidents via `severityForDay`; `<sub-title>`/`<desc>`
-   carry that user's subscription status "as of" the day (sampled at local noon
-   so it decrements across the guide) plus 90-day uptime and any incident
-   details. Pure logic, unit-tested ([test/epg/epg.test.js](test/epg/epg.test.js)) and
+   (`EPG_DAYS_BEHIND`..`EPG_DAYS_AHEAD` around "today").
+
+   **A player shows exactly one line of this: the programme `<title>`.** That
+   line is the reason the guide exists, so it is the *customer's own*
+   subscription status (`✓ Подписка активна · ещё 89 дней`, `⚠ Подписка
+   истекает · последний день`, `✕ Подписка истекла`, `✕ Аккаунт отключён`),
+   sampled at that day's local noon so it decrements across the guide. The
+   day's service state (from `severityForDay`) is **prefixed onto that same
+   line only when it is not `operational`** (`⚠ Перебои в работе · …`) — an
+   incident must never be invisible, and a healthy service must never crowd out
+   the account status. `<sub-title>` is the concrete expiry date and `<desc>`
+   adds the plan + price, the full service headline, 90-day uptime and incident
+   details. Don't move the account status back out of the title: putting the
+   (usually boring) service headline there is what made the guide useless in
+   Televizo/OTT-play.
+
+   Pure logic, unit-tested ([test/epg/epg.test.js](test/epg/epg.test.js)) and
    built **live on request** (not pre-encoded) so days-left/status stay fresh
    without regeneration. Timestamps are local-midnight XMLTV
    (`YYYYMMDDHHMMSS +ZZZZ`) with a DST-correct offset; interpolated text is
    XML-escaped. Toggle with `EPG_ENABLED` (disabling also drops `url-tvg`).
 
-   The per-day records are produced once by `eachEpgDay` (semantic data — each
-   renderer formats its own timestamps) and consumed by both `buildEpgXml` and
-   the OTT-play **FOSS JSON** guide.
+   The per-day records are produced once by `eachEpgDay` — semantic data plus
+   the **already-rendered `title`/`desc`**, so the XMLTV and OTT-play FOSS
+   guides physically cannot tell one customer two different things; each
+   renderer only formats the day bounds into its own timestamp shape.
 
 8. **FOSS EPG (OTT-play)** — [src/epg/epgfoss.js](src/epg/epgfoss.js) renders a
    token-scoped JSON guide that OTT-play FOSS fetches **directly**
    (`channels.json` + `epg/<xxhash32(tvg-id)>.json`), bypassing the central
-   matcher. [src/epg/xxhash32.js](src/epg/xxhash32.js) reproduces OTT-play's Go
+   matcher. Its `name`/`descr` are the shared `eachEpgDay` `title`/`desc` — the
+   same pair XMLTV puts in `<title>`/`<desc>`. (`descr` was previously hardcoded
+   to `''`, which left every OTT-play viewer with no account status at all.)
+
+   **The `foss-tvg` URL must end at `epg/`** (`fossEpgDirUrl` in `http/stream.js`,
+   not `fossProviderBaseUrl`). In the `=` static mode the player appends
+   `<xxhash32(tvg-id)>.json` to the advertised string *verbatim* — the documented
+   reference is `=iptvx::http://epg.ottp.eu.org/iptvx.one/epg/` against the real
+   file `.../iptvx.one/epg/890122.json` — so advertising the token base one level
+   up (this server's original bug) requests a 404 and the channel shows nothing.
+   The `/m3u/match-channels` provider block is the one place that *does* name the
+   level above, because there the player adds the `epg/` itself (the reference
+   matcher answers `<base_url><provider id>/`); keep those two apart.
+   The protocol is documented at <https://ottp.eu.org/www/manuals/epg/custom/>.
+
+   **Two different hashes, and getting either wrong means silently no EPG:**
+   - `fossIdHash` — the channel-id hash naming `epg/<hash>.json`, xxhash32 of the
+     **lowercased** `tvg-id` (the converter's `HashSting32i`).
+   - `fossUrlHash` — the `meta.url-hashes` entries, xxhash32 of the `url-tvg`
+     with the scheme cut off and **no** case folding (`HashSting32` ∘ `CutHTTP`).
+     This is the binding: OTT-play hashes the playlist's own `url-tvg` and only
+     applies a provider declaring that hash, so `url-hashes: []` — what this
+     server used to publish — means the guide is never used at all. `channels.json`
+     is therefore built with the **exact** `url-tvg` string the `.m3u` carries;
+     both come from `userEpgUrl()` in `http/stream.js` for that reason, and
+     `fossLogoUrl()` likewise feeds both `tvg-logo` and the icon field of the
+     `channels.json` row (`"<tvg-id>¦<last-epg>¦<icon>"`).
+
+   Both hash rules are pinned by tests against OTT-play's **live** reference
+   providers (`https://epg.ottp.eu.org/<id>/channels.json`) — e.g.
+   `fossUrlHash('iptvx.one/EPG') === 2853413468`. Re-verify against a live
+   provider before touching them; they are not free to "normalize". [src/epg/xxhash32.js](src/epg/xxhash32.js) reproduces OTT-play's Go
    `OneOfOne/xxhash` so the per-channel id hashes match byte-for-byte (pinned by
    vector tests — don't swap it for a generic hash lib). The route (in
    `http/stream.js`) also proxies/merges the upstream OTT-play `match-channels`

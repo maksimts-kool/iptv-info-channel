@@ -23,9 +23,11 @@ const entries = (...extra) => [INFO_ENTRY, ...extra];
 
 test('playlist enters OTT-play static mode and avoids both match requests', () => {
   const playlist = buildUserPlaylist(USER, { brand_name: 'TestIPTV' }, CONFIG, entries());
+  // The `=` source must end at the directory holding the programme files:
+  // OTT-play appends "<hash>.json" to it with nothing in between.
   assert.match(
     playlist,
-    /foss-tvg="=infochannel::https:\/\/iptv\.example\/foss-epg\/u\/abc123\/"/,
+    /foss-tvg="=infochannel::https:\/\/iptv\.example\/foss-epg\/u\/abc123\/epg\/"/,
   );
   assert.match(playlist, /tvg-source="=infochannel"/);
   assert.match(
@@ -34,7 +36,8 @@ test('playlist enters OTT-play static mode and avoids both match requests', () =
   );
 
   // This is the URL assembled by the shipped OTT-play M3U provider in static mode.
-  const directEpgUrl = `https://iptv.example/foss-epg/u/abc123/epg/${fossIdHash(USER)}.json`;
+  const sourceUrl = /foss-tvg="=infochannel::([^"]+)"/.exec(playlist)[1];
+  const directEpgUrl = `${sourceUrl}${fossIdHash(USER)}.json`;
   assert.equal(directEpgUrl, 'https://iptv.example/foss-epg/u/abc123/epg/463191053.json');
 });
 

@@ -52,6 +52,47 @@ test('advances through a loop with a discontinuity and monotonic sequence', (t) 
   });
 });
 
+// The absolute discontinuity number a playlist claims for one media segment:
+// the playlist-wide EXT-X-DISCONTINUITY-SEQUENCE plus every tag ahead of it.
+function discontinuityIndexes(playlist) {
+  const indexes = new Map();
+  let counter = null;
+  for (const line of playlist.split('\n')) {
+    if (line.startsWith('#EXT-X-DISCONTINUITY-SEQUENCE:')) {
+      counter = Number(line.split(':')[1]);
+    } else if (line === '#EXT-X-DISCONTINUITY') {
+      counter += 1;
+    } else if (line.includes('.ts?')) {
+      indexes.set(Number(/&s=(\d+)/.exec(line)[1]), counter);
+    }
+  }
+  return indexes;
+}
+
+test('a segment keeps one discontinuity number as the window slides over the wrap', (t) => {
+  const dir = fixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  writeLoopState(dir, { version: 'one' }, 100_000);
+
+  // A five-segment loop is shorter than the eight-segment window, so a wrap sits
+  // inside every playlist and eventually becomes its first segment. If the same
+  // sequence number is ever renumbered, a strict player stalls on the wrap.
+  const seen = new Map();
+  for (let now = 100_000; now <= 340_000; now += 6_000) {
+    for (const [sequence, index] of discontinuityIndexes(buildLivePlaylist(dir, now))) {
+      const previous = seen.get(sequence);
+      if (previous !== undefined) {
+        assert.equal(index, previous, `segment ${sequence} was renumbered at ${now}`);
+      }
+      seen.set(sequence, index);
+    }
+  }
+  // The wrap is still announced — one boundary per loop, never zero.
+  assert.equal(seen.get(4), 0);
+  assert.equal(seen.get(5), 1);
+  assert.equal(seen.get(10), 2);
+});
+
 test('a rebuilt generation can continue counters with a new segment version', (t) => {
   const oldDir = fixture();
   const newDir = fixture();

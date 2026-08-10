@@ -107,18 +107,35 @@ and the full list is back on the next refresh.
 ### Programme guide (EPG)
 
 The `.m3u` advertises a per-user **XMLTV** guide (via `url-tvg`), so players that
-show an EPG display the current service status right in the channel list and
-info bar:
+show an EPG put the customer's subscription status right in the channel list and
+info bar — without them having to tune into the info channel at all:
 
 ```
 http://<host>:9222/u/<token>/epg.xml
 ```
 
-Each day is one programme whose title is the service status — `✓ Все сервисы
-работают`, `⚠ Частичная деградация сервиса`, or `✕ Сбой в работе сервиса` —
-driven by the same incidents that power the on-screen status board. The
-description also carries the account's subscription status (days left) and any
-incident notes. Disable with `EPG_ENABLED=false`.
+Each day is one programme. Its **title** is the short status the player shows
+next to the channel:
+
+```
+✓ Подписка активна · ещё 89 дней
+⚠ Подписка истекает · ещё 4 дня
+⚠ Подписка истекает · последний день
+✕ Подписка истекла
+✕ Аккаунт отключён
+```
+
+When an incident covers that day, the service state is prefixed onto the same
+line (`⚠ Перебои в работе · Подписка активна · ещё 89 дней`, `✕ Сбой сервиса ·
+…`) so an outage can never be hidden by a healthy account — and, equally, a
+healthy service never crowds out the status the customer came for.
+
+Opening the programme shows the rest: the expiry date as the sub-title, then the
+plan and its price, the full service headline (`✓ Все сервисы работают` / `⚠
+Частичная деградация сервиса` / `✕ Сбой в работе сервиса`), 90-day uptime and
+any incident notes — driven by the same incidents that power the on-screen
+status board. Days-left is sampled per day, so it counts down across the guide.
+Disable with `EPG_ENABLED=false`.
 
 #### OTT-play FOSS
 
@@ -127,14 +144,45 @@ OTT-play FOSS does not use the raw XMLTV URL for this channel. When
 FOSS JSON source:
 
 ```m3u
-#EXTM3U ... foss-tvg="=infochannel::http://<host>:9222/foss-epg/u/<token>/"
+#EXTM3U ... foss-tvg="=infochannel::http://<host>:9222/foss-epg/u/<token>/epg/"
 #EXTINF:-1 tvg-id="account-<token>" tvg-source="=infochannel" ...
 ```
 
-The leading `=` is required in both places. It makes OTT-play fetch
-`epg/<xxhash32(tvg-id)>.json` directly from the token-scoped base, bypassing
-the central match service. The channel also includes a `tvg-logo` URL so the
-player does not make a separate central logo-match request.
+The leading `=` is required in both places: it takes the channel out of the
+central auto-match and loads the guide straight from this server (`tvg-id` is
+mandatory in that mode — it is the file name).
+
+**The source URL has to end at the `epg/` directory.** In this static mode
+OTT-play appends `<xxhash32(tvg-id)>.json` to the advertised string verbatim,
+with no path of its own, so publishing the token base one level up — which this
+server did until now — sends the player to a URL that does not exist and the
+channel silently shows no programme at all. The documented reference form is
+`foss-tvg="=iptvx::http://epg.ottp.eu.org/iptvx.one/epg/"`, matching the real
+file at `.../iptvx.one/epg/890122.json`. (The `/m3u/match-channels` protocol is
+the exception: its provider block names the level above, and the player adds the
+`epg/` itself.)
+
+The channel also includes a `tvg-logo` URL so the player does not make a
+separate central logo-match request.
+
+That JSON guide carries the **same text** as the XMLTV one — `name` is the
+one-line status above, `descr` the detail block — so a Televizo user and an
+OTT-play FOSS user are never told two different things about the same account.
+
+The static source above needs no `channels.json`, but the file is served anyway
+for the matcher path, and it carries the binding step that is easy to miss:
+`url-hashes`, the hash of the very `url-tvg` this customer's `.m3u` advertises.
+A matcher **only applies a provider that declares that hash**, so an empty list
+means no guide at all, however correct the rest is. The hash is xxhash32 over
+the URL with the `http(s)://` prefix removed, **not** lowercased — while the
+channel-id hash in the same file *is* lowercased. Both rules are pinned by tests
+against OTT-play's own live providers.
+
+```
+GET /foss-epg/u/<token>/channels.json
+{"meta":{"id":"infochannel","url-hashes":[4228826628],"last-upd":…,"last-epg":…},
+ "data":{"3868628944":["account-<token>¦<last-epg>¦<logo url>","<brand> — <user>"]}}
+```
 
 The server additionally exposes compatible fallback endpoints at
 `/m3u/match-channels` and `/m3u/match-logos`, plus

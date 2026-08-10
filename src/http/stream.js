@@ -41,6 +41,34 @@ export function fossProviderBaseUrl(user, cfg) {
   return `${cfg.publicBaseUrl}/foss-epg/u/${encodeURIComponent(user.token)}/`;
 }
 
+// The two per-user URLs the guide needs. They live here, shared, because the
+// .m3u we generate and the FOSS `channels.json` we serve must agree on them
+// CHARACTER FOR CHARACTER: OTT-play binds the provider to the playlist by
+// hashing the playlist's `url-tvg`, so a URL built twice, slightly differently,
+// silently costs the customer their EPG.
+export function userEpgUrl(user, cfg) {
+  return `${cfg.publicBaseUrl}/u/${encodeURIComponent(user.token)}/epg.xml`;
+}
+
+export function fossLogoUrl(user, cfg) {
+  return `${fossProviderBaseUrl(user, cfg)}logo.svg`;
+}
+
+// The URL the `=`-prefixed `foss-tvg` entry must carry. In that static mode
+// OTT-play appends "<xxhash32(tvg-id)>.json" to this string VERBATIM, so it has
+// to name the directory the programme files actually live in — the documented
+// example is `=iptvx::http://epg.ottp.eu.org/iptvx.one/epg/`, and
+// http://epg.ottp.eu.org/iptvx.one/epg/890122.json is a real file. Publishing
+// the provider root instead (what this server did) sends the player to
+// /foss-epg/u/<token>/<hash>.json, which is a 404 and therefore no guide.
+//
+// The match protocol's provider block is the level ABOVE this one: the
+// reference server answers `<base_url><provider id>/` and the player appends
+// the `epg/` itself there, so that path keeps using fossProviderBaseUrl.
+export function fossEpgDirUrl(user, cfg) {
+  return `${fossProviderBaseUrl(user, cfg)}epg/`;
+}
+
 // The customer's whole subscription as one .m3u.
 //
 // `entries` is the already-resolved [{ channel, category }] list from the
@@ -60,19 +88,20 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
   const tvgId = epgChannelId(user);
   const fossEnabled = cfg.epg.enabled && cfg.epg.foss.enabled;
   const providerId = normalizeFossProviderId(cfg.epg.foss.providerId);
-  const providerBase = fossProviderBaseUrl(user, cfg);
-  const logoUrl = `${providerBase}logo.svg`;
+  const epgDirUrl = fossEpgDirUrl(user, cfg);
+  const logoUrl = fossLogoUrl(user, cfg);
 
   const headerAttrs = {};
   if (cfg.epg.enabled) {
     // Ours first; a provider's own guide is appended comma-separated, which is
     // how players accept several XMLTV sources on one url-tvg.
-    headerAttrs['url-tvg'] = [`${cfg.publicBaseUrl}/u/${user.token}/epg.xml`, ...epgUrls].join(',');
+    headerAttrs['url-tvg'] = [userEpgUrl(user, cfg), ...epgUrls].join(',');
   }
   if (fossEnabled) {
     // The leading "=" on the source definition is required by OTT-play's
-    // parser. It makes the player fetch epg/<xxhash(tvg-id)>.json directly.
-    headerAttrs['foss-tvg'] = `=${providerId}::${providerBase}`;
+    // parser: it takes the channel out of the central auto-match and loads
+    // <xxhash32(tvg-id)>.json straight from the URL that follows.
+    headerAttrs['foss-tvg'] = `=${providerId}::${epgDirUrl}`;
   }
 
   const items = entries.map(({ channel, category }) => {
@@ -311,7 +340,9 @@ export function createFossEpgRouter({
   const fossRouter = express.Router();
   const providerId = normalizeFossProviderId(cfg.epg.foss.providerId);
 
-  function epgOpts() {
+  // `user` is optional: only channels.json needs the per-user URLs, and it is
+  // the one caller that has to declare which playlist this provider serves.
+  function epgOpts(user = null) {
     return {
       settings: SettingsImpl.all(),
       incidents: IncidentsImpl.all(),
@@ -322,6 +353,10 @@ export function createFossEpgRouter({
       daysBehind: cfg.epg.daysBehind,
       expiringThresholdDays: cfg.expiringThresholdDays,
       providerId,
+      // Exactly the `url-tvg` this customer's .m3u advertises — OTT-play hashes
+      // it to decide whether this provider applies to their playlist at all.
+      epgUrls: user && cfg.epg.enabled ? [userEpgUrl(user, cfg)] : [],
+      logoUrl: user ? fossLogoUrl(user, cfg) : '',
     };
   }
 
@@ -390,7 +425,7 @@ export function createFossEpgRouter({
     if (!user) {
       return setPublicHeaders(res).status(404).type('text/plain').send('Unknown token');
     }
-    return setPublicHeaders(res).status(200).json(buildFossChannelsJson(user, epgOpts()));
+    return setPublicHeaders(res).status(200).json(buildFossChannelsJson(user, epgOpts(user)));
   });
 
   fossRouter.get('/foss-epg/u/:token/epg/:file', (req, res) => {

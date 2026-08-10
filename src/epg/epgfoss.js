@@ -14,12 +14,28 @@ export function normalizeFossProviderId(value) {
   return /^[A-Za-z0-9._-]+$/.test(id) ? id : DEFAULT_PROVIDER_ID;
 }
 
+// The channel-id hash OTT-play looks a programme file up by: xxhash32 of the
+// tvg-id. The converter uses its `HashSting32i` helper, i.e. the id is lowered
+// first — our ids are already lowercase (`account-` + a lowercase-alphabet
+// token), but fold explicitly so a future id shape can't silently break lookup.
 export function fossIdHash(user) {
-  return xxhash32(epgChannelId(user));
+  return xxhash32(epgChannelId(user).toLowerCase());
+}
+
+// OTT-play binds a FOSS provider to a playlist through `meta.url-hashes`: the
+// hash of every `url-tvg` this provider can serve, taken over the URL with the
+// scheme cut off (the converter's `CutHTTP`) and — unlike the channel id —
+// WITHOUT case folding. A provider that publishes an empty list claims to serve
+// no playlist at all, which is why the guide never bound to the channel.
+//
+// Verified against the live providers: xxhash32('iptvx.one/EPG') === 2853413468
+// is exactly what https://epg.ottp.eu.org/iptvx.one/channels.json publishes.
+export function fossUrlHash(url) {
+  return xxhash32(String(url).replace(/^https?:\/\//, ''));
 }
 
 export function buildFossChannelsJson(user, opts = {}) {
-  const { settings = {} } = opts;
+  const { settings = {}, epgUrls = [], logoUrl = '' } = opts;
   const providerId = normalizeFossProviderId(opts.providerId);
   const brand = settings.brand_name || 'Мой IPTV-сервис';
   const name = `${brand} — ${user.username}`;
@@ -33,25 +49,31 @@ export function buildFossChannelsJson(user, opts = {}) {
   return {
     meta: {
       id: providerId,
-      'url-hashes': [],
+      'url-hashes': epgUrls.filter(Boolean).map(fossUrlHash),
       'last-upd': nowUnix,
       'last-epg': topProgrammeStart,
     },
     data: {
+      // "<tvg-id>¦<newest programme start>¦<icon url>", then the name aliases —
+      // the exact row shape the reference converter emits.
       [idHash]: [
-        `${epgChannelId(user)}${FIELD_SEP}${topProgrammeStart}${FIELD_SEP}`,
+        `${epgChannelId(user)}${FIELD_SEP}${topProgrammeStart}${FIELD_SEP}${logoUrl}`,
         name,
       ],
     },
   };
 }
 
+// OTT-play FOSS shows `name` in the channel list and `descr` in the programme
+// details — the same two roles XMLTV gives title/desc, so both guides render the
+// identical day records. `descr` used to be empty here, which left FOSS users
+// with no subscription status at all.
 export function buildFossEpgJson(user, opts = {}) {
   const { days, tz } = eachEpgDay(user, opts);
   return {
     epg_data: days.map((day) => ({
       name: day.title,
-      descr: '',
+      descr: day.desc,
       time: dayStartUnix(day.date, tz),
       time_to: dayStartUnix(day.next, tz),
     })),

@@ -6,6 +6,13 @@
 // #EXT-X-VERSION:6, and the server honors Range (see http/stream.js). Lenient
 // players (OTT Play) tolerate less of this. Don't "simplify" the window /
 // sequence-number construction below without testing on a strict player.
+//
+// The other invariant, and the one that is easy to break silently: a media
+// sequence number must always report the SAME discontinuity number, refresh
+// after refresh (EXT-X-DISCONTINUITY-SEQUENCE plus the tags ahead of it in the
+// playlist). ExoPlayer keys its timestamp adjusters off that number, so
+// renumbering a segment as the window slides stalls playback at the loop wrap.
+// A regression test walks the window across several wraps and asserts it.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -200,7 +207,15 @@ export function buildLivePlaylist(dir, now = Date.now()) {
     const localIndex = offset % meta.segments.length;
     const segment = meta.segments[localIndex];
 
-    if (offset > 0 && localIndex === 0) lines.push('#EXT-X-DISCONTINUITY');
+    // A loop boundary that lands on the FIRST segment of the window must not be
+    // tagged: EXT-X-DISCONTINUITY-SEQUENCE above already counts it (it is the
+    // discontinuity number *of* that segment), and the tag applies to the
+    // segment following it. Emitting both makes the same media segment report
+    // one discontinuity index on the refresh before the window slides onto the
+    // boundary and a different one after — ExoPlayer (Televizo, OTT-play) treats
+    // that as a broken timeline and rebuffers forever, which is why playback
+    // died on the wrap after the last slide. Hence `index > 0`, not `offset > 0`.
+    if (index > 0 && localIndex === 0) lines.push('#EXT-X-DISCONTINUITY');
     lines.push(`#EXTINF:${segment.duration.toFixed(6)},`);
     lines.push(`${segment.file}?v=${encodeURIComponent(state.version)}&s=${sequence}`);
   }

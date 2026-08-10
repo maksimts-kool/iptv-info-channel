@@ -586,13 +586,6 @@ export default function CatalogPanel({
         </Space>
       )}
     >
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="«Информация» — служебная категория с инфоканалом клиента."
-        description="Её нельзя выключить: именно она остаётся у клиента, когда подписка заканчивается. Переименовать можно. Импортированные каналы и категории не удаляются — их достаточно выключить, иначе они вернутся при следующей загрузке источника."
-      />
       {catalog?.totals?.unsoldCategories ? (
         <Alert
           type="warning"

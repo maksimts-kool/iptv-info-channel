@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../../src/config.js';
 import { introFfmpegArgs, stillFfmpegArgs } from '../../src/encode/channel.js';
+import { LIVE_WINDOW_SEGMENTS } from '../../src/encode/liveloop.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GOLDEN = path.join(__dirname, '..', 'fixtures', 'ffmpeg-args.golden.json');
@@ -85,4 +86,29 @@ if (process.env.UPDATE_GOLDEN) {
 test('ffmpeg argv is byte-identical to the golden snapshot across config permutations', () => {
   const golden = JSON.parse(fs.readFileSync(GOLDEN, 'utf8'));
   assert.deepEqual(compute(), golden);
+});
+
+// Every golden profile already runs a loop far longer than the live window, so
+// the floor below is invisible to the snapshot above — it only bites the short
+// configs that used to make strict players stall on the wrap.
+test('a live loop is never shorter than the live window', (t) => {
+  const liveLoop = config.channel.liveLoop;
+  t.after(() => { config.channel.liveLoop = liveLoop; });
+  config.channel.liveLoop = true;
+  // 4s intro + 6s card + 12s status would tile to 24s: under the 8x6s window.
+  applyProfile({ ...PROFILES.default, accountSlideSeconds: 6 });
+  const floor = LIVE_WINDOW_SEGMENTS * config.channel.hlsTime;
+  assert.equal(floor, 48);
+
+  const still = stillFfmpegArgs('/t/card.png', [], MUSIC, TMP);
+  assert.equal(Number(still[still.indexOf('-t') + 1]), floor);
+
+  // The intro path carries the total as the audio fade-out start (total - 2).
+  const intro = introFfmpegArgs(SLIDES_STATUS, MUSIC, TMP);
+  assert.match(intro[intro.indexOf('-af') + 1], /afade=t=out:st=46\.00/);
+
+  // Serving plain VOD has no window to fill, so nothing is padded there.
+  config.channel.liveLoop = false;
+  const vod = stillFfmpegArgs('/t/card.png', [], MUSIC, TMP);
+  assert.equal(Number(vod[vod.indexOf('-t') + 1]), 6);
 });

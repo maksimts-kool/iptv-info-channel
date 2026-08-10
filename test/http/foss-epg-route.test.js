@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import { createFossEpgRouter } from '../../src/http/stream.js';
-import { MATCH_BLOCK_SEP, fossIdHash } from '../../src/epg/epgfoss.js';
+import { MATCH_BLOCK_SEP, fossIdHash, fossUrlHash } from '../../src/epg/epgfoss.js';
 import { buildUserPlaylist } from '../../src/http/stream.js';
 import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../../src/playlist/model.js';
 
@@ -26,9 +26,11 @@ const CONFIG = {
   timezone: 'Europe/Tallinn',
   expiringThresholdDays: 7,
   epg: {
+    enabled: true,
     daysAhead: 2,
     daysBehind: 1,
     foss: {
+      enabled: true,
       providerId: 'infochannel',
       upstreamMatchUrl: '',
     },
@@ -181,13 +183,14 @@ test('local match still succeeds when the upstream matcher is unavailable', asyn
 test('direct JSON and logo endpoints form a complete static source', async (t) => {
   const { base, config } = await startServer(t);
   const hash = fossIdHash(USER);
-  const playlist = buildUserPlaylist(USER, { brand_name: 'TestIPTV' }, {
-    ...config,
-    epg: { ...config.epg, enabled: true, foss: { ...config.epg.foss, enabled: true } },
-  }, [INFO_ENTRY]);
-  const providerBase = /foss-tvg="=infochannel::([^"]+)"/.exec(playlist)?.[1];
+  const playlist = buildUserPlaylist(USER, { brand_name: 'TestIPTV' }, config, [INFO_ENTRY]);
+  const epgDirUrl = /foss-tvg="=infochannel::([^"]+)"/.exec(playlist)?.[1];
   const logoUrl = /tvg-logo="([^"]+)"/.exec(playlist)?.[1];
-  assert.equal(providerBase, `${base}/foss-epg/u/abc123/`);
+  const urlTvg = /url-tvg="([^"]+)"/.exec(playlist)?.[1];
+  const providerBase = `${base}/foss-epg/u/abc123/`;
+  // In `=` mode OTT-play appends "<hash>.json" to the advertised source with
+  // nothing in between, so the playlist has to name the epg/ directory itself.
+  assert.equal(epgDirUrl, `${providerBase}epg/`);
   assert.equal(logoUrl, `${providerBase}logo.svg`);
 
   const channelsResponse = await fetch(`${providerBase}channels.json`);
@@ -196,7 +199,15 @@ test('direct JSON and logo endpoints form a complete static source', async (t) =
   const channels = await channelsResponse.json();
   assert.ok(channels.data[String(hash)]);
 
-  const epgResponse = await fetch(`${providerBase}epg/${hash}.json`);
+  // The binding OTT-play actually performs: it hashes the playlist's own
+  // `url-tvg` and only uses a provider that declares that hash. Publishing an
+  // empty `url-hashes` (what this server used to do) means no EPG at all.
+  assert.deepEqual(channels.meta['url-hashes'], [fossUrlHash(urlTvg)]);
+  // The row also carries the channel icon, so no central logo match is needed.
+  assert.equal(channels.data[String(hash)][0], `account-abc123¦${channels.meta['last-epg']}¦${logoUrl}`);
+
+  // Exactly the request the player makes: the advertised source + "<hash>.json".
+  const epgResponse = await fetch(`${epgDirUrl}${hash}.json`);
   assert.equal(epgResponse.status, 200);
   assertPublicHeaders(epgResponse);
   const epg = await epgResponse.json();
