@@ -16,7 +16,7 @@ import { log } from '../core/logger.js';
 import { parseM3u } from './m3u.js';
 import {
   INFO_CATEGORY_ID, INFO_CHANNEL_ID, ensureBuiltins, mergeSourceChannels,
-  normalizeName, resolveUserChannels, channelCounts,
+  normalizeName, resolveUserChannels, resolveChannelAccess, channelCounts,
   REFRESH_INTERVALS, sourceDueAt, sourceIsDue,
 } from './model.js';
 
@@ -505,6 +505,15 @@ export const Overrides = {
 // collapses it to the Информация category alone.
 export function channelsForUser(userId, { locked = false, planCategories = null } = {}) {
   return resolveUserChannels(data, {
+    overrides: Overrides.get(userId), locked, planCategories,
+  });
+}
+
+// Whether one customer may play one channel, asked per channel switch by the
+// stream gateway. Same layers as channelsForUser, resolved without building the
+// customer's whole list.
+export function channelAccessForUser(userId, channelId, { locked = false, planCategories = null } = {}) {
+  return resolveChannelAccess(data, channelId, {
     overrides: Overrides.get(userId), locked, planCategories,
   });
 }

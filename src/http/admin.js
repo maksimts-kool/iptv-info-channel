@@ -23,7 +23,7 @@ import {
   requireAuth, requireCsrf, csrfToken, checkPassword, setSession, clearSession,
 } from './auth.js';
 import catalogRouter from './catalog.js';
-import { renderUserPlaylist } from './stream.js';
+import { renderUserPlaylist, syncGatewaySettings } from './stream.js';
 import { Overrides, catalog } from '../playlist/catalog.js';
 import { log } from '../core/logger.js';
 
@@ -343,6 +343,7 @@ router.get('/api/state', (req, res) => {
     expiringThresholdDays: config.expiringThresholdDays,
     statusSlideEnabled: config.statusSlide.enabled,
     notify: { enabled: config.notify.enabled },
+    gateway: { enabled: config.gateway.enabled },
     settings: Settings.all(),
     plans: Plans.all().map((p) => planJson(p, categoryNameMap())),
     // Headline catalog numbers only — the channel rows themselves are paged
@@ -575,6 +576,24 @@ router.patch('/api/settings', (req, res) => {
   });
   regenAll('admin branding updated');
   res.json(Settings.all());
+});
+
+// ---------- Stream gateway ----------
+// Toggle whether new playlists point at /c/:token/:id (entitlement re-checked on
+// every channel switch) or straight at the provider. No regeneration: the .m3u
+// is rendered per request and the info-channel card doesn't show this.
+//
+// Switching it ON only reaches a customer once their player re-downloads the
+// playlist; from that moment a revoked channel stops playing without any
+// further refresh. Switching it OFF leaves already-downloaded gated playlists
+// working — /c/ keeps serving them (see the route in http/stream.js).
+router.patch('/api/gateway', (req, res) => {
+  const { enabled } = req.body || {};
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be a boolean' });
+  Settings.set('gateway_enabled', enabled);
+  syncGatewaySettings();
+  log.info('admin', 'stream gateway toggled', { enabled });
+  return res.json({ enabled: config.gateway.enabled });
 });
 
 // ---------- Status board incidents ----------

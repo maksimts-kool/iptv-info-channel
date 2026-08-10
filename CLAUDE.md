@@ -63,7 +63,7 @@ frontend/              # React + Vite + Ant Design admin app (own package.json)
   src/pages/           # one component per nav section (Overview/Playlist/Clients/…)
   src/playlist/        # SourcesPanel + CatalogPanel (categories with channels nested)
   src/clients/         # the per-customer drawer and its tabs
-  src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify cards
+  src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify/Gateway cards
 ```
 
 ## Commands
@@ -146,7 +146,8 @@ Request/data flow, entry point [src/server.js](src/server.js):
      for playback.
    - [model.js](src/playlist/model.js) is the **pure** logic: `ensureBuiltins`
      (the `Информация` category + info channel), `mergeSourceChannels`,
-     `resolveUserChannels` and the auto-refresh due calculation
+     `resolveUserChannels`, `resolveChannelAccess` (the same decision for one
+     channel, for the stream gateway) and the auto-refresh due calculation
      (`sourceDueAt`/`sourceIsDue`). No I/O, no module state — unit-tested directly.
    - [catalog.js](src/playlist/catalog.js) is the store + HTTP fetching:
      `Sources`, `Categories`, `Channels`, `Overrides`, `queryChannels`
@@ -188,6 +189,29 @@ Request/data flow, entry point [src/server.js](src/server.js):
      flagged on the Обзор, Тарифы and Категории screens rather than left silent.
      Deleting a category must also call `Plans.removeCategory` (see
      `http/catalog.js`) so no plan references a category that is gone.
+   - **A playlist is a one-shot grant unless the gateway is on.** The `.m3u`
+     normally carries the provider's own stream URLs, so the player talks
+     straight to the provider and this server never learns a channel was opened
+     — a customer who lost a category keeps watching until their player
+     re-downloads the playlist, which many players only do on demand. With
+     `config.gateway.enabled` (env `STREAM_GATEWAY_ENABLED`, overlaid by the
+     admin's `gateway_enabled` setting via `syncGatewaySettings()` in
+     `http/stream.js`) every imported channel is published as `/c/:token/:id`
+     instead, and that route re-runs `resolveChannelAccess` on **every channel
+     switch** before a `302` to the provider. Nothing is proxied, so the cost is
+     one redirect per zap. Three things to preserve:
+     - `resolveChannelAccess` must keep agreeing with `resolveUserChannels` row
+       for row (pinned by a test that walks the whole catalog) — the `.m3u`
+       lists what one allows and the gate re-checks with the other.
+     - **The `/c/` route is deliberately not gated on the flag.** Playlists
+       handed out while it was on stay in players indefinitely; switching the
+       feature off must not break them. The flag only decides what *new*
+       playlists point at.
+     - A refused channel redirects to the customer's **own info channel**, not
+       a 403: in a player a 403 is an indistinguishable "cannot play", i.e. a
+       support ticket, while the card explains what the subscription covers.
+     The gateway controls what *plays*, not what is *listed* — a newly added
+     channel still appears only when the player re-downloads the playlist.
    - **The expiry gate is derived, never persisted.** `resolveUserChannels`
      takes a `locked` flag (account expired or deactivated) and collapses the
      list to the built-in `Информация` category. Nothing is written when an
@@ -291,6 +315,9 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `/hls/:token/:file` lazily generates (on first request) and serves the
    `index.m3u8` live playlist + `.ts` segments. Segment requests honor HTTP
    `Range` (strict players probe with `Range:` and stall on a plain 200).
+   `/c/:token/:channelId` is the **stream gateway** (see the catalog invariants
+   above): it re-resolves entitlement per channel switch and `302`s to the
+   provider, or to the customer's own `/hls/` loop when the answer is no.
    `/u/:token/epg.xml` (and `/epg.xml?token=`) return the **XMLTV programme
    guide** (see EPG below); the `.m3u` header advertises it via `url-tvg` and the
    `#EXTINF` of the **info channel** uses a per-user `tvg-id`
@@ -477,10 +504,11 @@ Request/data flow, entry point [src/server.js](src/server.js):
      "1,308 / 1310" happened — pass `formatter={count}` *and* build the suffix
      with the same helper.
 
-   The Плейлист section is two tabs: **Каналы и категории** (`CatalogPanel` — a
+   The Плейлист section is three tabs: **Каналы и категории** (`CatalogPanel` — a
    category is a row you expand to load that category's channels; typing in the
-   search box switches the whole panel to flat, server-filtered results) and
-   **Источники**. Channels are never all in the browser at once — a provider
+   search box switches the whole panel to flat, server-filtered results),
+   **Источники**, and **Доступ** (`GatewayCard` — the stream-gateway switch).
+   Channels are never all in the browser at once — a provider
    list is tens of thousands of rows, so every view is a server-side page.
 
    Bulk changes are **selection-driven**: tick rows in either table, then act on
@@ -520,6 +548,12 @@ The model is deliberate; preserve it when editing.
   `/u/:token/...` over `/playlist.m3u?token=` / `/epg.xml?token=` — query strings
   leak via access logs / `Referer` / proxies — and require TLS off-LAN
   (`PUBLIC_BASE_URL` should be `https://` there).
+- **The stream gateway is an access check, not DRM.** With it on the provider
+  URL is handed out only at play time and only to an entitled customer — that is
+  what makes a revocation effective immediately — but the answer is a plain
+  `302`, so a customer can still read the provider URL of a channel they
+  legitimately have out of their own player's log. Don't document or design it
+  as link protection.
 - **Separate `notify_token`.** The on-screen sign-up QR points at `/sub/:token`
   using a *distinct* token, so photographing the QR can't grant stream access.
   Keep the two token namespaces strictly separate.

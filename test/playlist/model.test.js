@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseM3u } from '../../src/playlist/m3u.js';
 import {
   INFO_CATEGORY_ID, INFO_CHANNEL_ID,
-  ensureBuiltins, mergeSourceChannels, resolveUserChannels,
+  ensureBuiltins, mergeSourceChannels, resolveUserChannels, resolveChannelAccess,
   effectiveEnabled, categoryEnabledFor, channelKey, categoryKey, channelCounts,
   sourceDueAt, sourceIsDue,
 } from '../../src/playlist/model.js';
@@ -313,4 +313,76 @@ test('duplicate lines in one upstream file are imported once', () => {
     'http://p/d.ts',
   ].join('\n')), { makeId });
   assert.equal(stats.added, 1);
+});
+
+// --- the stream gateway's per-channel check -------------------------------
+// It must answer exactly what resolveUserChannels would have decided for that
+// row, because the two are used together: the .m3u lists what the playlist
+// resolver allows, the gateway re-checks each entry on playback.
+test('resolveChannelAccess agrees with the resolved playlist, row by row', () => {
+  const { state } = seeded();
+  const sport = state.categories.find((c) => c.name === 'Спорт');
+  const news = state.categories.find((c) => c.name === 'Новости');
+  const opts = { planCategories: new Set([sport.id]) };
+
+  const allowedIds = new Set(resolveUserChannels(state, opts).map((e) => e.channel.id));
+  for (const channel of state.channels) {
+    assert.equal(
+      resolveChannelAccess(state, channel.id, opts).allowed,
+      allowedIds.has(channel.id),
+      `${channel.name || 'info'} disagrees with the playlist`,
+    );
+  }
+  assert.equal(
+    resolveChannelAccess(state, state.channels.find((c) => c.category_id === news.id).id, opts).reason,
+    'category',
+  );
+});
+
+test('the gateway refuses a channel the customer lost, and says why', () => {
+  const { state } = seeded();
+  const sport1 = state.channels.find((c) => c.name === 'Sport 1');
+  const sport = state.categories.find((c) => c.name === 'Спорт');
+  const plan = { planCategories: new Set([sport.id]) };
+
+  assert.equal(resolveChannelAccess(state, sport1.id, plan).allowed, true);
+
+  // Each layer, one at a time.
+  assert.equal(resolveChannelAccess(state, sport1.id, { ...plan, locked: true }).reason, 'locked');
+  assert.equal(
+    resolveChannelAccess(state, sport1.id, {
+      ...plan, overrides: { channels: { [sport1.id]: false } },
+    }).reason,
+    'channel',
+  );
+  assert.equal(
+    resolveChannelAccess(state, sport1.id, {
+      ...plan, overrides: { categories: { [sport.id]: false } },
+    }).reason,
+    'category',
+  );
+  assert.equal(resolveChannelAccess(state, 'no-such-channel', plan).reason, 'unknown');
+
+  // A globally disabled channel is still playable for a customer pinned to it.
+  sport1.enabled = false;
+  assert.equal(resolveChannelAccess(state, sport1.id, plan).reason, 'channel');
+  assert.equal(
+    resolveChannelAccess(state, sport1.id, {
+      ...plan, overrides: { channels: { [sport1.id]: true } },
+    }).allowed,
+    true,
+  );
+
+  sport1.enabled = true;
+  sport1.missing = true;
+  assert.equal(resolveChannelAccess(state, sport1.id, plan).reason, 'missing');
+});
+
+test('the account channel stays playable for an expired customer', () => {
+  const { state } = seeded();
+  const access = resolveChannelAccess(state, INFO_CHANNEL_ID, {
+    locked: true, planCategories: new Set(),
+  });
+  assert.equal(access.allowed, true);
+  assert.equal(access.category.id, INFO_CATEGORY_ID);
 });

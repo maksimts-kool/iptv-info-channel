@@ -280,6 +280,43 @@ export function resolveUserChannels(
     .map((channel) => ({ channel, category: visibleCategoryIds.get(channel.category_id) }));
 }
 
+// Whether ONE channel is playable for ONE customer, right now.
+//
+// This is the same three-layer decision resolveUserChannels makes for the whole
+// list, asked about a single row: the stream gateway (http/stream.js) calls it
+// on every channel switch, so it must agree with the .m3u exactly — and it must
+// not sort or copy the catalog to answer, because that catalog can hold tens of
+// thousands of channels.
+//
+// `reason` says which layer refused, for the admin log:
+//   unknown  — no such channel id (deleted since the playlist was downloaded)
+//   missing  — the channel vanished upstream
+//   locked   — the account is expired or deactivated
+//   category — the category is not in the plan, off catalog-wide, or pinned off
+//   channel  — the channel itself is off (globally or pinned off for this user)
+//   no-url   — nothing to play (a custom row saved without a stream URL)
+export function resolveChannelAccess(catalog, channelId, {
+  overrides = {}, locked = false, planCategories = null,
+} = {}) {
+  const channel = catalog.channels.find((c) => c.id === channelId);
+  if (!channel) return { channel: null, category: null, allowed: false, reason: 'unknown' };
+  const category = catalog.categories.find((c) => c.id === channel.category_id) || null;
+  const deny = (reason) => ({ channel, category, allowed: false, reason });
+
+  // The account channel is the one entry every customer keeps, expired or not.
+  if (channel.id === INFO_CHANNEL_ID) return { channel, category, allowed: true, reason: 'info' };
+
+  if (channel.missing) return deny('missing');
+  if (!category) return deny('category');
+  if (locked) return deny('locked');
+  if (!categoryEnabledFor(category, (overrides.categories || {})[category.id], planCategories)) {
+    return deny('category');
+  }
+  if (!effectiveEnabled(channel, (overrides.channels || {})[channel.id])) return deny('channel');
+  if (!channel.url) return deny('no-url');
+  return { channel, category, allowed: true, reason: 'ok' };
+}
+
 // Count of channels per category id (excludes rows gone from upstream).
 export function channelCounts(catalog) {
   const counts = new Map();

@@ -138,6 +138,20 @@ export const config = {
     // the ONLY category an expired/disabled customer keeps (see catalog.js).
     infoCategoryName: process.env.INFO_CATEGORY_NAME || 'Информация',
   },
+  gateway: {
+    // Stream gateway. OFF: the .m3u carries the provider's own URL, so a player
+    // that downloaded the playlist once plays those URLs forever — this server
+    // never sees the request and cannot take a channel away. ON: every imported
+    // channel points at /c/:token/:id here, entitlement is re-checked on every
+    // zap and the answer is a 302 to the provider (no video is proxied), so a
+    // revoked channel stops playing immediately, without a playlist refresh.
+    //
+    // The admin toggle (Settings `gateway_enabled`) overlays this default —
+    // see syncGatewaySettings() in http/stream.js. Off by default because
+    // switching it on only takes effect once each customer's player
+    // re-downloads its playlist.
+    enabled: bool(process.env.STREAM_GATEWAY_ENABLED, false),
+  },
   epg: {
     // XMLTV programme guide advertised via `url-tvg` in each user's .m3u. The
     // guide's now/next programmes carry the service-status headline (operational

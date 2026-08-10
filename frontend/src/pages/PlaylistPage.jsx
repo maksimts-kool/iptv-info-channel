@@ -4,11 +4,14 @@ import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
 import SourcesPanel from '../playlist/SourcesPanel.jsx';
 import CatalogPanel from '../playlist/CatalogPanel.jsx';
+import GatewayCard from '../components/GatewayCard.jsx';
 
 // The main playlist: where the upstream m3u comes from, how it is grouped, and
 // which channels are on air. Everything here is served to customers live — no
 // stream re-encode is involved, so saves are plain saves.
-export default function PlaylistPage({ api, message, onAuthError, reload }) {
+export default function PlaylistPage({
+  api, state, message, onAuthError, reload,
+}) {
   const [catalog, setCatalog] = useState(null);
   const [tab, setTab] = useState('catalog');
   const [error, setError] = useState('');
@@ -53,6 +56,19 @@ export default function PlaylistPage({ api, message, onAuthError, reload }) {
             key: 'sources',
             label: `Источники${catalog ? ` (${catalog.sources.length})` : ''}`,
             children: <SourcesPanel {...shared} />,
+          },
+          {
+            key: 'access',
+            label: 'Доступ',
+            children: (
+              <GatewayCard
+                api={api}
+                state={state}
+                reload={reload}
+                message={message}
+                onAuthError={onAuthError}
+              />
+            ),
           },
         ]}
       />

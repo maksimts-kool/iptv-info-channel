@@ -367,6 +367,57 @@ test("the per-customer view separates 'not in the plan' from 'switched off'", as
   await req('PATCH', `/admin/api/plans/${ids.plan}`, { category_ids: [ids.sport, ids.news] });
 });
 
+// Follow nothing: the gateway's answer IS the redirect, so the test has to see
+// it rather than the provider's 404.
+async function hop(url) {
+  const res = await fetch(`${base}${url}`, { redirect: 'manual' });
+  return { status: res.status, location: res.headers.get('location') };
+}
+
+test('the stream gateway re-checks access on every channel switch', async () => {
+  const enabled = await req('PATCH', '/admin/api/gateway', { enabled: true });
+  assert.equal(enabled.status, 200);
+  assert.equal(enabled.body.enabled, true);
+
+  const list = await req('GET', `/admin/api/catalog/channels?category=${ids.sport}`);
+  const sport2 = list.body.rows.find((c) => c.name === 'Sport 2');
+  const gate = `/c/${ids.token}/${sport2.id}`;
+  const infoStream = `https://iptv.example/hls/${ids.token}/index.m3u8`;
+
+  // The playlist now hands the player our gate link, not the provider's URL.
+  const gated = await req('GET', `/u/${ids.token}/playlist.m3u`, null, { raw: true });
+  assert.ok(gated.text.includes(`https://iptv.example${gate}`));
+  assert.doesNotMatch(gated.text, /http:\/\/provider\/2\.ts/);
+
+  // Entitled: straight through to the provider.
+  assert.deepEqual(await hop(gate), { status: 302, location: 'http://provider/2.ts' });
+
+  // Take the channel away — the player's copy of the playlist is now stale, but
+  // the very next zap lands on the customer's own info channel instead.
+  await req('PATCH', `/admin/api/users/${ids.user}/channels`, { channels: { [sport2.id]: false } });
+  assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
+  await req('POST', `/admin/api/users/${ids.user}/channels/reset`);
+  assert.deepEqual(await hop(gate), { status: 302, location: 'http://provider/2.ts' });
+
+  // An expired subscription closes every channel the same way.
+  const future = (await req('GET', '/admin/api/state')).body.users
+    .find((u) => u.id === ids.user).expires_at;
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2000-01-01' });
+  assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: future });
+
+  assert.equal((await hop(`/c/unknown-token/${sport2.id}`)).status, 404);
+  // A channel id that no longer exists is a lapsed link, not a crash.
+  assert.deepEqual(await hop(`/c/${ids.token}/gone`), { status: 302, location: infoStream });
+
+  // Switching the gateway off returns new playlists to direct URLs, but the
+  // links already sitting in customers' players keep working.
+  await req('PATCH', '/admin/api/gateway', { enabled: false });
+  const direct = await req('GET', `/u/${ids.token}/playlist.m3u`, null, { raw: true });
+  assert.match(direct.text, /^http:\/\/provider\/2\.ts$/m);
+  assert.deepEqual(await hop(gate), { status: 302, location: 'http://provider/2.ts' });
+});
+
 test('a source carries an auto-refresh schedule through the API', async () => {
   const before = (await req('GET', '/admin/api/catalog')).body.sources
     .find((s) => s.id === ids.source);
@@ -442,4 +493,28 @@ test('deleting a customer drops their personal overrides', async () => {
   await req('DELETE', `/admin/api/users/${ids.user}`);
   const raw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'catalog.json'), 'utf8'));
   assert.equal(raw.overrides[String(ids.user)], undefined);
+});
+
+test('the gateway passes a provider URL through without re-encoding it', async () => {
+  // The `<url>|User-Agent=…` suffix is a real IPTV convention, and percent-
+  // encoding the pipe (what a naive redirect helper does) turns it into a 404.
+  const created = await req('POST', '/admin/api/catalog/channels', {
+    name: 'Pipe', url: 'http://provider/9.ts|User-Agent=VLC&Referer=http://x/',
+    category_id: ids.sport,
+  });
+  assert.equal(created.status, 201);
+
+  const user = await req('POST', '/admin/api/users', {
+    username: 'pipe-watcher',
+    plan_id: ids.plan,
+    expires_at: new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10),
+  });
+
+  const hopped = await hop(`/c/${user.body.token}/${created.body.id}`);
+  assert.deepEqual(hopped, {
+    status: 302, location: 'http://provider/9.ts|User-Agent=VLC&Referer=http://x/',
+  });
+
+  await req('DELETE', `/admin/api/users/${user.body.id}`);
+  await req('DELETE', `/admin/api/catalog/channels/${created.body.id}`);
 });

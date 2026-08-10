@@ -91,3 +91,33 @@ test('a locked (expired) customer receives only the info channel', () => {
   const urls = playlist.split('\n').filter((l) => l && !l.startsWith('#'));
   assert.deepEqual(urls, ['https://iptv.example/hls/abc123/index.m3u8']);
 });
+
+test('the stream gateway replaces provider URLs with per-customer gate links', () => {
+  const gated = { ...CONFIG, gateway: { enabled: true } };
+  const sport = {
+    category: { id: 'c1', name: 'Спорт' },
+    channel: {
+      id: 'ch1',
+      name: 'Спорт 1 HD',
+      url: 'http://provider/live/1.ts',
+      attrs: { 'tvg-id': 'sport1' },
+      extras: ['#EXTVLCOPT:http-user-agent=Mozilla'],
+    },
+  };
+
+  const playlist = buildUserPlaylist(USER, {}, gated, entries(sport));
+  const urls = playlist.split('\n').filter((l) => l && !l.startsWith('#'));
+  assert.deepEqual(urls, [
+    // The account channel already lives on this server; only imported channels
+    // are routed through the gate.
+    'https://iptv.example/hls/abc123/index.m3u8',
+    'https://iptv.example/c/abc123/ch1',
+  ]);
+  // Everything else about the entry is untouched — name, attributes, directives.
+  assert.match(playlist, /#EXTINF:-1 tvg-id="sport1" group-title="Спорт",Спорт 1 HD/);
+  assert.match(playlist, /#EXTVLCOPT:http-user-agent=Mozilla/);
+
+  // …and with the gateway off the same entry points straight at the provider.
+  const direct = buildUserPlaylist(USER, {}, CONFIG, entries(sport));
+  assert.match(direct, /^http:\/\/provider\/live\/1\.ts$/m);
+});

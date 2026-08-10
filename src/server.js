@@ -2,7 +2,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config.js';
-import streamRoutes, { fossEpgRouter } from './http/stream.js';
+import streamRoutes, { fossEpgRouter, syncGatewaySettings } from './http/stream.js';
 import adminRoutes from './http/admin.js';
 import subscribeRoutes from './http/subscribe.js';
 import {
@@ -45,6 +45,8 @@ app.use('/', streamRoutes);
 const server = app.listen(config.port, async () => {
   // Apply any admin-saved notification overrides before the first pre-gen.
   syncNotifySettings();
+  // …and the admin's stream-gateway switch, before the first playlist is served.
+  syncGatewaySettings();
   const users = Users.all();
   const plans = Plans.all();
   const channels = catalog().channels.filter((c) => !c.missing).length;
@@ -62,6 +64,7 @@ const server = app.listen(config.port, async () => {
     resolution: `${config.channel.width}x${config.channel.height}`,
     account_card_seconds: config.channel.accountSlideSeconds,
     intro: config.intro.enabled,
+    stream_gateway: config.gateway.enabled,
     timezone: config.timezone,
     data_dir: config.dataDir,
   });

@@ -17,7 +17,7 @@ import { buildLivePlaylist } from '../encode/liveloop.js';
 import { buildEpgXml, epgChannelId } from '../epg/epg.js';
 import { buildM3u } from '../playlist/m3u.js';
 import {
-  channelsForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
+  channelsForUser, channelAccessForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
 } from '../playlist/catalog.js';
 import { accountStatus } from '../core/util.js';
 import {
@@ -69,6 +69,45 @@ export function fossEpgDirUrl(user, cfg) {
   return `${fossProviderBaseUrl(user, cfg)}epg/`;
 }
 
+// ---------------------------------------------------------------------------
+// Stream gateway
+// ---------------------------------------------------------------------------
+// Where the .m3u points for one imported channel.
+//
+// OFF (the default): the provider's own URL. The player then talks straight to
+// the provider, this server never learns that a channel was opened, and a
+// customer who lost access keeps watching until their player re-downloads the
+// playlist — which many players only do when the user asks them to.
+//
+// ON: /c/:token/:id below, where entitlement is resolved again on every channel
+// switch and answered with a 302 to the provider. No video is proxied (the
+// bytes still go provider -> player), so the cost is one redirect per zap, and
+// the gain is that taking a category away stops playback immediately.
+//
+// The account channel keeps its own /hls/ URL: it is already served from here
+// and must survive an expired subscription, so routing it through the gate
+// would only add a hop.
+// This server's own HLS loop for one customer — the account/info channel. Also
+// the gateway's fallback: a customer who opens a channel they may not watch is
+// sent here, so they land on their own card (plan, expiry, what is on offer)
+// instead of a playback error that reads like a broken server.
+export function userStreamUrl(user, cfg) {
+  return `${cfg.publicBaseUrl}/hls/${encodeURIComponent(user.token)}/index.m3u8`;
+}
+
+export function channelStreamUrl(user, channel, cfg) {
+  if (!cfg.gateway?.enabled || channel.builtin || !channel.url) return channel.url;
+  return `${cfg.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${encodeURIComponent(channel.id)}`;
+}
+
+// The admin's on/off switch (Settings `gateway_enabled`) overlaid on the env
+// default, exactly like syncNotifySettings does for notifications. Called at
+// startup and after the admin toggles it.
+export function syncGatewaySettings() {
+  const s = Settings.all();
+  if (typeof s.gateway_enabled === 'boolean') config.gateway.enabled = s.gateway_enabled;
+}
+
 // The customer's whole subscription as one .m3u.
 //
 // `entries` is the already-resolved [{ channel, category }] list from the
@@ -84,7 +123,7 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
   const infoName = `${brand} — ${user.username}`;
   // NOTE: PUBLIC_BASE_URL is baked into these URLs. On a LAN it must be the host
   // IP the IPTV box can reach — never localhost — or the generated links 404.
-  const streamUrl = `${cfg.publicBaseUrl}/hls/${encodeURIComponent(user.token)}/index.m3u8`;
+  const streamUrl = userStreamUrl(user, cfg);
   const tvgId = epgChannelId(user);
   const fossEnabled = cfg.epg.enabled && cfg.epg.foss.enabled;
   const providerId = normalizeFossProviderId(cfg.epg.foss.providerId);
@@ -123,7 +162,7 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
     }
     return {
       name: channel.name,
-      url: channel.url,
+      url: channelStreamUrl(user, channel, cfg),
       extras: channel.extras,
       attrs: { ...channel.attrs, 'group-title': category.name },
     };
@@ -216,6 +255,65 @@ router.get('/epg.xml', (req, res) => {
 
 // GET /u/:token/epg.xml  (clean per-user URL)
 router.get('/u/:token/epg.xml', (req, res) => sendEpg(req, res, req.params.token));
+
+// GET /c/:token/:id -> the stream gateway (see channelStreamUrl above).
+//
+// Re-resolves this customer's entitlement to this one channel and answers with
+// a 302 to the provider. Because the check happens per channel switch rather
+// than per playlist download, revoking a category, switching a channel off or
+// letting a subscription lapse stops playback at the next zap — the player
+// never has to re-download the .m3u.
+//
+// Deliberately NOT gated on config.gateway.enabled: playlists handed out while
+// the gateway was on stay in players long after an admin switches it off, and
+// they must keep working. The flag only decides what NEW playlists point at.
+router.get('/c/:token/:id', (req, res) => {
+  const { token, id } = req.params;
+  const user = Users.getByToken(token);
+  if (!user) {
+    log.warn('gateway', 'channel requested with unknown token', { channel_id: id });
+    return res.status(404).type('text/plain').send('Unknown token');
+  }
+
+  const status = accountStatus(user, config.expiringThresholdDays);
+  const locked = status === 'expired' || status === 'disabled';
+  const access = channelAccessForUser(user.id, id, {
+    locked, planCategories: planCategorySet(user),
+  });
+
+  // Refused (or the channel is gone from the catalog entirely) -> their own
+  // info channel, which is the card that explains the subscription. A 403 would
+  // surface in the player as a generic "cannot play", i.e. as a support ticket.
+  if (!access.allowed) {
+    log.info('gateway', 'channel denied', {
+      user_id: user.id, username: user.username, channel_id: id, reason: access.reason,
+    });
+    return redirectStream(res, userStreamUrl(user, config));
+  }
+  if (access.channel.id === INFO_CHANNEL_ID) return redirectStream(res, userStreamUrl(user, config));
+  return redirectStream(res, access.channel.url);
+});
+
+// 302 + no-store. Players cache aggressively, and a cached redirect would keep
+// a revoked channel playable until the app is restarted — which is exactly the
+// failure the gateway exists to fix.
+//
+// The provider's URL is passed through byte for byte whenever it is safe to put
+// in a header (printable ASCII, no spaces, no CR/LF). res.redirect() would run
+// it through encodeurl, which percent-encodes characters that are illegal in a
+// URI but load-bearing in IPTV playlists — above all the `<url>|User-Agent=…`
+// suffix convention — turning a working stream into a 404. Anything outside
+// that set (a space, a non-ASCII path) does go through express, which encodes
+// it correctly and keeps the header valid.
+const HEADER_SAFE_URL = /^[\x21-\x7e]+$/;
+
+function redirectStream(res, url) {
+  res
+    .set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    .set('Pragma', 'no-cache');
+  if (!HEADER_SAFE_URL.test(url)) return res.redirect(302, url);
+  return res.status(302).set('Location', url).type('text/plain').send(`Redirecting to ${url}`);
+}
 
 // GET /hls/:token/:file  -> serve (and lazily generate) the HLS stream.
 router.get('/hls/:token/:file', async (req, res) => {
