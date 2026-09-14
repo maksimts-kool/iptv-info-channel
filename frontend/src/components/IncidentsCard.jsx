@@ -3,7 +3,7 @@ import {
   Button, Card, Empty, Form, Grid, Input, List, Modal, Popconfirm, Select, Space, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  DeleteOutlined, EditOutlined, NotificationOutlined, PlusOutlined,
+  DeleteOutlined, EditOutlined, NotificationOutlined, PlusOutlined, RobotOutlined,
 } from '@ant-design/icons';
 import { PROVIDER_BLUE } from './ProviderNewsCard.jsx';
 
@@ -164,7 +164,16 @@ export default function IncidentsCard({ state, api, withRegen }) {
                         Провайдер
                       </Tag>
                     )}
-                    title={inc.notice.headline}
+                    title={(
+                      <Space size={8}>
+                        {inc.notice.headline}
+                        {inc.notice.ai ? (
+                          <Tooltip title={inc.notice.text || inc.notice.body} overlayStyle={{ maxWidth: 520 }}>
+                            <Tag bordered={false} color="geekblue" icon={<RobotOutlined />}>ИИ-пересказ</Tag>
+                          </Tooltip>
+                        ) : null}
+                      </Space>
+                    )}
                     description={(
                       <Typography.Text type="secondary">
                         {`${noticeWhen(inc.notice.published_at)} · ${inc.notice.body}`}

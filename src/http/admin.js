@@ -91,6 +91,11 @@ export function validateProviderNews(body = {}) {
     if (cookie.length > 8192) return { error: 'cookie is too long' };
     value.cookie = cookie;
   }
+  if (body.ai_key !== undefined) {
+    const key = String(body.ai_key ?? '').trim();
+    if (key.length > 512 || /\s/.test(key)) return { error: 'ai_key is not a valid API key' };
+    value.ai_key = key;
+  }
   return { value };
 }
 
@@ -645,7 +650,7 @@ router.patch('/api/provider-news', async (req, res) => {
   if (error) return res.status(400).json({ error });
   updateProviderNewsSettings(value);
   log.info('admin', 'provider news settings updated', { fields: Object.keys(value) });
-  if (providerNewsSettings().enabled && (value.enabled || value.url !== undefined || value.cookie)) {
+  if (providerNewsSettings().enabled && (value.enabled || value.url !== undefined || value.cookie || value.ai_key !== undefined)) {
     await refreshProviderNews();
   }
   return providerNewsResponse(res);

@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-news-'));
+// A real key in a local .env must not send these stubs to OpenRouter.
+process.env.OPENROUTER_API_KEY = '';
 const { Settings } = await import('../../src/data/store.js');
 const news = await import('../../src/news/providernews.js');
 
@@ -92,4 +94,28 @@ test('disabling hides the notices from the slide without deleting them', () => {
   // Switching the feed URL clears notices that belonged to the old feed.
   news.updateProviderNewsSettings({ enabled: true, url: 'https://other.example/news' });
   assert.equal(news.providerNewsView(AFTER_PUBLISH).notices.length, 0);
+});
+
+test('with an OpenRouter key the body is an AI retelling, asked once per text', async () => {
+  Settings.set('provider_news', {
+    enabled: true, url: FEED_URL, cookie: 'access=a', ai_key: 'sk-or-test', notices: [],
+  });
+  const aiAnswer = () => json({ choices: [{ message: { content: 'Часть каналов временно недоступна.' } }] });
+  const first = stubProvider([() => json(FEED), aiAnswer]);
+  assert.equal((await news.refreshProviderNews({ fetchImpl: first.fetchImpl })).error, null);
+  assert.equal(first.calls[1].url, 'https://openrouter.ai/api/v1/chat/completions');
+  const [shown] = news.currentProviderNotices(AFTER_PUBLISH);
+  assert.equal(shown.body, 'Часть каналов временно недоступна.');
+  assert.equal(shown.ai, true);
+  assert.match(shown.text, /Технические работы/);
+
+  // Unchanged feed: no second AI request, same body.
+  const second = stubProvider([() => json(FEED)]);
+  await news.refreshProviderNews({ fetchImpl: second.fetchImpl });
+  assert.equal(second.calls.length, 1);
+  assert.equal(news.currentProviderNotices(AFTER_PUBLISH)[0].body, 'Часть каналов временно недоступна.');
+
+  const view = news.providerNewsView(AFTER_PUBLISH);
+  assert.equal(view.ai_key_set, true);
+  assert.equal(JSON.stringify(view).includes('sk-or-test'), false);
 });

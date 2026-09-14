@@ -7,13 +7,18 @@
 // with that jar and persists whatever cookies come back, so a rotated session
 // keeps working without another paste.
 //
-// Stored under Settings `provider_news` ({ enabled, url, cookie, notices }).
-// The cookie is a credential: never hand Settings.all() to a client without
-// removing that key (see publicSettings in http/admin.js).
+// With an OpenRouter key each notice's body is an AI retelling of the full text
+// (news/aisummary.js), re-asked only when that text changes.
+//
+// Stored under Settings `provider_news` ({ enabled, url, cookie, ai_key,
+// notices, summaries }). The cookie and the API key are credentials: never hand
+// Settings.all() to a client without removing that key (see publicSettings in
+// http/admin.js).
 import { config } from '../config.js';
 import { Settings } from '../data/store.js';
 import { log } from '../core/logger.js';
 import { activeNotices, applySetCookies, extractServiceNotices } from './notices.js';
+import { applySummaries } from './aisummary.js';
 
 const BROWSER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36',
@@ -24,7 +29,9 @@ const BROWSER_HEADERS = {
 const MAX_BYTES = 2 * 1024 * 1024;
 
 // In-memory only: the outcome of the last attempt, for the admin card.
-const runtime = { checkedAt: null, error: null, authFailed: false };
+const runtime = {
+  checkedAt: null, error: null, authFailed: false, aiError: null,
+};
 
 function stored() {
   const value = Settings.all().provider_news;
@@ -42,11 +49,15 @@ export function providerNewsSettings() {
     enabled: typeof s.enabled === 'boolean' ? s.enabled : config.providerNews.enabled,
     url: s.url || config.providerNews.url,
     cookie: typeof s.cookie === 'string' ? s.cookie : config.providerNews.cookie,
+    aiKey: typeof s.ai_key === 'string' && s.ai_key ? s.ai_key : config.providerNews.aiKey,
     notices: Array.isArray(s.notices) ? s.notices : [],
+    summaries: s.summaries && typeof s.summaries === 'object' ? s.summaries : {},
   };
 }
 
-export function updateProviderNewsSettings({ enabled, url, cookie }) {
+export function updateProviderNewsSettings({
+  enabled, url, cookie, ai_key: aiKey,
+}) {
   const patch = {};
   if (enabled !== undefined) patch.enabled = enabled;
   if (url !== undefined) patch.url = url;
@@ -54,9 +65,14 @@ export function updateProviderNewsSettings({ enabled, url, cookie }) {
     patch.cookie = cookie;
     runtime.authFailed = false;
   }
+  if (aiKey !== undefined) {
+    patch.ai_key = aiKey;
+    runtime.aiError = null;
+  }
   // A different feed makes the stored notices meaningless.
   if (url !== undefined && (url || config.providerNews.url) !== providerNewsSettings().url) {
     patch.notices = [];
+    patch.summaries = {};
   }
   saveStored(patch);
 }
@@ -144,6 +160,23 @@ async function fetchNotices(fetchImpl) {
   return extractServiceNotices(await readJson(res), { tz: config.timezone });
 }
 
+// Swap each body for its AI retelling. Cached per notice + text hash, so the
+// model is only called for a notice that is new or whose text was edited; a
+// failure leaves the parser's body and is retried on the next poll.
+async function summarize(notices, fetchImpl) {
+  const s = providerNewsSettings();
+  const { notices: out, cache, error } = await applySummaries(notices, s.summaries, {
+    apiKey: s.aiKey,
+    model: config.providerNews.aiModel,
+    timeoutMs: config.providerNews.aiTimeoutMs,
+    fetchImpl,
+  });
+  if (JSON.stringify(cache) !== JSON.stringify(s.summaries)) saveStored({ summaries: cache });
+  runtime.aiError = error;
+  if (error) log.warn('provider-news', 'AI summary failed', { error });
+  return out;
+}
+
 // One fetch at a time. A failure keeps the previous notices (a provider hiccup
 // must not wipe a real maintenance notice); they still age out on their own.
 let running = null;
@@ -151,7 +184,7 @@ export function refreshProviderNews({ fetchImpl = globalThis.fetch } = {}) {
   if (running) return running;
   running = (async () => {
     try {
-      const notices = await fetchNotices(fetchImpl);
+      const notices = await summarize(await fetchNotices(fetchImpl), fetchImpl);
       if (JSON.stringify(notices) !== JSON.stringify(providerNewsSettings().notices)) {
         saveStored({ notices });
         log.info('provider-news', 'service notices updated', {
@@ -170,7 +203,7 @@ export function refreshProviderNews({ fetchImpl = globalThis.fetch } = {}) {
   return running;
 }
 
-// The admin card's view. Carries whether a cookie is set, never the cookie.
+// The admin card's view. Carries whether a cookie / API key is set, never them.
 export function providerNewsView(now = new Date()) {
   const s = providerNewsSettings();
   const shown = new Set(currentProviderNotices(now).map((n) => n.id));
@@ -179,6 +212,10 @@ export function providerNewsView(now = new Date()) {
     url: s.url,
     default_url: config.providerNews.url,
     cookie_set: Boolean(s.cookie),
+    ai_key_set: Boolean(s.aiKey),
+    ai_key_from_env: Boolean(config.providerNews.aiKey) && !stored().ai_key,
+    ai_model: config.providerNews.aiModel,
+    ai_error: runtime.aiError,
     checked_at: runtime.checkedAt,
     error: runtime.error,
     auth_failed: runtime.authFailed,

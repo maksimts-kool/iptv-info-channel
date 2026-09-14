@@ -443,7 +443,10 @@ function layoutEvents(summary) {
     ...[...(summary.activeIncidents || [])]
       .sort((a, b) => SEVERITY[b.severity].rank - SEVERITY[a.severity].rank)
       .map((inc) => ({ type: 'incident', inc, lines: inc.note ? 1 : 0, maxLines: inc.note ? 1 : 0 })),
-    ...(summary.providerNotices || []).map((notice) => ({ type: 'provider', notice, lines: 1, maxLines: 3 })),
+    // A short (e.g. AI-retold) body gets a card as tall as its text, not 3 lines.
+    ...(summary.providerNotices || []).map((notice) => ({
+      type: 'provider', notice, lines: 1, maxLines: Math.min(3, Math.max(1, wrapText(notice.body, 84, 4).length)),
+    })),
   ];
   const budget = EVENTS_BOTTOM - EVENTS_TOP;
   const shown = [];

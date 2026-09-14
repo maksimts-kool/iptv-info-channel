@@ -332,6 +332,7 @@ it to `.env` and edit. The most-used settings:
 | `STATUS_SLIDE_ENABLED` / `STATUS_SLIDE_SECONDS` | `true` / `12` | Append the global service-status board slide, and how long it holds. |
 | `PROVIDER_NEWS_ENABLED` / `PROVIDER_NEWS_URL` | `false` / `https://tv.team/v3/news?page=1` | Show the upstream provider's maintenance/outage notices on the status board (in blue, mixed with your incidents). The admin card overrides both and stores the login session cookie (`PROVIDER_NEWS_COOKIE` seeds it). |
 | `PROVIDER_NEWS_CHECK_MINUTES` / `PROVIDER_NEWS_MAX_AGE_HOURS` | `15` / `24` | Feed polling interval, and how long after publication a notice stays on the slide. |
+| `OPENROUTER_API_KEY` / `PROVIDER_NEWS_AI_MODEL` | *(blank)* / `openrouter/free` | Retell each provider notice as one short line with an LLM on OpenRouter. Asked only when a notice is new or its text changed; without a key (or on failure) the plain text is shown. The admin card can hold the key instead. |
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
 | `EPG_ENABLED` | `true` | Advertise a per‑user XMLTV guide (`/u/<token>/epg.xml`) via `url-tvg`. |
 | `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |

@@ -148,13 +148,16 @@ export function extractServiceNotices(json, { tz, lang = 'RU', limit = 5 } = {})
     const published = parseProviderDate(item.date, tz);
     if (!published) continue;
     const kind = noticeKind(full);
-    const { headline, body } = summarizeNotice(stripEmoji(languageSection(full, lang)), kind);
+    const text = stripEmoji(languageSection(full, lang));
+    const { headline, body } = summarizeNotice(text, kind);
     out.push({
       id: String(item.id ?? published.getTime()),
       published_at: published.toISOString(),
       kind,
       headline,
       body,
+      // The whole section, for the AI retelling (news/aisummary.js) and the admin.
+      text,
     });
   }
   return out

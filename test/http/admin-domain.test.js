@@ -173,6 +173,9 @@ test('validateProviderNews normalises the cookie and rejects bad input', async (
   assert.equal(validateProviderNews({ enabled: 'yes' }).error, 'enabled must be a boolean');
   assert.equal(validateProviderNews({ url: 'file:///etc/passwd' }).error, 'url must be an http(s) URL');
   assert.equal(validateProviderNews({ url: 'not a url' }).error, 'url must be an http(s) URL');
+  assert.deepEqual(validateProviderNews({ ai_key: ' sk-or-v1-abc ' }), { value: { ai_key: 'sk-or-v1-abc' } });
+  assert.deepEqual(validateProviderNews({ ai_key: '' }), { value: { ai_key: '' } });
+  assert.equal(validateProviderNews({ ai_key: 'sk or' }).error, 'ai_key is not a valid API key');
 });
 
 test('publicSettings never ships the provider session cookie', async () => {

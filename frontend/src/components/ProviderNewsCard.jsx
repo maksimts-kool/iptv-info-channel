@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Form, Input, Space, Switch, Typography,
+  Alert, Badge, Button, Card, Divider, Form, Input, Space, Switch, Typography,
 } from 'antd';
-import { NotificationOutlined, ReloadOutlined } from '@ant-design/icons';
+import { NotificationOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 
 // Blue is the provider's colour everywhere (slide, «Статус сервиса», Обзор):
@@ -17,8 +17,8 @@ function when(iso) {
 }
 
 // Settings for the provider's service notices — the notices themselves are
-// listed with the incidents in IncidentsCard, this card is only the switch and
-// the login session. Saves
+// listed with the incidents in IncidentsCard, this card is only the switch, the
+// login session and the OpenRouter key for the AI retelling. Saves
 // directly (like GatewayCard): a stream rebuild happens only when what the slide
 // shows actually changes, and the server says so in `regenerating`.
 export default function ProviderNewsCard({
@@ -31,7 +31,7 @@ export default function ProviderNewsCard({
   const [busy, setBusy] = useState(null);
 
   useEffect(() => {
-    form.setFieldsValue({ url: pn?.url || '', cookie: '' });
+    form.setFieldsValue({ url: pn?.url || '', cookie: '', ai_key: '' });
   }, [form, pn?.url]);
 
   const run = async (kind, request) => {
@@ -39,6 +39,7 @@ export default function ProviderNewsCard({
     try {
       const view = await request();
       if (view?.error && view.enabled) message.warning(`Лента провайдера: ${view.error}`);
+      else if (view?.ai_error && view.enabled) message.warning(`ИИ-пересказ: ${view.ai_error}`);
       else if (view?.regenerating) message.success('Уведомления на слайде изменились — потоки пересобираются');
       else message.success(kind === 'check' ? 'Лента проверена' : 'Сохранено');
       await reload();
@@ -56,15 +57,21 @@ export default function ProviderNewsCard({
     const v = await form.validateFields();
     const body = { url: (v.url || '').trim() };
     if (v.cookie?.trim()) body.cookie = v.cookie.trim();
+    if (v.ai_key?.trim()) body.ai_key = v.ai_key.trim();
     await run('save', async () => {
       const view = await api.patch('/admin/api/provider-news', body);
-      form.setFieldValue('cookie', '');
+      form.setFieldsValue({ cookie: '', ai_key: '' });
       return view;
     });
   };
 
   const forget = () => run('save', () => api.patch('/admin/api/provider-news', { cookie: '' }));
+  const forgetKey = () => run('save', () => api.patch('/admin/api/provider-news', { ai_key: '' }));
   const check = () => run('check', () => api.post('/admin/api/provider-news/refresh'));
+
+  let keyLabel = 'API-ключ OpenRouter';
+  if (pn?.ai_key_from_env) keyLabel = 'Ключ задан в OPENROUTER_API_KEY — вставьте другой, чтобы заменить';
+  else if (pn?.ai_key_set) keyLabel = 'Ключ сохранён — вставьте новый, чтобы заменить';
 
   return (
     <Card
@@ -116,6 +123,15 @@ export default function ProviderNewsCard({
           <Alert type="warning" showIcon message={`Последняя проверка не удалась: ${pn.error}`} />
         ) : null}
 
+        {pn?.ai_error && pn?.ai_key_set ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={`ИИ-пересказ не получился: ${pn.ai_error}`}
+            description="Пока показывается обычный текст сообщения; следующая проверка попробует снова."
+          />
+        ) : null}
+
         <Form form={form} layout="vertical">
           <Form.Item
             name="url"
@@ -131,10 +147,26 @@ export default function ProviderNewsCard({
           >
             <Input.TextArea rows={3} placeholder="name=value; name2=value2" autoComplete="off" spellCheck={false} />
           </Form.Item>
+
+          <Divider orientation="left" plain>
+            <Space size={6}>
+              <RobotOutlined />
+              ИИ-пересказ
+            </Space>
+          </Divider>
+          <Form.Item
+            name="ai_key"
+            label={keyLabel}
+            extra={`Сообщения провайдера длинные — ИИ (${pn?.ai_model || 'openrouter/free'}) сокращает каждое до одной короткой фразы для слайда. Запрос уходит только когда появляется новое сообщение или меняется текст старого. Без ключа показывается обычный текст.`}
+          >
+            <Input.Password placeholder="sk-or-v1-…" autoComplete="off" spellCheck={false} />
+          </Form.Item>
+
           <Space wrap>
             <Button type="primary" onClick={save} loading={busy === 'save'}>Сохранить</Button>
             <Button icon={<ReloadOutlined />} onClick={check} loading={busy === 'check'}>Проверить сейчас</Button>
             {pn?.cookie_set ? <Button danger onClick={forget}>Забыть сессию</Button> : null}
+            {pn?.ai_key_set && !pn?.ai_key_from_env ? <Button danger onClick={forgetKey}>Забыть ключ</Button> : null}
           </Space>
         </Form>
 
