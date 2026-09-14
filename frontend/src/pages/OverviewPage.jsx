@@ -10,9 +10,9 @@ export default function OverviewPage({ state, go }) {
   const plans = state?.plans || [];
   const catalog = state?.catalog || {};
   const status = state?.status;
-  const providerActive = state?.providerNews?.enabled
-    ? (state.providerNews.notices || []).filter((n) => n.active)
-    : [];
+  // Mixed into the status by the server; named separately only when one of
+  // our own incidents holds the headline.
+  const providerActive = status?.state === 'provider' ? [] : (status?.providerNotices || []);
 
   // A plan with no categories hands its customers an empty playlist (bar
   // Информация) — the single most likely setup mistake, so it leads the page.

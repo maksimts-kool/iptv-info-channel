@@ -70,35 +70,57 @@ test('plan feature text is escaped in the expired slide', () => {
   assert.doesNotMatch(svg, /Sports & <Movies>/);
 });
 
-test('status slide adds the blue provider block only when notices are present', async () => {
+const NOTICE = {
+  id: '1',
+  published_at: '2026-09-14T10:06:44.000Z',
+  kind: 'maintenance',
+  headline: 'Технические работы',
+  body: 'Часть телеканалов <архив> & DVR будет временно недоступна в течение нескольких часов в связи с плановой заменой архивных серверов. Обратите внимание: архивы на затрагиваемых каналах будут формироваться заново с момента завершения работ, это займёт время.',
+};
+
+test('status slide mixes provider notices into the event list, in blue', async () => {
   const { buildStatusSlideSvg } = await import('../../src/render/overlay.js');
-  const { statusSummary } = await import('../../src/render/status.js');
-  const summary = statusSummary([], { now: new Date('2026-09-14T12:00:00Z'), tz: 'Europe/Tallinn' });
+  const { statusSummary, withProviderNotices } = await import('../../src/render/status.js');
+  const now = new Date('2026-09-14T12:00:00Z');
+  const summary = statusSummary([], { now, tz: 'Europe/Tallinn' });
 
   const plain = buildStatusSlideSvg(summary, { brand_name: 'IPTV Test' });
-  assert.doesNotMatch(plain, /ИНФОРМАЦИЯ ОТ ПРОВАЙДЕРА/);
-  assert.equal(buildStatusSlideSvg({ ...summary, providerNotices: [] }, { brand_name: 'IPTV Test' }), plain);
+  assert.equal(buildStatusSlideSvg(withProviderNotices(summary, [], { tz: 'Europe/Tallinn' }), { brand_name: 'IPTV Test' }), plain);
 
-  const svg = buildStatusSlideSvg({
-    ...summary,
-    providerNotices: [
-      {
-        id: '1',
-        published_at: '2026-09-14T10:06:44.000Z',
-        kind: 'maintenance',
-        headline: 'Технические работы',
-        body: 'Часть телеканалов <архив> & DVR будет временно недоступна в течение нескольких часов в связи с плановой заменой архивных серверов. Обратите внимание: архивы на затрагиваемых каналах будут формироваться заново с момента завершения работ, это займёт время.',
-      },
-      { id: '2', published_at: '2026-09-14T08:00:00.000Z', kind: 'outage', headline: 'Перебои', body: 'x' },
-    ],
-  }, { brand_name: 'IPTV Test' });
-  assert.match(svg, /ИНФОРМАЦИЯ ОТ ПРОВАЙДЕРА/);
-  assert.match(svg, />Технические работы</);
+  const svg = buildStatusSlideSvg(withProviderNotices(summary, [
+    NOTICE,
+    { id: '2', published_at: '2026-09-14T08:00:00.000Z', kind: 'outage', headline: 'Перебои', body: 'x' },
+  ], { tz: 'Europe/Tallinn' }), { brand_name: 'IPTV Test' });
+  // Blue status instead of the green "all working".
+  assert.match(svg, />Технические работы у провайдера</);
+  assert.doesNotMatch(svg, />Все сервисы работают</);
+  assert.match(svg, />Провайдер</);
   assert.match(svg, /#2563eb/);
-  assert.match(svg, /\+1 ещё · 14 сен 2026 · 13:06/);
+  assert.match(svg, />Провайдер · 14 сен 2026 · 13:06</);
   assert.match(svg, /&lt;архив&gt; &amp; DVR/);
-  // Our own board is still there.
-  assert.match(svg, />Все сервисы работают</);
+  assert.match(svg, />Перебои</);
+});
+
+test('our own incident keeps the headline and shares the list with the provider', async () => {
+  const { buildStatusSlideSvg } = await import('../../src/render/overlay.js');
+  const { statusSummary, withProviderNotices } = await import('../../src/render/status.js');
+  const now = new Date('2026-09-14T12:00:00Z');
+  const incidents = [
+    { title: 'Сбой <EPG>', severity: 'outage', starts_on: '2026-09-14', note: 'Чиним' },
+    { title: 'Медленно', severity: 'degraded', starts_on: '2026-09-13', note: 'Смотрим' },
+    { title: 'Ещё', severity: 'degraded', starts_on: '2026-09-12', note: 'Тоже' },
+  ];
+  const svg = buildStatusSlideSvg(
+    withProviderNotices(statusSummary(incidents, { now, tz: 'Europe/Tallinn' }), [NOTICE], { tz: 'Europe/Tallinn' }),
+    { brand_name: 'IPTV Test' },
+  );
+  assert.match(svg, />Сбой в работе сервиса</);
+  assert.match(svg, /Сбой &lt;EPG&gt;/);
+  // The provider notice always keeps a card, even when incidents fill the list:
+  // it displaces the second incident, so two events are left for the footer.
+  assert.match(svg, />Технические работы</);
+  assert.doesNotMatch(svg, />Медленно</);
+  assert.match(svg, /Ещё событий: 2/);
 });
 
 test('wrapText wraps on words and ellipsizes the overflow', async () => {

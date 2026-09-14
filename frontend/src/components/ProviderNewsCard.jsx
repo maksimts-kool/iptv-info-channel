@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Empty, Form, Input, List, Space, Switch, Tag, Typography,
+  Alert, Badge, Button, Card, Form, Input, Space, Switch, Typography,
 } from 'antd';
 import { NotificationOutlined, ReloadOutlined } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 
-// Blue is the provider's colour everywhere (slide, this card, Обзор), so its
-// notices never read as our own yellow/red incidents.
+// Blue is the provider's colour everywhere (slide, «Статус сервиса», Обзор):
+// its notices share the incident list but never read as our own yellow/red.
 export const PROVIDER_BLUE = '#2563eb';
 
 function when(iso) {
@@ -16,7 +16,9 @@ function when(iso) {
   });
 }
 
-// Settings for the provider's service notices on the status slide. Saves
+// Settings for the provider's service notices — the notices themselves are
+// listed with the incidents in IncidentsCard, this card is only the switch and
+// the login session. Saves
 // directly (like GatewayCard): a stream rebuild happens only when what the slide
 // shows actually changes, and the server says so in `regenerating`.
 export default function ProviderNewsCard({
@@ -24,7 +26,7 @@ export default function ProviderNewsCard({
 }) {
   const pn = state?.providerNews;
   const enabled = !!pn?.enabled;
-  const notices = pn?.notices || [];
+  const shown = state?.status?.providerNotices?.length || 0;
   const [form] = Form.useForm();
   const [busy, setBusy] = useState(null);
 
@@ -89,7 +91,7 @@ export default function ProviderNewsCard({
               {`Лента проверяется каждые ${pn?.check_minutes ?? 15} мин. Берутся только
               сообщения о работах и сбоях — новости о новых и удалённых каналах
               пропускаются. Сообщение висит на слайде ${pn?.max_age_hours ?? 24} ч после
-              публикации отдельным синим блоком, не смешиваясь с вашими инцидентами.`}
+              публикации — вместе с вашими инцидентами, но синим цветом.`}
             </Typography.Text>
           </div>
         </Space>
@@ -136,30 +138,11 @@ export default function ProviderNewsCard({
           </Space>
         </Form>
 
-        <Typography.Text type="secondary">{`Последняя проверка: ${when(pn?.checked_at)}`}</Typography.Text>
+        <Typography.Text type="secondary">
+          {`Последняя проверка: ${when(pn?.checked_at)}`}
+          {enabled ? ` · сейчас на слайде: ${shown} (см. «Статус сервиса» выше)` : ''}
+        </Typography.Text>
 
-        {notices.length ? (
-          <List
-            dataSource={notices}
-            renderItem={(n) => (
-              <List.Item>
-                <List.Item.Meta
-                  avatar={n.active
-                    ? <Tag color={PROVIDER_BLUE}>На слайде</Tag>
-                    : <Tag>Устарело</Tag>}
-                  title={n.headline}
-                  description={(
-                    <Typography.Text type="secondary">
-                      {`${when(n.published_at)} · ${n.body}`}
-                    </Typography.Text>
-                  )}
-                />
-              </List.Item>
-            )}
-          />
-        ) : (
-          <Empty description="Сообщений о работах и сбоях у провайдера нет" />
-        )}
       </Space>
     </Card>
   );

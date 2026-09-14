@@ -268,10 +268,14 @@ Request/data flow, entry point [src/server.js](src/server.js):
    triggers `/v3/auth/refresh` and the rotated cookies are persisted in Settings
    `provider_news`) is polled by `startProviderNewsWatcher`, and only
    maintenance/outage items pass `isServiceNotice` — channel launches and
-   removals are news, not status, and must stay out. With notices present the
-   slide switches to a condensed board plus a **blue megaphone block**, kept
-   visually apart from our own green/yellow/red incidents; with none it is
-   byte-identical to the classic board. A failed fetch keeps the previous
+   removals are news, not status, and must stay out. `withProviderNotices` (render/status.js) mixes
+   them into the summary — also for `/api/state` — so they share **one event
+   list** with our incidents, always blue with a megaphone, and when our own
+   state is `operational` the overall state becomes `provider` (blue instead of
+   green; our degraded/outage still wins, uptime is untouched). With notices the
+   slide switches to a condensed board + that event list; with none it is
+   byte-identical to the classic board. The admin lists them read-only inside
+   the «Статус сервиса» card; `ProviderNewsCard` holds only the switch + cookie. A failed fetch keeps the previous
    notices (they age out after `PROVIDER_NEWS_MAX_AGE_HOURS`), and any change to
    what the slide shows rebuilds all streams once (`consumeShownChange`). The
    session cookie is a credential: `/api/state` goes through `publicSettings`.

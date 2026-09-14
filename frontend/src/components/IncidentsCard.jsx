@@ -2,7 +2,10 @@ import { useState } from 'react';
 import {
   Button, Card, Empty, Form, Grid, Input, List, Modal, Popconfirm, Select, Space, Tag, Tooltip, Typography,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined, EditOutlined, NotificationOutlined, PlusOutlined,
+} from '@ant-design/icons';
+import { PROVIDER_BLUE } from './ProviderNewsCard.jsx';
 
 const SEV = {
   degraded: { label: 'Деградация', color: '#d97706' },
@@ -26,6 +29,12 @@ function incidentRangeText(inc) {
   return inc.starts_pretty;
 }
 
+function noticeWhen(iso) {
+  return new Date(iso).toLocaleString('ru-RU', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
+}
+
 function Dot({ color }) {
   return (
     <span style={{
@@ -38,6 +47,9 @@ function Dot({ color }) {
 export default function IncidentsCard({ state, api, withRegen }) {
   const incidents = state?.incidents || [];
   const status = state?.status;
+  // The provider's service notices share this list, in blue and read-only —
+  // they come from its news feed (settings in the card below).
+  const notices = status?.providerNotices || [];
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form] = Form.useForm();
@@ -138,10 +150,30 @@ export default function IncidentsCard({ state, api, withRegen }) {
         </div>
       ) : null}
 
-      {incidents.length ? (
+      {incidents.length || notices.length ? (
         <List
-          dataSource={incidents}
+          dataSource={[...notices.map((notice) => ({ notice, id: `provider-${notice.id}` })), ...incidents]}
+          rowKey="id"
           renderItem={(inc) => {
+            if (inc.notice) {
+              return (
+                <List.Item>
+                  <List.Item.Meta
+                    avatar={(
+                      <Tag color={PROVIDER_BLUE} icon={<NotificationOutlined />} style={{ marginTop: 4 }}>
+                        Провайдер
+                      </Tag>
+                    )}
+                    title={inc.notice.headline}
+                    description={(
+                      <Typography.Text type="secondary">
+                        {`${noticeWhen(inc.notice.published_at)} · ${inc.notice.body}`}
+                      </Typography.Text>
+                    )}
+                  />
+                </List.Item>
+              );
+            }
             const sev = SEV[inc.severity] || SEV.degraded;
             const actionButtons = [
               inc.ongoing ? (

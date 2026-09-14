@@ -90,6 +90,42 @@ export function statusSummary(
   };
 }
 
+// The upstream provider's service notices (news/notices.js) mixed into a
+// summary. They sit in the same event list as our incidents, but in blue: when
+// our own service is fine and only the provider has trouble, the overall state
+// is 'provider' (blue) instead of the green 'operational'. Our own
+// degraded/outage still wins the headline. Uptime is left alone — it measures
+// the incidents raised here.
+export const PROVIDER_STATE = { color: '#2563eb', label: 'Провайдер' };
+
+const PROVIDER_HEADLINE = {
+  maintenance: 'Технические работы у провайдера',
+  outage: 'Перебои у провайдера',
+};
+
+export function withProviderNotices(
+  summary,
+  notices = [],
+  { tz = process.env.TZ || 'Europe/Tallinn' } = {},
+) {
+  const list = Array.isArray(notices) ? notices : [];
+  if (!list.length) return { ...summary, providerNotices: [] };
+  const noticeDays = new Set(list.map((n) => localDateString(new Date(n.published_at), tz)));
+  const days = summary.days.map((day) => (day.severity === 'operational' && noticeDays.has(day.date)
+    ? { ...day, color: PROVIDER_STATE.color, provider: true }
+    : day));
+  if (summary.state !== 'operational') return { ...summary, days, providerNotices: list };
+  const kind = list.some((n) => n.kind === 'maintenance') ? 'maintenance' : 'outage';
+  return {
+    ...summary,
+    state: 'provider',
+    label: PROVIDER_HEADLINE[kind],
+    color: PROVIDER_STATE.color,
+    days,
+    providerNotices: list,
+  };
+}
+
 // Format an uptime fraction for display: "100%", "99,9%" (EU comma decimal).
 export function formatUptime(pct) {
   const text = Number.isInteger(pct) ? String(pct) : pct.toFixed(1).replace('.', ',');

@@ -11,7 +11,7 @@ import { config } from '../config.js';
 import {
   Users, Plans, Settings, Incidents, Subscribers, NotifyLog,
 } from '../data/store.js';
-import { statusSummary, INCIDENT_SEVERITIES } from '../render/status.js';
+import { statusSummary, withProviderNotices, INCIDENT_SEVERITIES } from '../render/status.js';
 import {
   daysLeft, accountStatus, formatPrice, formatDate, localDateString, addPeriod, STATUS_META,
 } from '../core/util.js';
@@ -29,7 +29,7 @@ import { isHlsUrl } from '../playlist/hls.js';
 import { log } from '../core/logger.js';
 import {
   providerNewsView, providerNewsSettings, updateProviderNewsSettings, refreshProviderNews,
-  consumeShownChange,
+  consumeShownChange, currentProviderNotices,
 } from '../news/providernews.js';
 import { parseCookieHeader, serializeCookies } from '../news/notices.js';
 
@@ -411,7 +411,11 @@ router.get('/api/state', (req, res) => {
       user_id: s.user_id, email: s.email, options: s.options, verified: !!s.verified,
     })),
     incidents: incidents.map(incidentJson),
-    status: statusSummary(incidents, { tz: config.timezone }),
+    status: withProviderNotices(
+      statusSummary(incidents, { tz: config.timezone }),
+      currentProviderNotices(),
+      { tz: config.timezone },
+    ),
   });
 });
 
