@@ -69,3 +69,43 @@ test('plan feature text is escaped in the expired slide', () => {
   assert.match(svg, /Sports &amp; &lt;Movies&gt;/);
   assert.doesNotMatch(svg, /Sports & <Movies>/);
 });
+
+test('status slide adds the blue provider block only when notices are present', async () => {
+  const { buildStatusSlideSvg } = await import('../../src/render/overlay.js');
+  const { statusSummary } = await import('../../src/render/status.js');
+  const summary = statusSummary([], { now: new Date('2026-09-14T12:00:00Z'), tz: 'Europe/Tallinn' });
+
+  const plain = buildStatusSlideSvg(summary, { brand_name: 'IPTV Test' });
+  assert.doesNotMatch(plain, /ИНФОРМАЦИЯ ОТ ПРОВАЙДЕРА/);
+  assert.equal(buildStatusSlideSvg({ ...summary, providerNotices: [] }, { brand_name: 'IPTV Test' }), plain);
+
+  const svg = buildStatusSlideSvg({
+    ...summary,
+    providerNotices: [
+      {
+        id: '1',
+        published_at: '2026-09-14T10:06:44.000Z',
+        kind: 'maintenance',
+        headline: 'Технические работы',
+        body: 'Часть телеканалов <архив> & DVR будет временно недоступна в течение нескольких часов в связи с плановой заменой архивных серверов. Обратите внимание: архивы на затрагиваемых каналах будут формироваться заново с момента завершения работ, это займёт время.',
+      },
+      { id: '2', published_at: '2026-09-14T08:00:00.000Z', kind: 'outage', headline: 'Перебои', body: 'x' },
+    ],
+  }, { brand_name: 'IPTV Test' });
+  assert.match(svg, /ИНФОРМАЦИЯ ОТ ПРОВАЙДЕРА/);
+  assert.match(svg, />Технические работы</);
+  assert.match(svg, /#2563eb/);
+  assert.match(svg, /\+1 ещё · 14 сен 2026 · 13:06/);
+  assert.match(svg, /&lt;архив&gt; &amp; DVR/);
+  // Our own board is still there.
+  assert.match(svg, />Все сервисы работают</);
+});
+
+test('wrapText wraps on words and ellipsizes the overflow', async () => {
+  const { wrapText } = await import('../../src/render/overlay.js');
+  assert.deepEqual(wrapText('aaa bbb ccc', 7, 3), ['aaa bbb', 'ccc']);
+  const lines = wrapText('one two three four five six', 9, 2);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0], 'one two');
+  assert.ok(lines[1].endsWith('…') && lines[1].length <= 9, lines[1]);
+});

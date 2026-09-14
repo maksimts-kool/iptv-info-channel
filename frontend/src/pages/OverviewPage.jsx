@@ -1,5 +1,7 @@
 import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { NotificationOutlined } from '@ant-design/icons';
 import { count } from '../lib/format.js';
+import { PROVIDER_BLUE } from '../components/ProviderNewsCard.jsx';
 
 // Landing screen: the numbers that answer "is anything wrong right now?" and
 // shortcuts into the two sections that matter day to day.
@@ -8,6 +10,9 @@ export default function OverviewPage({ state, go }) {
   const plans = state?.plans || [];
   const catalog = state?.catalog || {};
   const status = state?.status;
+  const providerActive = state?.providerNews?.enabled
+    ? (state.providerNews.notices || []).filter((n) => n.active)
+    : [];
 
   // A plan with no categories hands its customers an empty playlist (bar
   // Информация) — the single most likely setup mistake, so it leads the page.
@@ -136,6 +141,13 @@ export default function OverviewPage({ state, go }) {
                       ? ` · открытых инцидентов: ${status.activeIncidents.length}`
                       : ''}
                   </Typography.Text>
+                  {providerActive.length ? (
+                    <Typography.Text style={{ color: PROVIDER_BLUE }}>
+                      <NotificationOutlined />
+                      {` Провайдер: ${providerActive[0].headline}`}
+                      {providerActive.length > 1 ? ` (+${providerActive.length - 1})` : ''}
+                    </Typography.Text>
+                  ) : null}
                 </Space>
               ) : <Typography.Text type="secondary">Нет данных</Typography.Text>}
             </Card>

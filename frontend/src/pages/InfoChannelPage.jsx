@@ -7,6 +7,7 @@ import { api, AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
 import BrandingCard from '../components/BrandingCard.jsx';
 import IncidentsCard from '../components/IncidentsCard.jsx';
+import ProviderNewsCard from '../components/ProviderNewsCard.jsx';
 
 // The info channel: the per-customer looping HLS card that lives in the
 // Информация category. It is now one feature of the playlist rather than the
@@ -70,6 +71,7 @@ export default function InfoChannelPage(shared) {
 
       <BrandingCard {...shared} />
       <IncidentsCard {...shared} />
+      <ProviderNewsCard {...shared} />
     </Space>
   );
 }

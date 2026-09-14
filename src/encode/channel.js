@@ -12,6 +12,7 @@ import {
   buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
 } from '../render/overlay.js';
 import { statusSummary } from '../render/status.js';
+import { currentProviderNotices } from '../news/providernews.js';
 import { refreshDueSources, describePlans } from '../playlist/catalog.js';
 import * as notify from '../notify/notify.js';
 import {
@@ -486,8 +487,12 @@ export function generateForUser(userOrId, { reason = 'unspecified', force = fals
     const plans = describePlans(Plans.all());
     const music = await ensureMusic();
     // Global Better Stack–style status board (null when the slide is disabled).
+    // The provider's own service notices ride along in the same model.
     const summary = config.statusSlide.enabled
-      ? statusSummary(Incidents.all(), { tz: config.timezone })
+      ? {
+        ...statusSummary(Incidents.all(), { tz: config.timezone }),
+        providerNotices: currentProviderNotices(),
+      }
       : null;
     // Per-user notification sign-up QR on the intro slide (only when intro is on
     // AND notifications are enabled). Null otherwise leaves the slide unchanged.

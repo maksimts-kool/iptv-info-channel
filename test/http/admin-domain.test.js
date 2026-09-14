@@ -162,3 +162,23 @@ test('decorateUser builds status + playlist URLs', () => {
   assert.match(json.m3u_url, /\/u\/abc123\/playlist\.m3u$/);
   assert.match(json.hls_url, /\/hls\/abc123\/index\.m3u8$/);
 });
+
+test('validateProviderNews normalises the cookie and rejects bad input', async () => {
+  const { validateProviderNews } = await import('../../src/http/admin.js');
+  assert.deepEqual(
+    validateProviderNews({ enabled: true, url: ' https://tv.team/v3/news?page=1 ', cookie: 'Cookie: a=1;\n b=2' }),
+    { value: { enabled: true, url: 'https://tv.team/v3/news?page=1', cookie: 'a=1; b=2' } },
+  );
+  assert.deepEqual(validateProviderNews({ url: '', cookie: '' }), { value: { url: '', cookie: '' } });
+  assert.equal(validateProviderNews({ enabled: 'yes' }).error, 'enabled must be a boolean');
+  assert.equal(validateProviderNews({ url: 'file:///etc/passwd' }).error, 'url must be an http(s) URL');
+  assert.equal(validateProviderNews({ url: 'not a url' }).error, 'url must be an http(s) URL');
+});
+
+test('publicSettings never ships the provider session cookie', async () => {
+  const { publicSettings } = await import('../../src/http/admin.js');
+  assert.deepEqual(
+    publicSettings({ brand_name: 'X', provider_news: { cookie: 'secret=1' } }),
+    { brand_name: 'X' },
+  );
+});

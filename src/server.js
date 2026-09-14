@@ -10,6 +10,7 @@ import {
 } from './encode/channel.js';
 import { Users, Plans } from './data/store.js';
 import { catalog, startSourceAutoRefresh } from './playlist/catalog.js';
+import { startProviderNewsWatcher } from './news/providernews.js';
 import { log } from './core/logger.js';
 
 const app = express();
@@ -78,6 +79,14 @@ const server = app.listen(config.port, async () => {
   startDailyRefresh();
   // Unattended playlist re-downloads, on each source's own interval.
   if (config.catalog.autoRefresh) startSourceAutoRefresh();
+  // Provider service notices for the status slide. Started after the startup
+  // pre-generation so its first change doesn't race that rebuild.
+  if (config.statusSlide.enabled) {
+    startProviderNewsWatcher({
+      onChange: () => generateAll({ reason: 'provider service notices changed' })
+        .catch((e) => log.error('provider-news', 'bulk regeneration failed', { error: e.message })),
+    });
+  }
   log.info('startup', 'ready');
 });
 

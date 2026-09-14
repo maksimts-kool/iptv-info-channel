@@ -27,6 +27,11 @@ import { renderUserPlaylist, syncGatewaySettings } from './stream.js';
 import { Overrides, catalog } from '../playlist/catalog.js';
 import { isHlsUrl } from '../playlist/hls.js';
 import { log } from '../core/logger.js';
+import {
+  providerNewsView, providerNewsSettings, updateProviderNewsSettings, refreshProviderNews,
+  consumeShownChange,
+} from '../news/providernews.js';
+import { parseCookieHeader, serializeCookies } from '../news/notices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // http/ is one level under src/, same as the old routes/, so this still resolves
@@ -52,6 +57,41 @@ export function incidentJson(i) {
     ongoing: !i.ends_on,
     note: i.note || '',
   };
+}
+
+// Settings as handed to the browser: the provider session cookie is a
+// credential and stays server-side (the admin sees only `cookie_set`).
+export function publicSettings(settings) {
+  const { provider_news: _secret, ...rest } = settings || {};
+  return rest;
+}
+
+// PATCH /api/provider-news body -> { value } | { error }. An empty url means
+// "the default feed"; the cookie is normalised to a plain "a=1; b=2" header
+// (a pasted "Cookie:" prefix and line breaks are tolerated), '' forgets it.
+export function validateProviderNews(body = {}) {
+  const value = {};
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== 'boolean') return { error: 'enabled must be a boolean' };
+    value.enabled = body.enabled;
+  }
+  if (body.url !== undefined) {
+    const url = String(body.url ?? '').trim();
+    if (url) {
+      let parsed;
+      try { parsed = new URL(url); } catch { return { error: 'url must be an http(s) URL' }; }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { error: 'url must be an http(s) URL' };
+      }
+    }
+    value.url = url;
+  }
+  if (body.cookie !== undefined) {
+    const cookie = serializeCookies(parseCookieHeader(body.cookie ?? ''));
+    if (cookie.length > 8192) return { error: 'cookie is too long' };
+    value.cookie = cookie;
+  }
+  return { value };
 }
 
 // `categoryNames` maps category id -> name (from the catalog). A plan's contents
@@ -345,7 +385,8 @@ router.get('/api/state', (req, res) => {
     statusSlideEnabled: config.statusSlide.enabled,
     notify: { enabled: config.notify.enabled },
     gateway: { enabled: config.gateway.enabled },
-    settings: Settings.all(),
+    settings: publicSettings(Settings.all()),
+    providerNews: providerNewsView(),
     plans: Plans.all().map((p) => planJson(p, categoryNameMap())),
     // Headline catalog numbers only — the channel rows themselves are paged
     // through /api/catalog/channels, because a provider playlist can be tens of
@@ -582,7 +623,33 @@ router.patch('/api/settings', (req, res) => {
     ],
   });
   regenAll('admin branding updated');
-  res.json(Settings.all());
+  res.json(publicSettings(Settings.all()));
+});
+
+// ---------- Provider service notices ----------
+// The upstream provider's maintenance/outage notices on the status slide (see
+// news/providernews.js). Both routes fetch the feed right away so the admin
+// sees the outcome, and rebuild the streams only if what the slide shows changed.
+function providerNewsResponse(res) {
+  const regenerating = consumeShownChange() && config.statusSlide.enabled;
+  if (regenerating) regenAll('provider service notices changed');
+  res.json({ ...providerNewsView(), regenerating });
+}
+
+router.patch('/api/provider-news', async (req, res) => {
+  const { error, value } = validateProviderNews(req.body || {});
+  if (error) return res.status(400).json({ error });
+  updateProviderNewsSettings(value);
+  log.info('admin', 'provider news settings updated', { fields: Object.keys(value) });
+  if (providerNewsSettings().enabled && (value.enabled || value.url !== undefined || value.cookie)) {
+    await refreshProviderNews();
+  }
+  return providerNewsResponse(res);
+});
+
+router.post('/api/provider-news/refresh', async (req, res) => {
+  await refreshProviderNews();
+  return providerNewsResponse(res);
 });
 
 // ---------- Stream gateway ----------

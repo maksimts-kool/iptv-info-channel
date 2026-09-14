@@ -48,6 +48,9 @@ src/
   encode/  channel.js liveloop.js                 # ffmpeg encode + live HLS window
   http/    stream.js subscribe.js admin.js catalog.js auth.js # all HTTP surfaces
   epg/     epg.js epgfoss.js xxhash32.js          # XMLTV + OTT-play FOSS guides
+  news/    notices.js providernews.js             # provider service notices on the status slide:
+                       #   notices.js      pure: feed HTML -> notices, filter, cookie jar
+                       #   providernews.js settings, fetch + session refresh, watcher
   public/admin/        # built admin UI (Vite output from ../frontend; served by http/admin.js)
 ```
 
@@ -258,6 +261,20 @@ Request/data flow, entry point [src/server.js](src/server.js):
    header vs. the red "ПОДПИСКА ИСТЕКЛА" one. `buildBodySvg` owns this routing.
    All SVGs use a fixed 1280×720 viewBox scaled to the configured output
    resolution.
+
+   **Provider service notices** ([src/news/](src/news/)) ride on the status
+   slide as `summary.providerNotices`: the upstream provider's news feed
+   (tv.team `/v3/news`, behind a cookie login the admin pastes once; a 401
+   triggers `/v3/auth/refresh` and the rotated cookies are persisted in Settings
+   `provider_news`) is polled by `startProviderNewsWatcher`, and only
+   maintenance/outage items pass `isServiceNotice` — channel launches and
+   removals are news, not status, and must stay out. With notices present the
+   slide switches to a condensed board plus a **blue megaphone block**, kept
+   visually apart from our own green/yellow/red incidents; with none it is
+   byte-identical to the classic board. A failed fetch keeps the previous
+   notices (they age out after `PROVIDER_NEWS_MAX_AGE_HOURS`), and any change to
+   what the slide shows rebuilds all streams once (`consumeShownChange`). The
+   session cookie is a credential: `/api/state` goes through `publicSettings`.
 
 4. **Encode** — [src/encode/channel.js](src/encode/channel.js) spawns **ffmpeg** to turn the
    PNG(s) + looped music into HLS segments. Two paths: an intro path

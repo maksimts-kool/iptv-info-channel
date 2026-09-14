@@ -114,6 +114,23 @@ export const config = {
     // Seconds the status board is held on screen each loop.
     seconds: num(process.env.STATUS_SLIDE_SECONDS, 12),
   },
+  providerNews: {
+    // Upstream provider's service notices (maintenance / outages) shown on the
+    // status slide in their own blue block. Channel-launch news is filtered out.
+    // The admin toggle + URL + session cookie (Settings `provider_news`) overlay
+    // these defaults — see news/providernews.js.
+    enabled: bool(process.env.PROVIDER_NEWS_ENABLED, false),
+    url: process.env.PROVIDER_NEWS_URL || 'https://tv.team/v3/news?page=1',
+    // Browser Cookie header of a logged-in provider session. Usually pasted in
+    // the admin instead; rotated cookies are persisted there.
+    cookie: process.env.PROVIDER_NEWS_COOKIE || '',
+    // Session refresh endpoint called on a 401. Blank = <feed origin>/v3/auth/refresh.
+    refreshUrl: process.env.PROVIDER_NEWS_REFRESH_URL || '',
+    checkMinutes: num(process.env.PROVIDER_NEWS_CHECK_MINUTES, 15),
+    // A notice has no end date; it leaves the slide this many hours after publication.
+    maxAgeHours: num(process.env.PROVIDER_NEWS_MAX_AGE_HOURS, 24),
+    timeoutMs: num(process.env.PROVIDER_NEWS_TIMEOUT_MS, 15_000),
+  },
   catalog: {
     // The curated channel catalog served in every customer's .m3u. Upstream
     // provider playlists are fetched over HTTP, parsed and merged into the

@@ -29,7 +29,7 @@ lost access and what a renewal costs.
 ### Info channel
 - **Per-customer looping HLS** generated with ffmpeg (h264 + AAC) showing plan, price, expiry, days left and a colour-coded status banner.
 - **Expired-account offer slide** — expired customers see the available plans in an automatic 2-, 3- or 4-column grid, each listing the channel categories it includes.
-- **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin.
+- **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin, plus the upstream provider's own maintenance/outage notices pulled automatically from its news feed (shown in a separate blue block; channel-lineup news is filtered out).
 - **Branding intro animation**, configurable (`INTRO_*`) or disablable, and **background music** (bundled track or your own).
 - **Programme guide** — a per-customer XMLTV guide (plus the OTT-play FOSS JSON format) carrying service and account status.
 - **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API.
@@ -330,6 +330,8 @@ it to `.env` and edit. The most-used settings:
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
 | `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
 | `STATUS_SLIDE_ENABLED` / `STATUS_SLIDE_SECONDS` | `true` / `12` | Append the global service-status board slide, and how long it holds. |
+| `PROVIDER_NEWS_ENABLED` / `PROVIDER_NEWS_URL` | `false` / `https://tv.team/v3/news?page=1` | Show the upstream provider's maintenance/outage notices on the status board (blue block). The admin card overrides both and stores the login session cookie (`PROVIDER_NEWS_COOKIE` seeds it). |
+| `PROVIDER_NEWS_CHECK_MINUTES` / `PROVIDER_NEWS_MAX_AGE_HOURS` | `15` / `24` | Feed polling interval, and how long after publication a notice stays on the slide. |
 | `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
 | `EPG_ENABLED` | `true` | Advertise a per‑user XMLTV guide (`/u/<token>/epg.xml`) via `url-tvg`. |
 | `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |

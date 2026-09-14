@@ -6,7 +6,7 @@ import QRCode from 'qrcode';
 import { config } from '../config.js';
 import {
   formatPrice, periodLabel, formatDate, daysLeft, accountStatus, STATUS_META, pluralDays,
-  localDateString, xmlEscape,
+  localDateString, xmlEscape, formatTime,
 } from '../core/util.js';
 import { SEVERITY, formatUptime } from './status.js';
 
@@ -382,8 +382,123 @@ function incidentRange(inc) {
   return `${start} — ${formatDate(inc.ends_on)}`;
 }
 
-// Builds the status slide from a statusSummary() result (see status.js).
+// ---- Provider service notices (the blue block) ----
+// Our own status speaks green/yellow/red; the upstream provider's notices are
+// always blue with a megaphone, so a provider maintenance window is never read
+// as an incident of ours (or vice versa).
+const PROVIDER = {
+  disc: '#2563eb', stroke: '#3b82f6', panel: '#0c1a3a', label: '#60a5fa', meta: '#93c5fd', body: '#dbeafe',
+};
+
+function megaphoneIcon(cx, cy, r) {
+  const x = cx - 2; // the horn + sound wave are wider on the right
+  return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${PROVIDER.disc}"/>
+    <path d="M${x - 13} ${cy - 6} L${x - 4} ${cy - 6} L${x + 8} ${cy - 14} L${x + 8} ${cy + 14} L${x - 4} ${cy + 6} L${x - 13} ${cy + 6} Z" fill="#ffffff" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+    <rect x="${x - 10}" y="${cy + 5}" width="6" height="10" rx="2" fill="#ffffff"/>
+    <path d="M${x + 14} ${cy - 7} Q${x + 20} ${cy} ${x + 14} ${cy + 7}" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>`;
+}
+
+// Greedy word wrap; the last kept line ends in "…" when text is left over.
+export function wrapText(text, maxChars, maxLines) {
+  const lines = [];
+  let current = '';
+  for (const word of String(text ?? '').split(/\s+/).filter(Boolean)) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length <= maxChars || !current) {
+      current = next;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  if (lines.length <= maxLines) return lines.map((line) => clipText(line, maxChars));
+  const kept = lines.slice(0, maxLines);
+  kept[maxLines - 1] = clipText(`${kept[maxLines - 1]} ${lines[maxLines]}`, maxChars);
+  return kept;
+}
+
+function noticeWhen(notice) {
+  const date = new Date(notice.published_at);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${formatDate(localDateString(date, config.timezone))} · ${formatTime(date, config.timezone)}`;
+}
+
+function providerNoticePanel(notices, top) {
+  const [notice] = notices;
+  const extra = notices.length > 1 ? `+${notices.length - 1} ещё · ` : '';
+  const lines = wrapText(notice.body, 78, 3)
+    .map((line, i) => `<text x="104" y="${top + 138 + i * 34}" fill="${PROVIDER.body}" font-family="Inter, sans-serif" font-size="23">${xmlEscape(line)}</text>`)
+    .join('');
+  return `
+    <rect x="64" y="${top}" width="1152" height="250" rx="24" fill="${PROVIDER.panel}" stroke="${PROVIDER.stroke}" stroke-width="2" filter="url(#soft)"/>
+    ${megaphoneIcon(122, top + 50, 28)}
+    <text x="166" y="${top + 40}" fill="${PROVIDER.label}" font-family="Inter, sans-serif" font-size="17" font-weight="700" letter-spacing="2">ИНФОРМАЦИЯ ОТ ПРОВАЙДЕРА</text>
+    <text x="1176" y="${top + 40}" text-anchor="end" fill="${PROVIDER.meta}" font-family="Inter, sans-serif" font-size="18">${xmlEscape(`${extra}${noticeWhen(notice)}`)}</text>
+    <text x="166" y="${top + 76}" fill="#ffffff" font-family="Inter, sans-serif" font-size="28" font-weight="800">${xmlEscape(clipText(notice.headline, 56))}</text>
+    <line x1="104" y1="${top + 100}" x2="1176" y2="${top + 100}" stroke="${PROVIDER.stroke}" stroke-opacity="0.35" stroke-width="1.5"/>
+    ${lines}`;
+}
+
+// The status slide with a provider notice: our own board is condensed into the
+// top half so the provider block gets the bottom half.
+function buildStatusWithNoticesSvg(summary, settings, notices) {
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
+  const dateStr = xmlEscape(formatDate(localDateString()));
+  const uptime = xmlEscape(formatUptime(summary.uptimePct));
+  const pill = SEVERITY[summary.state];
+  const pillW = 60 + pill.label.length * 14;
+  const pillX = 1176 - pillW;
+
+  const x0 = 104;
+  const stripWidth = 1072;
+  const n = summary.days.length || 1;
+  const gap = 2;
+  const barWidth = (stripWidth - gap * (n - 1)) / n;
+  const bars = summary.days.map((day, i) => {
+    const x = x0 + i * (barWidth + gap);
+    return `<rect x="${x.toFixed(2)}" y="228" width="${barWidth.toFixed(2)}" height="48" rx="2" fill="${day.color}"/>`;
+  }).join('');
+
+  const active = summary.activeIncidents || [];
+  const banner = active.length
+    ? (() => {
+      const inc = [...active].sort((a, b) => SEVERITY[b.severity].rank - SEVERITY[a.severity].rank)[0];
+      const extra = active.length > 1 ? ` (+${active.length - 1})` : '';
+      return `<rect x="104" y="318" width="1072" height="44" rx="12" fill="#131f3d" stroke="${SEVERITY[inc.severity].color}" stroke-width="1.5"/>
+        <circle cx="128" cy="340" r="7" fill="${SEVERITY[inc.severity].color}"/>
+        <text x="148" y="347" fill="#e8eefb" font-family="Inter, sans-serif" font-size="19">${xmlEscape(clipText(inc.title, 64))} · ${xmlEscape(incidentRange(inc))}${extra}</text>`;
+    })()
+    : '<text x="104" y="346" fill="#5c6e91" font-family="Inter, sans-serif" font-size="19">Активных инцидентов нет</text>';
+
+  return svgDoc(`
+    ${statusIcon(summary.state, 112, 86, 30)}
+    <text x="160" y="96" fill="#ffffff" font-family="Inter, sans-serif" font-size="40" font-weight="800" letter-spacing="-0.5">${xmlEscape(summary.label)}</text>
+    <text x="160" y="130" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="20">Аптайм ${uptime} за 90 дней · обновлено ${dateStr}</text>
+
+    <rect x="64" y="152" width="1152" height="232" rx="24" fill="#0f1830" stroke="#24345f" stroke-width="1.5" filter="url(#soft)"/>
+    <text x="104" y="206" fill="#ffffff" font-family="Inter, sans-serif" font-size="28" font-weight="700">${brand}</text>
+    <rect x="${pillX}" y="174" width="${pillW}" height="40" rx="12" fill="${pill.color}"/>
+    <circle cx="${pillX + 22}" cy="194" r="7" fill="#ffffff" opacity="0.9"/>
+    <text x="${pillX + 38}" y="201" fill="#ffffff" font-family="Inter, sans-serif" font-size="20" font-weight="700">${xmlEscape(pill.label)}</text>
+
+    ${bars}
+    <text x="104" y="302" fill="#6f83a6" font-family="Inter, sans-serif" font-size="16">90 дней назад</text>
+    <text x="1176" y="302" text-anchor="end" fill="#6f83a6" font-family="Inter, sans-serif" font-size="16">Сегодня</text>
+
+    ${banner}
+
+    ${providerNoticePanel(notices, 406)}
+
+    <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Состояние сервиса · обновляется ежедневно · уведомления провайдера — автоматически</text>`);
+}
+
+// Builds the status slide from a statusSummary() result (see status.js). An
+// optional `summary.providerNotices` (news/providernews.js) adds the blue
+// provider block; without it the slide is exactly the classic board.
 export function buildStatusSlideSvg(summary, settings = {}) {
+  const notices = summary.providerNotices || [];
+  if (notices.length) return buildStatusWithNoticesSvg(summary, settings, notices);
   const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
   const headline = xmlEscape(summary.label);
   const dateStr = xmlEscape(formatDate(localDateString()));
