@@ -8,15 +8,21 @@
 // the whole public playlist/stream concern lives in one file. The pure playlist
 // builders stay exported (unit-tested in test/http/playlist.test.js).
 import express from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 import { Users, Settings, Incidents } from '../data/store.js';
-import { userHlsDir, ensureUserStream } from '../encode/channel.js';
-import { buildLivePlaylist } from '../encode/liveloop.js';
+import {
+  userHlsDir, ensureUserStream, noticeHlsDir, ensureDeviceNotice,
+} from '../encode/channel.js';
+import { buildLivePlaylist, loopSegments, LIVE_WINDOW_SEGMENTS } from '../encode/liveloop.js';
 import { buildEpgXml, epgChannelId } from '../epg/epg.js';
 import { buildM3u } from '../playlist/m3u.js';
-import { isHlsUrl, rewriteHlsManifest } from '../playlist/hls.js';
+import {
+  isHlsUrl, isMasterPlaylist, rewriteHlsManifest, parseMediaPlaylist, buildSplicedPlaylist,
+} from '../playlist/hls.js';
+import { DeviceTracker, deviceKey, deviceTag as tagForUserAgent } from '../playlist/devices.js';
 import {
   channelsForUser, channelAccessForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
 } from '../playlist/catalog.js';
@@ -108,10 +114,17 @@ export function userStreamUrl(user, cfg) {
 // and must survive an expired subscription, so routing it through the gate
 // would only add a hop.
 // The ".m3u8" ending is load-bearing, not cosmetic — see the route below.
-export function channelStreamUrl(user, channel, cfg) {
+//
+// `deviceTag` (from the client that downloaded the playlist, see
+// playlist/devices.js) goes into the path so the device limit can tell that
+// client's later manifest requests apart from another device's, whatever HTTP
+// stack the player happens to fetch them with. Without one (the admin's preview)
+// the original two-segment form is published.
+export function channelStreamUrl(user, channel, cfg, { deviceTag = '' } = {}) {
   if (!cfg.gateway?.enabled || channel.builtin || !channel.url) return channel.url;
   if (!isHlsUrl(channel.url)) return channel.url;
-  return `${cfg.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${encodeURIComponent(channel.id)}.m3u8`;
+  const tag = deviceTag ? `${encodeURIComponent(deviceTag)}/` : '';
+  return `${cfg.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${tag}${encodeURIComponent(channel.id)}.m3u8`;
 }
 
 // The admin's on/off switch (Settings `gateway_enabled`) overlaid on the env
@@ -132,7 +145,7 @@ export function syncGatewaySettings() {
 //
 // The built-in info channel is the one entry whose URL is per-customer: it
 // points at this server's HLS loop and carries the tvg-id our own EPG uses.
-export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = []) {
+export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [], { deviceTag = '' } = {}) {
   const brand = settings.brand_name || 'Мой IPTV-сервис';
   const infoName = `${brand} — ${user.username}`;
   // NOTE: PUBLIC_BASE_URL is baked into these URLs. On a LAN it must be the host
@@ -176,7 +189,7 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
     }
     return {
       name: channel.name,
-      url: channelStreamUrl(user, channel, cfg),
+      url: channelStreamUrl(user, channel, cfg, { deviceTag }),
       extras: channel.extras,
       attrs: { ...channel.attrs, 'group-title': category.name },
     };
@@ -188,7 +201,7 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
 // Resolve everything the playlist builder needs for one customer: which
 // channels they may see (expired/disabled accounts collapse to Информация) and
 // which upstream guides to advertise. Also used by the admin's playlist preview.
-export function renderUserPlaylist(user, settings = Settings.all()) {
+export function renderUserPlaylist(user, settings = Settings.all(), { deviceTag = '' } = {}) {
   const status = accountStatus(user, config.expiringThresholdDays);
   const locked = status === 'expired' || status === 'disabled';
   // The plan is the base entitlement: a customer sees the categories their plan
@@ -198,7 +211,7 @@ export function renderUserPlaylist(user, settings = Settings.all()) {
   const epgUrls = Sources.all()
     .filter((s) => s.epg_url && usedSources.has(s.id))
     .map((s) => s.epg_url);
-  return buildUserPlaylist(user, settings, config, entries, epgUrls);
+  return buildUserPlaylist(user, settings, config, entries, epgUrls, { deviceTag });
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +248,15 @@ function sendEpg(req, res, token) {
     .send(epgFor(user));
 }
 
+// The download name is the customer's name — which is usually Cyrillic, and a
+// raw non-ASCII header value makes Node throw (a 500 instead of a playlist).
+// ASCII fallback for old clients plus the RFC 5987 UTF-8 form for the rest.
+export function playlistDisposition(username) {
+  const name = `${String(username || 'playlist')}.m3u`;
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  return `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
 function sendPlaylist(req, res, token) {
   const user = Users.getByToken(token);
   if (!user) {
@@ -245,8 +267,10 @@ function sendPlaylist(req, res, token) {
     .status(200)
     .type('application/x-mpegurl')
     .set('Cache-Control', 'no-store, no-cache, must-revalidate')
-    .set('Content-Disposition', `inline; filename="${user.username}.m3u"`)
-    .send(renderUserPlaylist(user));
+    .set('Content-Disposition', playlistDisposition(user.username))
+    .send(renderUserPlaylist(user, Settings.all(), {
+      deviceTag: tagForUserAgent(req.get('user-agent')),
+    }));
 }
 
 // GET /playlist.m3u?token=XXXX
@@ -270,32 +294,213 @@ router.get('/epg.xml', (req, res) => {
 // GET /u/:token/epg.xml  (clean per-user URL)
 router.get('/u/:token/epg.xml', (req, res) => sendEpg(req, res, req.params.token));
 
-// GET /c/:token/:id -> the stream gateway (see channelStreamUrl above).
-//
+// ---------------------------------------------------------------------------
+// The gateway: /c/:token[/:tag]/:id.m3u8 and the variant playlists behind it
+// ---------------------------------------------------------------------------
 // Re-resolves this customer's entitlement to this one channel, then serves the
 // provider's rewritten HLS manifest. Because the check happens per request
 // rather than per playlist download, revoking a category, switching a channel
 // off or letting a subscription lapse stops playback without the player ever
-// re-downloading the .m3u — and since a player re-fetches a live media
-// playlist every few seconds, it stops mid-view, not just at the next zap.
+// re-downloading the .m3u.
+//
+// WHY THE VARIANTS GO THROUGH HERE TOO. A player fetches a MASTER playlist once,
+// at tune-in, and from then on only refreshes the variant (media) playlist it
+// picked. The gate used to hand out the variants as direct provider URLs, so a
+// revocation reached the viewer only at the next channel switch — exactly the
+// "it only shows up when I zap" bug. Variant and rendition URIs in a master are
+// now rewritten to signed /c/…/<sig>/<ref>.m3u8 links back to this route (the
+// signature binds token + channel + upstream URL, so the route cannot be used
+// to fetch arbitrary URLs), and every refresh is re-checked.
+//
+// WHAT A REFUSAL LOOKS LIKE MID-VIEW. Answering a media-playlist refresh with a
+// redirect to another live stream does not work — its sequence numbers are
+// unrelated to what the player was following, so it reads as a stuck or broken
+// playlist. Instead, a player that was watching gets a "spliced" playlist: the
+// provider's last window, a discontinuity, and then this server's own loop
+// numbered as the continuation of the same stream (playlist/hls.js
+// buildSplicedPlaylist). The picture changes to the customer's info card — or
+// to the device-limit notice — without playback ever stopping. The cut-over is
+// sticky for that player until it tunes in again, so a renewal mid-cut does not
+// flip the stream back and forth. A refusal at tune-in is still the plain 302 to
+// the card, which is fine there because the player has nothing to continue.
+//
+// THE DEVICE LIMIT is enforced here as well (playlist/devices.js): every gated
+// manifest fetch refreshes the device's slot; a device beyond the customer's
+// cap is sent to the notice loop. Non-HLS channels are not gated (see
+// channelStreamUrl) and so neither counted nor limited.
 //
 // Deliberately NOT gated on config.gateway.enabled: playlists handed out while
 // the gateway was on stay in players long after an admin switches it off, and
 // they must keep working. The flag only decides what NEW playlists point at.
-router.get('/c/:token/:id', async (req, res) => {
-  const { token } = req.params;
-  // The published link ends in ".m3u8" and the extension is meaningful, not
-  // decoration: ExoPlayer (so every Android player) picks its media source from
-  // the URL EXTENSION via Util.inferContentType, not from the Content-Type we
-  // send. An extensionless URL is inferred as a progressive media file, so the
-  // player downloads a perfectly good HLS manifest and then tries to decode it
-  // as if it were video — a black screen with no error. Older playlists carry
-  // the extensionless form, so both are accepted here.
-  const id = String(req.params.id).replace(/\.m3u8$/i, '');
+
+const devices = new DeviceTracker({ idleMs: config.gateway.deviceIdleSeconds * 1000 });
+
+// Who is watching one customer right now (admin view), oldest first.
+export function gatewayDevices(user, now = Date.now()) {
+  return devices.list(user.id, user.device_limit || 0, now).map((d) => ({
+    ip: d.ip,
+    user_agent: d.ua,
+    channel: d.channel,
+    first_seen: new Date(d.firstSeen).toISOString(),
+    last_seen: new Date(d.lastSeen).toISOString(),
+    allowed: d.allowed,
+  }));
+}
+
+export function gatewayDeviceCount(userId) {
+  return devices.count(userId);
+}
+
+export function forgetGatewayDevices(userId) {
+  devices.forget(userId);
+  for (const key of sessions.keys()) {
+    if (key.startsWith(`${userId}|`)) sessions.delete(key);
+  }
+}
+
+// Per-player playlist state: the last media window served (what a cut-over
+// continues from) and whether this player has been cut over. Keyed by
+// user|device|channel|playlist. In memory only — after a restart a refusal
+// simply falls back to the tune-in redirect.
+const sessions = new Map();
+const SESSION_TTL_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  for (const [key, session] of sessions) if (session.lastSeen < cutoff) sessions.delete(key);
+}, 60_000).unref();
+
+// A refresh arrives every target duration; a gap well past that is a new
+// tune-in, which starts from a clean slate (and ends any cut-over).
+function isFreshTuneIn(session, now) {
+  const td = session.snapshot?.targetDuration || 6;
+  return now - session.lastSeen > Math.max(15_000, 3 * td * 1000);
+}
+
+function variantSignature(token, channelId, url) {
+  return crypto
+    .createHmac('sha256', config.sessionSecret)
+    .update(`gate:${token}:${channelId}:${url}`)
+    .digest('base64url')
+    .slice(0, 22);
+}
+
+function variantGateUrl(user, tag, channelId, url) {
+  const ref = Buffer.from(url).toString('base64url');
+  return `${config.publicBaseUrl}/c/${encodeURIComponent(user.token)}/${encodeURIComponent(tag || '_')}/`
+    + `${encodeURIComponent(channelId)}/${variantSignature(user.token, channelId, url)}/${ref}.m3u8`;
+}
+
+function decodeVariant(user, channelId, sig, ref) {
+  let url;
+  try {
+    url = Buffer.from(String(ref).replace(/\.m3u8$/i, ''), 'base64url').toString('utf8');
+  } catch {
+    return null;
+  }
+  if (!/^https?:\/\//i.test(url)) return null;
+  const expected = Buffer.from(variantSignature(user.token, channelId, url));
+  const given = Buffer.from(String(sig));
+  if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null;
+  return url;
+}
+
+// The global device-limit notice, served like any info loop.
+export function noticeStreamUrl(cfg) {
+  return `${cfg.publicBaseUrl}/notice/devices/index.m3u8`;
+}
+
+// The loop a refused viewer is cut over to, or null while it is not encoded yet
+// (an encode is started; the player is held on its last window meanwhile).
+function fillerFor(user, reason) {
+  if (reason === 'devices') {
+    const segments = loopSegments(noticeHlsDir());
+    if (!segments) {
+      ensureDeviceNotice().catch((e) => log.error('gateway', 'device-limit notice failed', { error: e.message }));
+      return null;
+    }
+    return { segments, uri: (seg, seq) => `${config.publicBaseUrl}/notice/devices/${seg.file}?s=${seq}` };
+  }
+  const segments = loopSegments(userHlsDir(user.id));
+  if (!segments) {
+    ensureUserStream(user).catch((e) => log.error('gateway', 'info channel generation failed', {
+      user_id: user.id, error: e.message,
+    }));
+    return null;
+  }
+  const token = encodeURIComponent(user.token);
+  return { segments, uri: (seg, seq) => `${config.publicBaseUrl}/hls/${token}/${seg.file}?s=${seq}` };
+}
+
+function sendManifest(res, text) {
+  return res
+    .status(200)
+    .set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    .set('Pragma', 'no-cache')
+    .type('application/vnd.apple.mpegurl')
+    .send(text);
+}
+
+// The published link ends in ".m3u8" and the extension is meaningful, not
+// decoration: ExoPlayer (so every Android player) picks its media source from
+// the URL EXTENSION via Util.inferContentType, not from the Content-Type we
+// send. An extensionless URL is inferred as a progressive media file, so the
+// player downloads a perfectly good HLS manifest and then tries to decode it
+// as if it were video — a black screen with no error. Older playlists carry
+// the extensionless form, so both are accepted here.
+const stripExt = (value) => String(value).replace(/\.m3u8$/i, '');
+const TAG_RE = /^[A-Za-z0-9_-]{1,40}$/;
+
+// Legacy entry (no device tag): the device is told apart by its User-Agent.
+router.get('/c/:token/:id', (req, res) => gateRequest(req, res, {
+  token: req.params.token, tag: '', id: stripExt(req.params.id),
+}));
+
+// Entry published since the device limit: /c/:token/:tag/:id.m3u8
+router.get('/c/:token/:tag/:id', (req, res) => {
+  if (!TAG_RE.test(req.params.tag)) return res.status(404).type('text/plain').send('Not found');
+  return gateRequest(req, res, {
+    token: req.params.token, tag: req.params.tag === '_' ? '' : req.params.tag, id: stripExt(req.params.id),
+  });
+});
+
+// A variant/rendition playlist of a gated master: /c/:token/:tag/:id/:sig/:ref.m3u8
+router.get('/c/:token/:tag/:id/:sig/:ref', (req, res) => {
+  if (!TAG_RE.test(req.params.tag)) return res.status(404).type('text/plain').send('Not found');
+  return gateRequest(req, res, {
+    token: req.params.token,
+    tag: req.params.tag === '_' ? '' : req.params.tag,
+    id: stripExt(req.params.id),
+    variant: { sig: req.params.sig, ref: req.params.ref },
+  });
+});
+
+async function gateRequest(req, res, { token, tag, id, variant = null }) {
   const user = Users.getByToken(token);
   if (!user) {
     log.warn('gateway', 'channel requested with unknown token', { channel_id: id });
     return res.status(404).type('text/plain').send('Unknown token');
+  }
+
+  let upstreamUrl = null;
+  if (variant) {
+    upstreamUrl = decodeVariant(user, id, variant.sig, variant.ref);
+    if (!upstreamUrl) return res.status(404).type('text/plain').send('Unknown playlist');
+  }
+
+  const now = Date.now();
+  const ua = req.get('user-agent') || '';
+  const device = deviceKey({ ip: req.ip, tag, userAgent: ua });
+  const prefix = `${user.id}|${device}|${id}|`;
+  const sessionKey = `${prefix}${upstreamUrl || ''}`;
+  let session = sessions.get(sessionKey) || null;
+  if (session && isFreshTuneIn(session, now)) {
+    sessions.delete(sessionKey);
+    session = null;
+  }
+  // The entry URL of a master playlist is only fetched at tune-in, so this is a
+  // zap back onto the channel: whatever its variants were doing starts over.
+  if (!variant && session?.kind !== 'media') {
+    for (const key of sessions.keys()) if (key.startsWith(prefix) && key !== sessionKey) sessions.delete(key);
   }
 
   const status = accountStatus(user, config.expiringThresholdDays);
@@ -303,52 +508,96 @@ router.get('/c/:token/:id', async (req, res) => {
   const access = channelAccessForUser(user.id, id, {
     locked, planCategories: planCategorySet(user),
   });
-
-  // Refused (or the channel is gone from the catalog entirely) -> their own
-  // info channel, which is the card that explains the subscription. A 403 would
-  // surface in the player as a generic "cannot play", i.e. as a support ticket.
-  if (!access.allowed) {
-    log.info('gateway', 'channel denied', {
-      user_id: user.id, username: user.username, channel_id: id, reason: access.reason,
-    });
+  if (access.allowed && access.channel.id === INFO_CHANNEL_ID) {
     return redirectStream(res, userStreamUrl(user, config));
   }
-  if (access.channel.id === INFO_CHANNEL_ID) return redirectStream(res, userStreamUrl(user, config));
+  // Non-HLS: nothing to rewrite, so the redirect is all there is. New playlists
+  // no longer point here for those channels (see channelStreamUrl), but links
+  // already sitting in players must keep doing what they always did.
+  if (access.allowed && !variant && !isHlsUrl(access.channel.url)) {
+    return redirectStream(res, access.channel.url);
+  }
+
+  // Refused for access, for the device limit, or already cut over (sticky).
+  let refusal = null;
+  if (!access.allowed) refusal = 'access';
+  else if (session?.splice) refusal = session.splice.reason;
+  else {
+    const slot = devices.admit(user.id, device, user.device_limit || 0, {
+      ip: req.ip, ua, channel: access.channel.name || access.channel.id,
+    }, now);
+    if (!slot.allowed) refusal = 'devices';
+  }
+
+  if (refusal) {
+    // Mid-view: continue the stream into our own loop instead of breaking it.
+    if (session?.kind === 'media' && session.snapshot) {
+      if (!session.splice) {
+        session.splice = { at: now, reason: refusal };
+        log.info('gateway', refusal === 'devices'
+          ? 'device limit reached; cutting the viewer over to the notice'
+          : 'channel revoked mid-view; cutting the viewer over to the info channel', {
+          user_id: user.id, username: user.username, channel_id: id, reason: access.reason,
+          limit: user.device_limit || 0,
+        });
+      }
+      session.lastSeen = now;
+      const filler = fillerFor(user, session.splice.reason);
+      if (!filler) return sendManifest(res, session.snapshotText);
+      return sendManifest(res, buildSplicedPlaylist({
+        provider: session.snapshot,
+        filler: filler.segments,
+        fillerUri: filler.uri,
+        elapsedSeconds: (now - session.splice.at) / 1000,
+        window: LIVE_WINDOW_SEGMENTS,
+      }));
+    }
+    // Tune-in: send them to the card that explains it. A 403 would surface in
+    // the player as a generic "cannot play", i.e. as a support ticket.
+    log.info('gateway', refusal === 'devices' ? 'device limit reached' : 'channel denied', {
+      user_id: user.id, username: user.username, channel_id: id, reason: access.reason,
+      ...(refusal === 'devices' ? { limit: user.device_limit, active: devices.count(user.id, now) } : {}),
+    });
+    if (refusal === 'devices') {
+      ensureDeviceNotice().catch((e) => log.error('gateway', 'device-limit notice failed', { error: e.message }));
+      return redirectStream(res, noticeStreamUrl(config));
+    }
+    return redirectStream(res, userStreamUrl(user, config));
+  }
 
   if (config.gateway.logRequests) {
     // One line per manifest fetch, opt-in (STREAM_GATEWAY_LOG). The User-Agent
     // is the point: it identifies which player component is asking, which is
     // what separates "the device never got here" from "it got here and then
     // could not use the answer".
-    log.info('gateway', 'channel opened', {
+    log.info('gateway', variant ? 'variant refreshed' : 'channel opened', {
       user_id: user.id,
       username: user.username,
       channel: access.channel.name || access.channel.id,
-      mode: isHlsUrl(access.channel.url) ? 'manifest' : 'redirect',
-      ua: req.get('user-agent') || '',
+      ua,
     });
   }
 
-  // Non-HLS: nothing to rewrite, so the redirect is all there is. New playlists
-  // no longer point here for those channels (see channelStreamUrl), but links
-  // already sitting in players must keep doing what they always did.
-  if (!isHlsUrl(access.channel.url)) return redirectStream(res, access.channel.url);
-
   try {
-    const { text, finalUrl } = await fetchManifest(access.channel.url, req.get('user-agent'));
-    return res
-      .status(200)
-      .set('Cache-Control', 'no-store, no-cache, must-revalidate')
-      .set('Pragma', 'no-cache')
-      .type('application/vnd.apple.mpegurl')
-      .send(rewriteHlsManifest(text, finalUrl));
+    const { text, finalUrl } = await fetchManifest(upstreamUrl || access.channel.url, ua);
+    if (isMasterPlaylist(text)) {
+      sessions.set(sessionKey, { kind: 'master', lastSeen: now });
+      return sendManifest(res, rewriteHlsManifest(text, finalUrl, {
+        playlistUri: (abs) => variantGateUrl(user, tag, id, abs),
+      }));
+    }
+    const body = rewriteHlsManifest(text, finalUrl);
+    sessions.set(sessionKey, {
+      kind: 'media', lastSeen: now, snapshot: parseMediaPlaylist(body), snapshotText: body, splice: null,
+    });
+    return sendManifest(res, body);
   } catch (e) {
     log.error('gateway', 'upstream manifest fetch failed', {
       user_id: user.id, channel_id: id, error: e.message,
     });
     return res.status(502).type('text/plain').send('Upstream unavailable');
   }
-});
+}
 
 // Fetch one provider manifest, bounded the way catalog downloads are: a hostile
 // or dead provider must not hang the request or exhaust memory while a viewer
@@ -416,37 +665,45 @@ router.get('/hls/:token/:file', async (req, res) => {
     return res.status(500).type('text/plain').send('Stream generation failed');
   }
 
-  const dir = userHlsDir(user.id);
+  return serveLoopFile(req, res, userHlsDir(user.id), file, { user_id: user.id });
+});
 
+// GET /notice/devices/:file -> the global device-limit notice loop (no token:
+// it carries nothing but the brand). Encoded lazily on first use.
+router.get('/notice/devices/:file', async (req, res) => {
+  const { file } = req.params;
+  if (!SAFE_FILE.test(file)) return res.status(400).type('text/plain').send('Bad file');
+  if (!fs.existsSync(path.join(noticeHlsDir(), 'index.m3u8'))) {
+    try {
+      await ensureDeviceNotice();
+    } catch (e) {
+      log.error('stream', 'device-limit notice generation failed', { error: e.message });
+      return res.status(500).type('text/plain').send('Stream generation failed');
+    }
+  }
+  return serveLoopFile(req, res, noticeHlsDir(), file, { notice: 'devices' });
+});
+
+function serveLoopFile(req, res, dir, file, logContext) {
   // Serve the master playlist as an endless live loop so players show a
   // continuous channel (no seek bar, no end) instead of a finite VOD clip.
   // Every viewer shares one live timeline; tuning in joins the stream wherever
   // it currently is, it does not restart at the intro.
   if (file === 'index.m3u8' && config.channel.liveLoop) {
     const playlist = buildLivePlaylist(dir, Date.now());
-    if (playlist) {
-      return res
-        .status(200)
-        .set('Cache-Control', 'no-store, no-cache, must-revalidate')
-        .set('Pragma', 'no-cache')
-        .type('application/vnd.apple.mpegurl')
-        .send(playlist);
-    }
+    if (playlist) return sendManifest(res, playlist);
     // Fall through to the on-disk VOD playlist if the loop can't be built.
   }
 
   const filePath = path.join(dir, file);
   if (!fs.existsSync(filePath)) {
-    log.warn('stream', 'requested HLS file is missing', {
-      user_id: user.id,
-      file,
-    });
+    log.warn('stream', 'requested HLS file is missing', { ...logContext, file });
     return res.status(404).type('text/plain').send('Not found');
   }
 
   const contentType = file.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t';
   return sendFileWithRange(req, res, filePath, contentType);
-});
+}
 
 // Serve a static file honoring HTTP Range. ExoPlayer/IJK (Televizo) probe
 // segments with `Range:` and can stall on a plain 200 that ignores it; we reply

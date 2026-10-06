@@ -7,8 +7,9 @@ import {
   CopyOutlined, ExportOutlined, KeyOutlined, WalletOutlined,
 } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
-import { periodSuffix, planOptions } from '../lib/plans.js';
+import { devicesLabel, periodSuffix, planOptions } from '../lib/plans.js';
 import ClientAccessTab from './ClientAccessTab.jsx';
+import ClientDevicesCard from './ClientDevicesCard.jsx';
 import ClientNotifyTab from './ClientNotifyTab.jsx';
 
 // "Paid for N ..." — the units the payment endpoint understands. The default is
@@ -39,6 +40,7 @@ export default function ClientDrawer({
       plan_id: user.plan_id,
       expires_at: user.expires_at || '',
       active: !!user.active,
+      max_devices: user.max_devices ?? null,
     });
   }, [user, form]);
 
@@ -63,6 +65,8 @@ export default function ClientDrawer({
         plan_id: v.plan_id,
         expires_at: v.expires_at || null,
         active: v.active,
+        // Empty = follow the plan.
+        max_devices: v.max_devices ?? null,
       }),
       { success: 'Сохранено' },
     );
@@ -124,6 +128,19 @@ export default function ClientDrawer({
         >
           <Input type="date" />
         </Form.Item>
+        <Form.Item
+          name="max_devices"
+          label="Устройств одновременно"
+          extra={`Оставьте пустым, чтобы действовал лимит тарифа (сейчас: ${devicesLabel(plan?.max_devices)}). 0 — без ограничений для этого клиента.`}
+        >
+          <InputNumber
+            min={0}
+            max={100}
+            precision={0}
+            placeholder={`по тарифу: ${plan?.max_devices > 0 ? plan.max_devices : '∞'}`}
+            style={{ width: 200 }}
+          />
+        </Form.Item>
         <Form.Item name="active" label="Активен" valuePropName="checked">
           <Switch />
         </Form.Item>
@@ -167,6 +184,8 @@ export default function ClientDrawer({
           </Typography.Text>
         </Space>
       </Card>
+
+      <ClientDevicesCard user={user} api={api} onAuthError={onAuthError} message={message} />
 
       <Descriptions bordered size="small" column={1} title="Ссылки">
         <Descriptions.Item label="Плейлист (m3u)">

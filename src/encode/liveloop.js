@@ -117,6 +117,12 @@ function position(meta, state, now) {
   };
 }
 
+// The loop's playable segments ([{ file, duration }], runt dropped) — what the
+// stream gateway splices in when it cuts a viewer over to this loop mid-view.
+export function loopSegments(dir) {
+  return readLoopMeta(dir)?.segments || null;
+}
+
 // Returns the current live counters. Regeneration uses these to ensure that
 // sequence numbers never move backwards when the rendered content changes.
 export function currentLoopPosition(dir, now = Date.now()) {

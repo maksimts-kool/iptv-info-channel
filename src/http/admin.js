@@ -23,7 +23,9 @@ import {
   requireAuth, requireCsrf, csrfToken, checkPassword, setSession, clearSession,
 } from './auth.js';
 import catalogRouter from './catalog.js';
-import { renderUserPlaylist, syncGatewaySettings } from './stream.js';
+import {
+  renderUserPlaylist, syncGatewaySettings, gatewayDevices, gatewayDeviceCount, forgetGatewayDevices,
+} from './stream.js';
 import { Overrides, catalog } from '../playlist/catalog.js';
 import { isHlsUrl } from '../playlist/hls.js';
 import { log } from '../core/logger.js';
@@ -113,6 +115,8 @@ export function planJson(plan, categoryNames = new Map()) {
     price: formatPrice(plan.price_cents, plan.currency),
     category_ids: categoryIds,
     features: categoryIds.map((id) => categoryNames.get(id)).filter(Boolean),
+    // Simultaneous devices; 0 = no limit.
+    max_devices: plan.max_devices || 0,
     sort: plan.sort,
   };
 }
@@ -133,12 +137,32 @@ export function decorateUser(u) {
     status,
     status_label: STATUS_META[status].label,
     status_color: STATUS_META[status].color,
+    // Device limit: the personal override (null = follows the plan), the plan's
+    // own value, and the one that applies. 0 = no limit.
+    max_devices: Number.isInteger(u.max_devices) ? u.max_devices : null,
+    plan_max_devices: u.plan_max_devices || 0,
+    device_limit: u.device_limit || 0,
     m3u_url: `${config.publicBaseUrl}/u/${u.token}/playlist.m3u`,
     hls_url: `${config.publicBaseUrl}/hls/${u.token}/index.m3u8`,
   };
 }
 
 // ---- Input validation (returns { error } or the parsed value) ----
+// Simultaneous-device cap: a whole number 0..100, 0 meaning "no limit". With
+// `allowNull` (a customer's personal override) null / '' clears the override so
+// the plan's value applies again.
+export const MAX_DEVICES_CEILING = 100;
+export function parseMaxDevices(value, { allowNull = false } = {}) {
+  if (value === null || value === '') {
+    return allowNull ? { value: null } : { error: 'max_devices must be a whole number' };
+  }
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_DEVICES_CEILING) {
+    return { error: `max_devices must be a whole number from 0 to ${MAX_DEVICES_CEILING}` };
+  }
+  return { value: n };
+}
+
 // Parse a price entered in euros into integer cents. Shared by plan create/patch.
 export function parsePriceCents(priceEur) {
   if (priceEur === '' || priceEur === null || priceEur === undefined) {
@@ -389,7 +413,10 @@ router.get('/api/state', (req, res) => {
     expiringThresholdDays: config.expiringThresholdDays,
     statusSlideEnabled: config.statusSlide.enabled,
     notify: { enabled: config.notify.enabled },
-    gateway: { enabled: config.gateway.enabled },
+    gateway: {
+      enabled: config.gateway.enabled,
+      device_idle_seconds: config.gateway.deviceIdleSeconds,
+    },
     settings: publicSettings(Settings.all()),
     providerNews: providerNewsView(),
     plans: Plans.all().map((p) => planJson(p, categoryNameMap())),
@@ -411,6 +438,8 @@ router.get('/api/state', (req, res) => {
     users: Users.all().map((u) => ({
       ...decorateUser(u),
       personal_overrides: overrideCounts.get(u.id) || 0,
+      // Devices watching a gated channel right now (in-memory, gateway only).
+      devices_active: gatewayDeviceCount(u.id),
     })),
     subscribers: Subscribers.all().map((s) => ({
       user_id: s.user_id, email: s.email, options: s.options, verified: !!s.verified,
@@ -444,9 +473,19 @@ router.patch('/api/users/:id', (req, res) => {
   const id = Number(req.params.id);
   const before = Users.get(id);
   if (!before) return res.status(404).json({ error: 'not found' });
-  const { username, plan_id, expires_at, active } = req.body || {};
+  const {
+    username, plan_id, expires_at, active, max_devices: maxDevicesRaw,
+  } = req.body || {};
   if (plan_id && !Plans.get(plan_id)) return res.status(400).json({ error: 'unknown plan_id' });
-  const u = Users.update(id, { username, plan_id, expires_at, active });
+  let maxDevices;
+  if (maxDevicesRaw !== undefined) {
+    const parsed = parseMaxDevices(maxDevicesRaw, { allowNull: true });
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    maxDevices = parsed.value;
+  }
+  const u = Users.update(id, {
+    username, plan_id, expires_at, active, max_devices: maxDevices,
+  });
   log.info('admin', 'user updated', { user_id: u.id, username: u.username });
   regen(u.id, 'admin user updated');
   // Renewal: the admin pushed the expiry to a later date — notify (mandatory).
@@ -490,6 +529,7 @@ router.post('/api/users/:id/token', (req, res) => {
   const id = Number(req.params.id);
   if (!Users.get(id)) return res.status(404).json({ error: 'not found' });
   const u = Users.regenerateToken(id);
+  forgetGatewayDevices(id);
   log.info('admin', 'user access token regenerated', { user_id: u.id, username: u.username });
   regen(u.id, 'admin access token regenerated');
   res.json(decorateUser(u));
@@ -515,6 +555,7 @@ router.delete('/api/users/:id', (req, res) => {
   if (!Users.get(id)) return res.status(404).json({ error: 'not found' });
   Users.remove(id);
   removeUserHls(id);
+  forgetGatewayDevices(id);
   // Drop the customer's personal channel pins alongside the account, so a later
   // user id reuse can't inherit a stranger's exceptions.
   Overrides.reset(id);
@@ -530,11 +571,30 @@ router.get('/api/users/:id/playlist', (req, res) => {
   return res.json({ text: renderUserPlaylist(user) });
 });
 
+// Who is watching right now: the devices the stream gateway has seen fetch a
+// gated manifest within the idle window, oldest first, each marked with whether
+// it is inside the customer's limit. In memory only — empty after a restart
+// until players refresh, and always empty with the gateway off.
+router.get('/api/users/:id/devices', (req, res) => {
+  const user = Users.get(Number(req.params.id));
+  if (!user) return res.status(404).json({ error: 'not found' });
+  return res.json({
+    limit: user.device_limit || 0,
+    plan_limit: user.plan_max_devices || 0,
+    override: Number.isInteger(user.max_devices) ? user.max_devices : null,
+    idle_seconds: config.gateway.deviceIdleSeconds,
+    gateway_enabled: config.gateway.enabled,
+    devices: gatewayDevices(user),
+  });
+});
+
 // Create plan. Rebuilds streams because expired accounts show every plan; the
 // category list also changes what its customers receive in their .m3u, but that
 // needs no rebuild (playlists are rendered per request).
 router.post('/api/plans', (req, res) => {
-  const { name, price_eur, billing_period = '', category_ids = [] } = req.body || {};
+  const {
+    name, price_eur, billing_period = '', category_ids = [], max_devices: maxDevicesRaw = 0,
+  } = req.body || {};
   const cleanName = String(name || '').trim();
   if (!cleanName) return res.status(400).json({ error: 'plan name required' });
   if (cleanName.length > 80) return res.status(400).json({ error: 'plan name must be 80 characters or less' });
@@ -544,6 +604,8 @@ router.post('/api/plans', (req, res) => {
   if (duplicatePlanName(Plans.all(), cleanName)) return res.status(409).json({ error: 'a plan with this name already exists' });
   const parsed = parsePlanCategories(category_ids, knownCategoryIds());
   if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const maxDevices = parseMaxDevices(maxDevicesRaw);
+  if (maxDevices.error) return res.status(400).json({ error: maxDevices.error });
 
   const plan = Plans.create({
     name: cleanName,
@@ -551,6 +613,7 @@ router.post('/api/plans', (req, res) => {
     currency: 'EUR',
     billing_period,
     category_ids: parsed.categoryIds,
+    max_devices: maxDevices.value,
   });
   log.info('admin', 'plan created', {
     plan_id: plan.id, name: plan.name, categories: parsed.categoryIds.length,
@@ -564,8 +627,16 @@ router.patch('/api/plans/:id', (req, res) => {
   const id = req.params.id;
   const plan = Plans.get(id);
   if (!plan) return res.status(404).json({ error: 'not found' });
-  const { price_eur, name, billing_period, category_ids: categoryIds } = req.body || {};
+  const {
+    price_eur, name, billing_period, category_ids: categoryIds, max_devices: maxDevicesRaw,
+  } = req.body || {};
   const updates = {};
+
+  if (maxDevicesRaw !== undefined) {
+    const parsed = parseMaxDevices(maxDevicesRaw);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    updates.max_devices = parsed.value;
+  }
 
   if (billing_period !== undefined) {
     if (!VALID_PERIODS.includes(billing_period)) return res.status(400).json({ error: 'bad billing_period' });

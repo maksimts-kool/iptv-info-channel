@@ -162,10 +162,59 @@ export function buildCardSvg(user, settings = {}, plans = []) {
 
     <text x="104" y="566" fill="#7f93b5" font-size="22" letter-spacing="2">ОСТАЛОСЬ ВРЕМЕНИ</text>
     <text x="104" y="612" fill="${meta.color}" font-size="40" font-weight="800">${xmlEscape(daysText)}</text>
+${deviceLimitCell(user.device_limit)}
   </g>
 
   <!-- Footer -->
   <text x="64" y="690" fill="#5c6e91" font-family="Inter, sans-serif" font-size="18">Обновлено ${xmlEscape(formatDate(localDateString()))} · Канал обновляется ежедневно</text>`);
+}
+
+// The plan's simultaneous-device cap, shown only when there is one — a customer
+// refused on a second screen should be able to find the rule on their own card.
+function deviceLimitCell(limit) {
+  if (!(Number.isInteger(limit) && limit > 0)) return '';
+  return `
+    <text x="464" y="566" fill="#7f93b5" font-size="22" letter-spacing="2">УСТРОЙСТВА</text>
+    <text x="464" y="612" fill="#ffffff" font-size="40" font-weight="800">до ${limit}<tspan dx="12" font-size="24" font-weight="600" fill="#9fb3d1">одновременно</tspan></text>`;
+}
+
+// "через минуту" / "через 90 сек." — how long a closed device keeps its slot.
+export function slotFreeText(idleSeconds) {
+  const s = Math.max(1, Math.round(Number(idleSeconds) || 60));
+  if (s === 60) return 'через минуту';
+  if (s % 60 === 0) return `через ${s / 60} мин.`;
+  return `через ${s} сек.`;
+}
+
+// ---- Device-limit notice ----
+// The one frame of the global "too many devices" loop the stream gateway sends
+// a viewer to when their subscription is already playing on as many devices as
+// it allows. Global (not per customer): it says what happened and what to do,
+// and the number itself is on the customer's own info card.
+export function buildDeviceLimitSvg(settings = {}, { idleSeconds = 60 } = {}) {
+  const brand = xmlEscape(settings.brand_name || 'Мой IPTV-сервис');
+  const screen = (x, y, w, h, fill) => `
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="${fill}" stroke="#ffffff" stroke-opacity="0.85" stroke-width="5"/>
+    <rect x="${x + w / 2 - 18}" y="${y + h + 4}" width="36" height="10" rx="3" fill="#ffffff" fill-opacity="0.85"/>`;
+  return svgDoc(`
+  <text x="80" y="92" fill="#ffffff" font-family="Inter, sans-serif" font-size="40" font-weight="700" letter-spacing="-0.5">${brand}</text>
+  <rect x="64" y="150" width="1152" height="500" rx="24" fill="#0f1830" stroke="#24345f" stroke-width="1.5" filter="url(#soft)"/>
+  <rect x="64" y="150" width="1152" height="10" rx="5" fill="#f97316"/>
+  <g>
+    ${screen(470, 214, 150, 100, '#1b2550')}
+    ${screen(560, 244, 150, 100, '#24345f')}
+    ${screen(650, 274, 150, 100, '#f97316')}
+    <line x1="700" y1="300" x2="750" y2="350" stroke="#ffffff" stroke-width="9" stroke-linecap="round"/>
+    <line x1="750" y1="300" x2="700" y2="350" stroke="#ffffff" stroke-width="9" stroke-linecap="round"/>
+  </g>
+  <text x="640" y="462" text-anchor="middle" fill="#ffffff" font-family="Inter, sans-serif" font-size="54" font-weight="800" letter-spacing="-1">Превышен лимит устройств</text>
+  <text x="640" y="518" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="26">Подписка уже открыта на всех устройствах, которые разрешает ваш тариф.</text>
+  <text x="640" y="560" text-anchor="middle" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="26">Остановите просмотр на другом устройстве и откройте канал снова ${xmlEscape(slotFreeText(idleSeconds))}.</text>
+  <text x="640" y="614" text-anchor="middle" fill="#7f93b5" font-family="Inter, sans-serif" font-size="20">Сколько устройств входит в тариф — на канале «Информация».</text>`);
+}
+
+export async function renderDeviceLimitPng(settings, outPath, opts) {
+  return svgToPng(buildDeviceLimitSvg(settings, opts), outPath);
 }
 
 // A compact plan chip used in the renewal strip: name + price, current plan

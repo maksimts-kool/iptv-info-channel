@@ -117,19 +117,27 @@ Switch the **stream gateway** on (admin → Плейлист → Доступ, o
 `STREAM_GATEWAY_ENABLED=true`) and every **HLS** channel is published as
 
 ```
-http://<host>:9222/c/<token>/<channel id>.m3u8
+http://<host>:9222/c/<token>/<device tag>/<channel id>.m3u8
 ```
 
 On every request the server re-resolves that customer's entitlement — the plan,
-their personal exceptions, the global switches and the expiry date — and then
-fetches the provider's manifest and returns it with each URI inside rewritten to
-an absolute provider URL. **No video is proxied**: the player takes the segments
+their personal exceptions, the global switches, the expiry date and the device
+limit — and then fetches the provider's manifest and returns it with each URI
+inside rewritten. **No video is proxied**: the player takes the segments
 straight from the provider, so only a few kilobytes per refresh pass through
-here. Since a player re-fetches a live media playlist every few seconds, a
-revoked channel stops **mid-view**, not just at the next channel switch.
+here. When the provider answers with a **master** playlist, its variant
+playlists are handed out as signed links back to the gateway too — a player
+fetches the master only once and then just refreshes the variant, so this is
+what lets a revoked channel stop **mid-view**, not just at the next channel
+switch.
 
-- A channel the customer may not watch redirects to **their own info channel**
-  (plan, expiry, what's on offer) rather than failing with an error.
+- A customer who opens a channel they may not watch is redirected to **their
+  own info channel** (plan, expiry, what's on offer) rather than an error.
+- A customer who loses a channel **while watching it** is not bounced: within a
+  few seconds the same stream continues into their info card (the server splices
+  its own loop onto the provider's last window). They stay on the card until
+  they switch channels — giving the channel back does not flip the picture
+  mid-view.
 - Turning it on takes effect for a customer the first time their player
   re-downloads the playlist; from then on nothing needs refreshing.
 - Turning it off puts the provider's URLs back into **new** playlists — the
@@ -138,6 +146,24 @@ revoked channel stops **mid-view**, not just at the next channel switch.
   what plays, not what is listed.
 - Catch-up/archive URLs (`catchup-source`) are passed through from the provider
   and are not routed through the gateway.
+
+#### Device limit (simultaneous viewers)
+
+Each plan has **«Устройств одновременно»** (0 = unlimited), and a customer can
+get a personal value in their card. The gateway counts a device as watching
+while its player keeps refreshing a gated channel; the slot frees
+`STREAM_DEVICE_IDLE_SECONDS` (60 s) after the last refresh. The devices that
+started first keep playing; the next one tunes in to a **«Превышен лимит
+устройств»** screen instead of the channel (and a device over the limit after
+the admin lowers it is cut over to that screen mid-view). The customer's info
+card shows their limit; the client card in the admin lists who is watching now.
+
+A device is the client's IP plus a tag for the player that downloaded the
+playlist, so one app probing with one HTTP stack and playing with another is
+still one device. Consequences: two identical players behind one home router
+count as one, and a phone that changes network holds two slots until the old
+one idles out. The limit needs the gateway on, and raw MPEG-TS channels (not
+gated) are not counted.
 
 **Only HLS (`.m3u8`) channels are gated**, and the admin card shows how many of
 your channels that is. A raw MPEG-TS stream (`…/live/user/pass/123.ts`, or no
@@ -326,6 +352,7 @@ it to `.env` and edit. The most-used settings:
 | `STREAM_GATEWAY_ENABLED` | `false` | Publish HLS channels as `/c/<token>/<id>.m3u8` so access is re-checked on every request (the manifest is served back rewritten). The admin toggle overrides this. |
 | `STREAM_GATEWAY_TIMEOUT_MS` / `STREAM_GATEWAY_MAX_BYTES` | `10000` / `4194304` | Bounds on fetching a provider manifest. |
 | `STREAM_GATEWAY_LOG` | `false` | One log line per gate request, with the player's User-Agent. For diagnosing "this device won't play". |
+| `STREAM_DEVICE_IDLE_SECONDS` | `60` | Device limit: a device frees its slot this long after its player's last manifest fetch. |
 | `ACCOUNT_SLIDE_SECONDS` | `120` | Seconds the account (info) card is on screen. The loop total is the sum of every enabled slide. |
 | `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
 | `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
@@ -423,7 +450,7 @@ out by `/admin/api/state`.
 | `POST` | `/admin/login` | `{password}` → sets session cookie |
 | `GET` | `/admin/api/state` | plans, customers (decorated), settings, catalog counts |
 | `POST` | `/admin/api/users` | create customer |
-| `PATCH` | `/admin/api/users/:id` | update username / plan / `expires_at` / active |
+| `PATCH` | `/admin/api/users/:id` | update username / plan / `expires_at` / active / `max_devices` (`null` = follow the plan) |
 | `POST` | `/admin/api/users/:id/token` | regenerate access token |
 | `POST` | `/admin/api/users/:id/regenerate` | rebuild this customer's stream now |
 | `GET` | `/admin/api/users/:id/playlist` | the exact `.m3u` this customer receives |
@@ -443,8 +470,9 @@ out by `/admin/api/state`.
 | `GET` | `/admin/api/users/:id/channels` | this customer's effective access view |
 | `PATCH` | `/admin/api/users/:id/channels` | pin overrides (`true` / `false` / `null` = inherit) |
 | `POST` | `/admin/api/users/:id/channels/reset` | drop all their overrides |
-| `POST` | `/admin/api/plans` | Create with `{name, price_eur, category_ids[]}` |
-| `PATCH` | `/admin/api/plans/:id` | Update `{name, price_eur, category_ids[]}` |
+| `POST` | `/admin/api/plans` | Create with `{name, price_eur, category_ids[], max_devices}` |
+| `PATCH` | `/admin/api/plans/:id` | Update `{name, price_eur, category_ids[], max_devices}` (0 = no device limit) |
+| `GET` | `/admin/api/users/:id/devices` | devices watching right now (stream gateway) |
 | `DELETE` | `/admin/api/plans/:id` | Delete an unused plan |
 | `PATCH` | `/admin/api/settings` | `{brand_name, tagline}` |
 | `PATCH` | `/admin/api/gateway` | `{enabled}` — stream gateway on/off (no regeneration) |

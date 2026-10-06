@@ -44,6 +44,13 @@ const HLS_MANIFEST = [
   'seg_002.ts',
 ].join('\n');
 
+const MASTER_MANIFEST = [
+  '#EXTM3U',
+  '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="ru",URI="audio/ru.m3u8"',
+  '#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO="aud"',
+  'v1/index.m3u8?token=abc',
+].join('\n');
+
 let app;
 let server;
 let base;
@@ -88,7 +95,15 @@ before(async () => {
   // It also serves one HLS media playlist with RELATIVE segment names, which is
   // what the stream gateway has to rewrite before a player can use it.
   upstreamServer = http.createServer((r, res) => {
-    if (r.url.startsWith('/live/')) {
+    // A master playlist one level up from its variant + audio rendition, like
+    // most real providers: the player fetches it once and then only refreshes
+    // the variant — which is why the gate has to own the variant URLs too.
+    if (r.url === '/master/index.m3u8') {
+      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+      res.end(MASTER_MANIFEST);
+      return;
+    }
+    if (r.url.startsWith('/master/') || r.url.startsWith('/live/')) {
       res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
       res.end(HLS_MANIFEST);
       return;
@@ -397,6 +412,18 @@ async function get(url) {
   return { status: res.status, type: res.headers.get('content-type') || '', text: await res.text() };
 }
 
+// A stand-in for the customer's encoded info loop (ffmpeg is absent here), so
+// the gateway has something to cut a refused viewer over to.
+function writeInfoLoop(userId) {
+  const dir = path.join(DATA_DIR, 'hls', String(userId));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'index.m3u8'), [
+    '#EXTM3U', '#EXT-X-VERSION:6', '#EXT-X-TARGETDURATION:6', '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXTINF:6.000000,', 'seg_000.ts', '#EXTINF:6.000000,', 'seg_001.ts', '#EXT-X-ENDLIST', '',
+  ].join('\n'));
+  for (const f of ['seg_000.ts', 'seg_001.ts']) fs.writeFileSync(path.join(dir, f), 'ts');
+}
+
 test('the stream gateway serves the provider manifest, rewritten, per request', async () => {
   const upstreamOrigin = new URL(upstreamUrl).origin;
   const hls = await req('POST', '/admin/api/catalog/channels', {
@@ -409,16 +436,20 @@ test('the stream gateway serves the provider manifest, rewritten, per request', 
   assert.equal(enabled.status, 200);
   assert.equal(enabled.body.enabled, true);
 
-  // The published link ends in .m3u8 on purpose: ExoPlayer picks its media
-  // source from the URL extension, so an extensionless one plays a black screen.
-  const gate = `/c/${ids.token}/${ids.hls}.m3u8`;
   const infoStream = `https://iptv.example/hls/${ids.token}/index.m3u8`;
 
   // The playlist hands the player our gate link for the HLS channel — and
   // leaves the raw-TS ones pointing straight at the provider, because gating
   // those would need a cross-protocol redirect no Android player will follow.
+  // The link carries the downloading client's device tag, and ends in .m3u8 on
+  // purpose: ExoPlayer picks its media source from the URL extension, so an
+  // extensionless one plays a black screen.
   const gated = await req('GET', `/u/${ids.token}/playlist.m3u`, null, { raw: true });
-  assert.ok(gated.text.includes(`https://iptv.example${gate}`));
+  const published = gated.text.match(
+    new RegExp(`^https://iptv\\.example(/c/${ids.token}/[A-Za-z0-9_-]+/${ids.hls}\\.m3u8)$`, 'm'),
+  );
+  assert.ok(published, 'the HLS channel is published as a tagged gate link');
+  const gate = published[1];
   assert.match(gated.text, /^http:\/\/provider\/2\.ts$/m);
   assert.ok(!gated.text.includes(`${upstreamOrigin}/live/1.m3u8`), 'the provider URL is not exposed');
 
@@ -431,22 +462,44 @@ test('the stream gateway serves the provider manifest, rewritten, per request', 
   assert.ok(manifest.text.includes(`URI="${upstreamOrigin}/live/key.bin"`), 'the key URI is absolutised too');
   assert.doesNotMatch(manifest.text, /^seg_001\.ts$/m, 'no relative URI is left behind');
 
-  // Take the channel away: the player's copy of the playlist is now stale, but
-  // the very next manifest fetch lands on the customer's own info channel.
+  // Take the channel away while that player is watching. Its copy of the
+  // playlist is stale, but it is not bounced with a redirect (a different live
+  // stream's sequence numbers would just stall it): the very next refresh
+  // CONTINUES the same stream — the provider's last window, a discontinuity,
+  // then the customer's own info card, with the encryption switched off at the
+  // cut.
+  writeInfoLoop(ids.user);
   await req('PATCH', `/admin/api/users/${ids.user}/channels`, { channels: { [ids.hls]: false } });
-  assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
+  const cut = await get(gate);
+  assert.equal(cut.status, 200);
+  assert.ok(cut.text.includes(`${upstreamOrigin}/live/seg_002.ts`), "the provider's last window is kept");
+  assert.match(
+    cut.text,
+    new RegExp(`#EXT-X-DISCONTINUITY\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6\\.000000,\nhttps://iptv\\.example/hls/${ids.token}/seg_000\\.ts\\?s=\\d+`),
+  );
+  // Somebody tuning in now is simply sent to the card.
+  assert.deepEqual(await hop(`/c/${ids.token}/tune1/${ids.hls}.m3u8`), { status: 302, location: infoStream });
+
+  // Giving it back does not flip the watching player back mid-stream (it stays
+  // on the card until it tunes in again); a fresh tune-in plays the channel.
   await req('POST', `/admin/api/users/${ids.user}/channels/reset`);
-  assert.equal((await get(gate)).status, 200);
+  assert.match((await get(gate)).text, /\/hls\//);
+  const again = await get(`/c/${ids.token}/tune2/${ids.hls}.m3u8`);
+  assert.equal(again.status, 200);
+  assert.ok(again.text.includes(`${upstreamOrigin}/live/seg_001.ts`));
 
   // An expired subscription closes every channel the same way.
   const future = (await req('GET', '/admin/api/state')).body.users
     .find((u) => u.id === ids.user).expires_at;
   await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2000-01-01' });
-  assert.deepEqual(await hop(gate), { status: 302, location: infoStream });
+  assert.deepEqual(await hop(`/c/${ids.token}/tune3/${ids.hls}.m3u8`), { status: 302, location: infoStream });
+  assert.match((await get(`/c/${ids.token}/tune2/${ids.hls}.m3u8`)).text, /\/hls\//, 'mid-view: cut over');
   await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: future });
 
-  // Playlists issued before the extension existed must keep working.
+  // Playlists issued before the extension, and before the device tag, existed
+  // must keep working.
   assert.equal((await get(`/c/${ids.token}/${ids.hls}`)).status, 200);
+  assert.equal((await get(`/c/${ids.token}/${ids.hls}.m3u8`)).status, 200);
 
   assert.equal((await hop(`/c/unknown-token/${ids.hls}.m3u8`)).status, 404);
   // A channel id that no longer exists is a lapsed link, not a crash.
@@ -467,6 +520,99 @@ test('a dead provider is reported as a bad gateway, not as a hung request', asyn
   });
   assert.equal((await get(`/c/${ids.token}/${dead.body.id}`)).status, 502);
   await req('DELETE', `/admin/api/catalog/channels/${dead.body.id}`);
+  await req('PATCH', '/admin/api/gateway', { enabled: false });
+});
+
+test('a master playlist hands out its variants through the gate, so a revocation lands mid-view', async () => {
+  await req('PATCH', '/admin/api/gateway', { enabled: true });
+  const origin = new URL(upstreamUrl).origin;
+  const created = await req('POST', '/admin/api/catalog/channels', {
+    name: 'Master HLS', url: `${origin}/master/index.m3u8`, category_id: ids.sport,
+  });
+  const id = created.body.id;
+  writeInfoLoop(ids.user);
+
+  const master = await get(`/c/${ids.token}/tvA/${id}.m3u8`);
+  assert.equal(master.status, 200);
+  assert.ok(!master.text.includes(`${origin}/master/v1`), 'no direct variant URL is handed out');
+  const variants = master.text.match(/https:\/\/iptv\.example\/c\/[^\s"]+\.m3u8/g);
+  assert.equal(variants.length, 2, 'the variant and the audio rendition are both gated');
+  const variant = variants.find((u) => !master.text.includes(`URI="${u}"`)).replace('https://iptv.example', '');
+
+  const playing = await get(variant);
+  assert.equal(playing.status, 200);
+  assert.ok(playing.text.includes(`${origin}/master/v1/seg_001.ts`), 'segments still come from the provider');
+
+  // The signature binds the URL: the gate is not a fetch-anything proxy.
+  const parts = variant.split('/');
+  parts[5] = 'A'.repeat(parts[5].length);
+  assert.equal((await get(parts.join('/'))).status, 404);
+  const forged = Buffer.from('http://127.0.0.1:1/x.m3u8').toString('base64url');
+  assert.equal((await get(`${variant.split('/').slice(0, 6).join('/')}/${forged}.m3u8`)).status, 404);
+
+  // Revoked while watching: the variant refresh — which used to go straight to
+  // the provider — is where the viewer now sees their info card.
+  await req('PATCH', `/admin/api/users/${ids.user}/channels`, { channels: { [id]: false } });
+  const cut = await get(variant);
+  assert.equal(cut.status, 200);
+  assert.match(cut.text, new RegExp(`/hls/${ids.token}/seg_000\\.ts`));
+
+  // Re-opening the channel goes through the master again and starts clean.
+  await req('POST', `/admin/api/users/${ids.user}/channels/reset`);
+  await get(`/c/${ids.token}/tvA/${id}.m3u8`);
+  assert.ok((await get(variant)).text.includes(`${origin}/master/v1/seg_001.ts`));
+  await req('PATCH', '/admin/api/gateway', { enabled: false });
+});
+
+test('the device limit admits the first devices and sends the next to the notice', async () => {
+  await req('PATCH', '/admin/api/gateway', { enabled: true });
+  const plan = await req('POST', '/admin/api/plans', {
+    name: 'Один экран', price_eur: 3, category_ids: [ids.sport], max_devices: 1,
+  });
+  assert.equal(plan.status, 201);
+  assert.equal(plan.body.max_devices, 1);
+  const user = await req('POST', '/admin/api/users', {
+    username: 'one-screen', plan_id: plan.body.id,
+    expires_at: new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10),
+  });
+  const { token } = user.body;
+  writeInfoLoop(user.body.id);
+  const notice = 'https://iptv.example/notice/devices/index.m3u8';
+  const tv = `/c/${token}/tv/${ids.hls}.m3u8`;
+  const phone = `/c/${token}/phone/${ids.hls}.m3u8`;
+
+  assert.equal((await get(tv)).status, 200);
+  // The TV keeps its slot on every refresh; the phone tuning in is turned away.
+  assert.equal((await get(tv)).status, 200);
+  assert.deepEqual(await hop(phone), { status: 302, location: notice });
+
+  const state = (await req('GET', '/admin/api/state')).body.users.find((u) => u.id === user.body.id);
+  assert.equal(state.device_limit, 1);
+  assert.equal(state.devices_active, 1);
+  const list = await req('GET', `/admin/api/users/${user.body.id}/devices`);
+  assert.equal(list.body.limit, 1);
+  assert.equal(list.body.devices.length, 1);
+  assert.equal(list.body.devices[0].allowed, true);
+
+  // A personal override beats the plan.
+  assert.equal((await req('PATCH', `/admin/api/users/${user.body.id}`, { max_devices: 2 })).body.device_limit, 2);
+  assert.equal((await get(phone)).status, 200);
+
+  // Back to the plan's limit while both watch: the later device is cut over to
+  // the notice mid-view (not bounced), the first one keeps playing.
+  assert.equal((await req('PATCH', `/admin/api/users/${user.body.id}`, { max_devices: null })).body.device_limit, 1);
+  const cut = await get(phone);
+  assert.equal(cut.status, 200);
+  assert.ok(cut.text.includes(`${new URL(upstreamUrl).origin}/live/seg_002.ts`));
+  assert.equal((await get(tv)).status, 200);
+  assert.doesNotMatch((await get(tv)).text, /#EXT-X-DISCONTINUITY/);
+
+  // Bad values are refused, not stored.
+  assert.equal((await req('PATCH', `/admin/api/plans/${plan.body.id}`, { max_devices: -1 })).status, 400);
+  assert.equal((await req('PATCH', `/admin/api/users/${user.body.id}`, { max_devices: 'x' })).status, 400);
+
+  await req('DELETE', `/admin/api/users/${user.body.id}`);
+  await req('DELETE', `/admin/api/plans/${plan.body.id}`);
   await req('PATCH', '/admin/api/gateway', { enabled: false });
 });
 

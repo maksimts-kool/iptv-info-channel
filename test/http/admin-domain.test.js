@@ -185,3 +185,31 @@ test('publicSettings never ships the provider session cookie', async () => {
     { brand_name: 'X' },
   );
 });
+
+test('parseMaxDevices takes 0..100 whole devices; only a personal override may be cleared', async () => {
+  const { parseMaxDevices } = await import('../../src/http/admin.js');
+  assert.deepEqual(parseMaxDevices(0), { value: 0 }, '0 = no limit');
+  assert.deepEqual(parseMaxDevices('3'), { value: 3 });
+  for (const bad of [-1, 1.5, 101, 'x', null, '']) assert.ok(parseMaxDevices(bad).error, String(bad));
+  assert.deepEqual(parseMaxDevices(null, { allowNull: true }), { value: null });
+  assert.deepEqual(parseMaxDevices('', { allowNull: true }), { value: null });
+});
+
+test('the device limit: a personal override beats the plan, 0 means unlimited', async () => {
+  const { effectiveDeviceLimit } = await import('../../src/data/store.js');
+  assert.equal(effectiveDeviceLimit(null, 2), 2);
+  assert.equal(effectiveDeviceLimit(undefined, 2), 2);
+  assert.equal(effectiveDeviceLimit(5, 2), 5);
+  assert.equal(effectiveDeviceLimit(0, 2), 0, 'an override of 0 lifts the plan limit');
+  assert.equal(effectiveDeviceLimit(null, undefined), 0);
+
+  const json = decorateUser({
+    id: 1, username: 'ivan', token: 't', plan_id: 'pro', price_cents: 0, currency: 'EUR',
+    expires_at: '2099-01-01', active: 1, max_devices: null, plan_max_devices: 2, device_limit: 2,
+  });
+  assert.equal(json.max_devices, null);
+  assert.equal(json.plan_max_devices, 2);
+  assert.equal(json.device_limit, 2);
+  assert.equal(planJson({ id: 'p', name: 'P', price_cents: 0, max_devices: 3 }).max_devices, 3);
+  assert.equal(planJson({ id: 'p', name: 'P', price_cents: 0 }).max_devices, 0);
+});

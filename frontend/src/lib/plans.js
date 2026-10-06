@@ -3,6 +3,9 @@
 
 export const periodSuffix = (p) => (p === 'month' ? '/мес.' : p === 'year' ? '/год' : '');
 
+// Simultaneous-device cap as a short label. 0 (or missing) = no limit.
+export const devicesLabel = (n) => (n > 0 ? `до ${n} устр. одновременно` : 'устройств без ограничений');
+
 export const planLabel = (plan) => `${plan.name} (${plan.price}${periodSuffix(plan.billing_period)})`;
 
 // The expiry date one plan period from today, as YYYY-MM-DD — what a new

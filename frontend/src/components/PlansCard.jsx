@@ -3,14 +3,17 @@ import {
   Alert, Button, Card, Checkbox, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row,
   Select, Space, Tag, Typography,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
-import { periodSuffix } from '../lib/plans.js';
+import {
+  DeleteOutlined, DesktopOutlined, EditOutlined, PlusOutlined,
+} from '@ant-design/icons';
+import { periodSuffix, devicesLabel } from '../lib/plans.js';
 
 // A plan IS the channel package: the categories selected here are exactly what
 // its customers receive, and the same list is printed on the info channel as
 // "what you get". A plan with nothing selected sells nothing — its customers see
 // only Информация — so that case is called out rather than left to be guessed.
 export default function PlansCard({ state, api, withRegen, categories = [] }) {
+  const gatewayOn = !!state?.gateway?.enabled;
   const plans = state?.plans || [];
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -27,6 +30,7 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
       price_eur: plan ? plan.price_cents / 100 : null,
       billing_period: plan?.billing_period || '',
       category_ids: plan?.category_ids || [],
+      max_devices: plan?.max_devices ?? 0,
     });
     setOpen(true);
   };
@@ -38,6 +42,7 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
       price_eur: Number(v.price_eur),
       billing_period: v.billing_period || '',
       category_ids: v.category_ids || [],
+      max_devices: Number(v.max_devices) || 0,
     };
     await withRegen(
       'Сохранение тарифа',
@@ -74,6 +79,15 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
           style={{ marginBottom: 16 }}
           message="Категорий ещё нет"
           description="Сначала загрузите плейлист провайдера в разделе «Плейлист» — тогда категории можно будет включить в тариф."
+        />
+      ) : null}
+      {!gatewayOn && plans.some((p) => p.max_devices > 0) ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Лимит устройств не действует: шлюз потоков выключен"
+          description="Одновременные просмотры сервер видит только через шлюз. Включите его в разделе «Плейлист» → «Доступ»."
         />
       ) : null}
       {sellable.length && emptyPlans.length ? (
@@ -117,9 +131,15 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
                     </Space>
                   )}
                 >
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {`Категорий в тарифе: ${ids.length}`}
-                  </Typography.Text>
+                  <Space size={12} wrap>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {`Категорий в тарифе: ${ids.length}`}
+                    </Typography.Text>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      <DesktopOutlined style={{ marginRight: 4 }} />
+                      {devicesLabel(p.max_devices)}
+                    </Typography.Text>
+                  </Space>
                   <div style={{ marginTop: 8 }}>
                     {ids.length ? (
                       <Space size={[4, 4]} wrap>
@@ -167,6 +187,14 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
                 { value: 'year', label: 'Ежегодно (/год)' },
               ]}
             />
+          </Form.Item>
+
+          <Form.Item
+            name="max_devices"
+            label="Устройств одновременно"
+            extra="Сколько устройств могут смотреть каналы этого тарифа в одно и то же время. 0 — без ограничений. Для отдельного клиента можно задать своё значение в его карточке. Работает только при включённом шлюзе потоков."
+          >
+            <InputNumber min={0} max={100} precision={0} style={{ width: 160 }} addonAfter="устр." />
           </Form.Item>
 
           <Form.Item

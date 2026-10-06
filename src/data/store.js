@@ -84,6 +84,8 @@ function load() {
     if (!Array.isArray(plan.category_ids)) plan.category_ids = [];
     if (!Number.isFinite(plan.sort)) plan.sort = index + 1;
     if (plan.billing_period === undefined) plan.billing_period = '';
+    // Simultaneous-device cap; 0 = no limit (what every plan meant before it existed).
+    if (!Number.isInteger(plan.max_devices) || plan.max_devices < 0) plan.max_devices = 0;
   }
   // Backfill the notification token (separate from the stream token so the
   // on-screen sign-up QR never exposes stream access).
@@ -125,7 +127,18 @@ function decorate(u, planById) {
     // The categories this customer's plan grants — the base of their channel
     // list, before their personal overrides and the expiry gate.
     plan_categories: plan.category_ids ?? [],
+    // How many devices may watch at once. The plan sets it; the customer's own
+    // `max_devices` (null = follow the plan) overrides it. 0 = no limit.
+    plan_max_devices: plan.max_devices ?? 0,
+    device_limit: effectiveDeviceLimit(u.max_devices, plan.max_devices),
   };
+}
+
+// The cap that actually applies: a personal override wins, else the plan's.
+// Anything that is not a non-negative integer means "no override" / "no limit".
+export function effectiveDeviceLimit(personal, planLimit) {
+  if (Number.isInteger(personal) && personal >= 0) return personal;
+  return Number.isInteger(planLimit) && planLimit >= 0 ? planLimit : 0;
 }
 
 // De-duplicated list of catalog category ids. Ids of categories that were later
@@ -157,7 +170,9 @@ function makePlanId(name) {
 export const Plans = {
   all: () => [...data.plans].sort((a, b) => (a.sort - b.sort) || a.name.localeCompare(b.name)),
   get: (id) => data.plans.find((p) => p.id === id) || null,
-  create: ({ name, price_cents, currency = 'EUR', billing_period = '', category_ids = [] }) => {
+  create: ({
+    name, price_cents, currency = 'EUR', billing_period = '', category_ids = [], max_devices = 0,
+  }) => {
     const p = {
       id: makePlanId(name),
       name,
@@ -165,6 +180,7 @@ export const Plans = {
       currency,
       billing_period,
       category_ids: cleanCategoryIds(category_ids),
+      max_devices,
       sort: data.plans.reduce((max, plan) => Math.max(max, Number(plan.sort) || 0), 0) + 1,
     };
     data.plans.push(p);
@@ -174,7 +190,7 @@ export const Plans = {
   update: (id, fields) => {
     const p = data.plans.find((x) => x.id === id);
     if (!p) return null;
-    for (const key of ['name', 'price_cents', 'currency', 'billing_period', 'sort']) {
+    for (const key of ['name', 'price_cents', 'currency', 'billing_period', 'sort', 'max_devices']) {
       if (fields[key] !== undefined) p[key] = fields[key];
     }
     if (fields.category_ids !== undefined) p.category_ids = cleanCategoryIds(fields.category_ids);
@@ -231,7 +247,7 @@ export const Users = {
   update: (id, fields) => {
     const u = data.users.find((x) => x.id === Number(id));
     if (!u) return null;
-    for (const k of ['username', 'plan_id', 'expires_at']) {
+    for (const k of ['username', 'plan_id', 'expires_at', 'max_devices']) {
       if (fields[k] !== undefined) u[k] = fields[k];
     }
     if (fields.active !== undefined) u.active = fields.active ? 1 : 0;

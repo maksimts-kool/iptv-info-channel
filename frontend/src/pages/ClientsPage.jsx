@@ -152,6 +152,26 @@ export default function ClientsPage(shared) {
       },
     },
     {
+      // Devices watching right now vs. the limit that applies. Live numbers
+      // from the stream gateway; refreshed with the rest of /api/state.
+      title: 'Устройства',
+      key: 'devices',
+      width: 120,
+      render: (_, u) => {
+        const active = u.devices_active || 0;
+        const limit = u.device_limit || 0;
+        const text = limit > 0 ? `${active} / ${limit}` : `${active} / ∞`;
+        return (
+          <Space direction="vertical" size={0}>
+            <Typography.Text type={limit > 0 && active >= limit ? 'warning' : undefined}>{text}</Typography.Text>
+            {u.max_devices !== null && u.max_devices !== undefined
+              ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>личный лимит</Typography.Text>
+              : null}
+          </Space>
+        );
+      },
+    },
+    {
       title: 'Почта',
       key: 'sub',
       render: (_, u) => {

@@ -139,3 +139,11 @@ test('a non-HLS channel is never gated, because that would need a redirect', () 
   assert.match(playlist, /^https:\/\/iptv\.example\/c\/abc123\/ch1\.m3u8$/m);
   assert.match(playlist, /^http:\/\/provider\/live\/2\.ts$/m);
 });
+
+test('the playlist download name survives a Cyrillic customer name', async () => {
+  const { playlistDisposition } = await import('../../src/http/stream.js');
+  const value = playlistDisposition('Тестер "1"');
+  assert.match(value, /^[\x20-\x7e]+$/, 'a header value Node accepts');
+  assert.match(value, /filename="______ _1_\.m3u"/);
+  assert.match(value, /filename\*=UTF-8''%D0%A2%D0%B5%D1%81%D1%82%D0%B5%D1%80%20%221%22\.m3u$/);
+});

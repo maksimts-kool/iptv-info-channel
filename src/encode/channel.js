@@ -8,8 +8,8 @@ import cron from 'node-cron';
 import { config } from '../config.js';
 import { Users, Plans, Settings, Incidents } from '../data/store.js';
 import {
-  renderBodyPng, renderSlidesPng, renderStatusPng,
-  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg,
+  renderBodyPng, renderSlidesPng, renderStatusPng, renderDeviceLimitPng,
+  buildBrandSlide1Svg, buildBodySvg, buildStatusSlideSvg, buildDeviceLimitSvg,
 } from '../render/overlay.js';
 import { statusSummary, withProviderNotices } from '../render/status.js';
 import { currentProviderNotices } from '../news/providernews.js';
@@ -615,6 +615,13 @@ export async function generateAll({ reason = 'bulk regeneration' } = {}) {
     if (users.length > 1) {
       log.info('channel', 'rebuilding streams', { reason, users: users.length });
     }
+    // The device-limit notice carries the brand too. Skipped by its signature
+    // when nothing it shows changed, so this is free on most rebuilds.
+    try {
+      await ensureDeviceNotice();
+    } catch (e) {
+      log.error('channel', 'device-limit notice generation failed', { error: e.message });
+    }
     const results = [];
     for (const u of users) {
       try {
@@ -665,6 +672,68 @@ export async function ensureUserStream(user) {
     await generateForUser(user, { reason: 'lazy stream request' });
   }
   return playlistPath(user.id);
+}
+
+// ---------------------------------------------------------------------------
+// Device-limit notice: one global loop, not per customer.
+// ---------------------------------------------------------------------------
+// The stream gateway sends a device that is over its plan's simultaneous-device
+// cap here (or cuts a watching player over to it, see http/stream.js). Same
+// still-card encode as an account card without an intro, same live-loop
+// serving, same signature skip — it re-encodes only when the branding, the
+// encode settings or the idle window it quotes change.
+export function noticeHlsDir() {
+  return path.join(config.hlsDir, '_devices');
+}
+
+let noticeJob = null;
+export function ensureDeviceNotice({ force = false } = {}) {
+  if (noticeJob) return noticeJob;
+  noticeJob = (async () => {
+    const settings = Settings.all();
+    const music = await ensureMusic();
+    const opts = { idleSeconds: config.gateway.deviceIdleSeconds };
+    const c = config.channel;
+    let musicMtime = 0;
+    try { musicMtime = fs.statSync(music).mtimeMs; } catch { /* fall back to 0 */ }
+    const signature = crypto.createHash('sha1').update(JSON.stringify({
+      v: 1,
+      svg: buildDeviceLimitSvg(settings, opts),
+      enc: {
+        W: c.width, H: c.height, stillFps: c.stillFps, preset: c.preset,
+        accountSlideSeconds: c.accountSlideSeconds, hlsTime: c.hlsTime, liveLoop: c.liveLoop,
+      },
+      musicMtime,
+    })).digest('hex');
+
+    const finalDir = noticeHlsDir();
+    if (!force && fs.existsSync(path.join(finalDir, 'index.m3u8')) && readSig(finalDir) === signature) {
+      return finalDir;
+    }
+    const previousPosition = c.liveLoop ? currentLoopPosition(finalDir) : null;
+    fs.mkdirSync(config.hlsDir, { recursive: true });
+    const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, '.build-devices-'));
+    try {
+      const png = path.join(tmpDir, 'notice.png');
+      await renderDeviceLimitPng(settings, png, opts);
+      await run(FFMPEG, stillFfmpegArgs(png, [], music, tmpDir), 'HLS encode for the device-limit notice');
+      if (c.liveLoop) {
+        writeLoopState(tmpDir, {
+          baseSeq: previousPosition ? previousPosition.mediaSequence + LIVE_WINDOW_SEGMENTS : 0,
+          baseDiscontinuity: previousPosition ? previousPosition.discontinuitySequence + 1 : 0,
+        });
+      }
+      fs.writeFileSync(path.join(tmpDir, SIG_FILE), signature);
+      fs.rmSync(finalDir, { recursive: true, force: true });
+      fs.renameSync(tmpDir, finalDir);
+      log.info('channel', 'device-limit notice ready');
+      return finalDir;
+    } catch (err) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      throw err;
+    }
+  })().finally(() => { noticeJob = null; });
+  return noticeJob;
 }
 
 // Regenerate everything daily at 00:05 so the day-counter and expiry status stay current.

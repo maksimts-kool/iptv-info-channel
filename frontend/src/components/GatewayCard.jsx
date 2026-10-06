@@ -2,8 +2,10 @@ import { useState } from 'react';
 import {
   Alert, Badge, Card, Space, Statistic, Switch, Typography,
 } from 'antd';
+import { DesktopOutlined } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
+import { devicesLabel } from '../lib/plans.js';
 
 // The stream gateway switch. No re-encode is involved (playlists are rendered
 // per request), so this saves directly instead of going through the regen
@@ -16,6 +18,12 @@ export default function GatewayCard({
   const gateable = state?.catalog?.gateable ?? 0;
   const direct = Math.max(0, total - gateable);
   const [saving, setSaving] = useState(false);
+  const plans = state?.plans || [];
+  const users = state?.users || [];
+  const idle = state?.gateway?.device_idle_seconds ?? 60;
+  const watching = users.reduce((sum, u) => sum + (u.devices_active || 0), 0);
+  const limitedPlans = plans.filter((p) => p.max_devices > 0);
+  const personal = users.filter((u) => u.max_devices !== null && u.max_devices !== undefined);
 
   const toggle = async (checked) => {
     setSaving(true);
@@ -50,11 +58,13 @@ export default function GatewayCard({
             <div>Проверять доступ при каждом запросе плеера</div>
             <Typography.Text type="secondary">
               Ссылки в плейлисте ведут не к провайдеру, а на этот сервер, и он
-              каждый раз заново проверяет тариф, личные исключения и срок
-              подписки. Канал, который вы забрали у клиента, перестаёт работать
-              сразу — обновлять плейлист в плеере не нужно. Видео через сервер
-              не идёт: он отдаёт только манифест, сегменты клиент качает у
-              провайдера напрямую.
+              заново проверяет тариф, личные исключения, срок подписки и лимит
+              устройств при каждом обновлении потока — плеер делает это каждые
+              несколько секунд. Если забрать канал у клиента, пока он смотрит,
+              через несколько секунд вместо канала у него начнётся инфоканал
+              с тарифом и сроком, без ошибки и без обновления плейлиста. Видео
+              через сервер не идёт: он отдаёт только манифест, сегменты клиент
+              качает у провайдера напрямую.
             </Typography.Text>
           </div>
         </Space>
@@ -86,6 +96,45 @@ export default function GatewayCard({
           />
         ) : null}
 
+        <Card
+          size="small"
+          type="inner"
+          title={<Space><DesktopOutlined />Лимит устройств</Space>}
+          extra={<Typography.Text type="secondary">{`сейчас смотрят: ${count(watching)}`}</Typography.Text>}
+        >
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Typography.Text type="secondary">
+              Сколько устройств могут смотреть одновременно, задаётся в тарифе
+              (раздел «Тарифы»), а для отдельного клиента — в его карточке.
+              Устройства, которые начали смотреть первыми, сохраняют своё место;
+              следующее устройство вместо канала видит экран «Превышен лимит
+              устройств». Место освобождается
+              {` ${idle} сек.`}
+              {' '}
+              после того, как плеер перестал обновлять канал.
+            </Typography.Text>
+            <Typography.Text>
+              {limitedPlans.length
+                ? `С лимитом: ${limitedPlans.map((p) => `${p.name} — ${devicesLabel(p.max_devices)}`).join('; ')}`
+                : 'Ни в одном тарифе лимит не задан — смотреть можно на любом числе устройств.'}
+              {personal.length ? ` · личный лимит у ${count(personal.length)} клиент(ов)` : ''}
+            </Typography.Text>
+            {!enabled && (limitedPlans.length || personal.length) ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="Пока шлюз выключен, лимит устройств не действует"
+              />
+            ) : null}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Устройство — это адрес клиента плюс плеер, скачавший плейлист.
+              Два одинаковых плеера в одной домашней сети считаются одним
+              устройством, а телефон, сменивший сеть, на минуту занимает два
+              места. Каналы без шлюза (MPEG-TS) не считаются.
+            </Typography.Text>
+          </Space>
+        </Card>
+
         <Alert
           type="info"
           showIcon
@@ -98,7 +147,10 @@ export default function GatewayCard({
               </li>
               <li>
                 Недоступный канал не выдаёт ошибку: клиент попадает на свой
-                инфоканал с тарифом, сроком и списком тарифов.
+                инфоканал с тарифом, сроком и списком тарифов — и при
+                переключении, и прямо во время просмотра. Вернуть канал можно
+                сразу, но клиент, уже переключённый на инфоканал, увидит его
+                снова после переключения канала.
               </li>
               <li>
                 Новые каналы всё равно появляются у клиента только после

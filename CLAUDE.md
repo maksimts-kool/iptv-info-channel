@@ -42,8 +42,9 @@ src/
                        #   store.js   users/plans/incidents/subscribers (+ seedDemo)
                        #   seed.js    `npm run seed` -> store.seedDemo()
   notify/  notify.js                              # email notifications (transport, templates, dispatch)
-  playlist/ m3u.js model.js catalog.js hls.js     # provider m3u + the channel catalog
-                       #   hls.js     rewrite a provider HLS manifest (gateway)
+  playlist/ m3u.js model.js catalog.js hls.js devices.js # provider m3u + the channel catalog
+                       #   hls.js     rewrite a provider HLS manifest + mid-view splice (gateway)
+                       #   devices.js simultaneous-device tracker (gateway)
   render/  overlay.js status.js                   # SVG frames + their data models
   encode/  channel.js liveloop.js                 # ffmpeg encode + live HLS window
   http/    stream.js subscribe.js admin.js catalog.js auth.js # all HTTP surfaces
@@ -235,6 +236,40 @@ Request/data flow, entry point [src/server.js](src/server.js):
        origin, so no cross-protocol problem), not a 403: in a player a 403 is an
        indistinguishable "cannot play", i.e. a support ticket, while the card
        explains what the subscription covers.
+     - **Variants go through the gate too.** A player fetches a master
+       playlist once and then only refreshes the chosen variant, so when the
+       master handed out direct provider variant URLs a revocation landed only
+       at the next zap. The master's variant lines and `EXT-X-MEDIA` URIs are
+       now rewritten (`rewriteHlsManifest(…, { playlistUri })`) to
+       `/c/:token/:tag/:id/:sig/:ref.m3u8`, where `ref` is the base64url
+       upstream URL and `sig` an HMAC (`SESSION_SECRET`) over token + channel +
+       URL — without the signature the route would be an open fetch proxy.
+     - **A mid-view refusal is a splice, not a redirect.** Redirecting a media
+       playlist refresh to another live stream hands the player unrelated
+       sequence numbers (ExoPlayer: stuck playlist / behind-live-window). The
+       gate instead keeps per-player state (in memory, `sessions` in
+       `http/stream.js`: last media window served) and answers with
+       `buildSplicedPlaylist`: the provider's last window, a discontinuity,
+       then our own loop (info card, or the device-limit notice) numbered as the
+       continuation. Same invariants as `liveloop.js` (monotonic sequence, one
+       discontinuity number per sequence, no tag on the window's first
+       segment), pinned by a test that walks refreshes. The cut-over is sticky
+       until a fresh tune-in (a gap of several target durations, or the master
+       being fetched again). fMP4 (`EXT-X-MAP`) providers get `EXT-X-ENDLIST`
+       instead — TS segments can't follow an init section. A refusal with no
+       prior window (tune-in, or after a restart) is still the 302 to the card.
+     - **Device limit** (`playlist/devices.js`): `plan.max_devices` (0 =
+       unlimited) with a per-user `max_devices` override (`null` = plan),
+       resolved as `device_limit` in `decorate`. Every allowed gated manifest
+       fetch refreshes the device's slot; a slot frees
+       `STREAM_DEVICE_IDLE_SECONDS` after the last fetch; earliest arrivals win.
+       A device = IP + a **tag of the playlist downloader's User-Agent** baked
+       into the gate path (`/c/:token/:tag/:id.m3u8`) — not the per-request UA,
+       because apps often probe with okhttp and play with ExoPlayer and that
+       would count one TV twice. Over-limit tune-ins 302 to the global
+       `/notice/devices/` loop (`ensureDeviceNotice` in `encode/channel.js`);
+       watching players over the limit are spliced onto it. Tracker state is
+       in memory only.
      The gateway controls what *plays*, not what is *listed* — a newly added
      channel still appears only when the player re-downloads the playlist.
    - **The expiry gate is derived, never persisted.** `resolveUserChannels`

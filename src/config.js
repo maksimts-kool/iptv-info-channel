@@ -179,6 +179,13 @@ export const config = {
     // way to answer "did that player even reach the server, and what is it?"
     // when one device plays a channel and another does not.
     logRequests: bool(process.env.STREAM_GATEWAY_LOG, false),
+    // Simultaneous-device limit (set per plan / per customer in the admin): a
+    // device counts as watching while its player keeps re-fetching a gated
+    // manifest, and frees its slot this many seconds after the last fetch.
+    // Players refresh a live playlist every few seconds, so anything well above
+    // the provider's segment length works; shorter frees a closed device sooner,
+    // longer forgives a paused or briefly stalled one.
+    deviceIdleSeconds: num(process.env.STREAM_DEVICE_IDLE_SECONDS, 60),
     // Fetching a provider HLS manifest happens while the viewer waits for the
     // channel to open, so this timeout is far shorter than the catalog's.
     manifestTimeoutMs: num(process.env.STREAM_GATEWAY_TIMEOUT_MS, 10_000),

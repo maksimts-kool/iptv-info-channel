@@ -131,3 +131,24 @@ test('wrapText wraps on words and ellipsizes the overflow', async () => {
   assert.equal(lines[0], 'one two');
   assert.ok(lines[1].endsWith('…') && lines[1].length <= 9, lines[1]);
 });
+
+test('the account card states the device limit only when the plan has one', async () => {
+  const { buildCardSvg } = await import('../../src/render/overlay.js');
+  const user = {
+    username: 'ivan', plan_name: 'Про', price_cents: 699, currency: 'EUR', expires_at: '2099-01-01', active: 1,
+  };
+  assert.doesNotMatch(buildCardSvg({ ...user, device_limit: 0 }), /УСТРОЙСТВА/);
+  const svg = buildCardSvg({ ...user, device_limit: 2 });
+  assert.match(svg, /УСТРОЙСТВА/);
+  assert.match(svg, />до 2<tspan[^>]*>одновременно</);
+});
+
+test('the device-limit notice explains what to do and when the slot frees', async () => {
+  const { buildDeviceLimitSvg, slotFreeText } = await import('../../src/render/overlay.js');
+  const svg = buildDeviceLimitSvg({ brand_name: 'A & B' }, { idleSeconds: 60 });
+  assert.match(svg, /Превышен лимит устройств/);
+  assert.match(svg, /A &amp; B/, 'the brand is escaped');
+  assert.match(svg, /через минуту/);
+  assert.equal(slotFreeText(120), 'через 2 мин.');
+  assert.equal(slotFreeText(45), 'через 45 сек.');
+});
