@@ -133,3 +133,8 @@ body {
     padding-inline: 12px;
   }
 }
+
+/* Устройства tab: a customer with a device refused by the limit. */
+.row-over-limit > td {
+  background: #fff1f0;
+}

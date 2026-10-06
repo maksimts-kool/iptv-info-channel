@@ -24,6 +24,22 @@ test('a refused device holds no slot, and a closed one frees its slot after the 
   assert.equal(t.admit(1, 'tv', 1, {}, T0 + 60_002).allowed, false);
 });
 
+test('a turned-away newcomer is listed (but never counted) until it idles out', () => {
+  const t = new DeviceTracker({ idleMs: 60_000 });
+  t.admit(1, 'tv', 1, { channel: 'A' }, T0);
+  t.admit(1, 'phone', 1, { channel: 'B' }, T0 + 1000);
+  t.admit(1, 'tv', 1, { channel: 'A' }, T0 + 2000);
+  assert.deepEqual(t.list(1, 1, T0 + 3000).map((d) => [d.channel, d.allowed]), [['A', true], ['B', false]]);
+  assert.equal(t.count(1, T0 + 3000), 1);
+  // Gets in once the TV is gone, and is no longer listed as refused.
+  assert.equal(t.admit(1, 'phone', 1, { channel: 'B' }, T0 + 62_001).allowed, true);
+  assert.deepEqual(t.list(1, 1, T0 + 62_002).map((d) => [d.channel, d.allowed]), [['B', true]]);
+  // A refusal nobody retries ages out like any device.
+  t.admit(1, 'tablet', 1, {}, T0 + 62_003);
+  assert.equal(t.list(1, 1, T0 + 62_004).length, 2);
+  assert.equal(t.list(1, 1, T0 + 200_000).length, 0);
+});
+
 test('lowering the limit keeps the earliest devices and refuses the latest', () => {
   const t = new DeviceTracker({ idleMs: 60_000 });
   t.admit(1, 'a', 3, {}, T0);

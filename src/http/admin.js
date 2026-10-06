@@ -434,6 +434,10 @@ router.get('/api/state', (req, res) => {
       // in the admin so "some channels are still direct" is visible, not a
       // surprise.
       gateable: channels.filter((c) => !c.missing && !c.builtin && isHlsUrl(c.url)).length,
+      // ...and the imported ones it can't. Not `channels - gateable`: the
+      // built-in info channel is ours and needs no gate, so subtracting would
+      // report it as an uncovered channel.
+      direct: channels.filter((c) => !c.missing && !c.builtin && !isHlsUrl(c.url)).length,
     },
     users: Users.all().map((u) => ({
       ...decorateUser(u),
@@ -585,6 +589,41 @@ router.get('/api/users/:id/devices', (req, res) => {
     idle_seconds: config.gateway.deviceIdleSeconds,
     gateway_enabled: config.gateway.enabled,
     devices: gatewayDevices(user),
+  });
+});
+
+// Free a customer's device slots (an old phone still counted after they
+// switched TVs). Anything genuinely still playing re-claims its slot on its
+// next manifest refresh, so this cannot lock anyone out — it only drops stale
+// entries early instead of waiting out the idle window.
+router.post('/api/users/:id/devices/reset', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Users.get(id)) return res.status(404).json({ error: 'not found' });
+  forgetGatewayDevices(id);
+  log.info('admin', 'device slots reset', { user_id: id });
+  return res.json({ ok: true });
+});
+
+// Everyone watching right now, across all customers — the Устройства tab. Only
+// customers with at least one live device are listed, so this stays small.
+router.get('/api/devices', (req, res) => {
+  const now = Date.now();
+  const clients = [];
+  for (const user of Users.all()) {
+    const devices = gatewayDevices(user, now);
+    if (!devices.length) continue;
+    clients.push({
+      user_id: user.id,
+      username: user.username,
+      plan_name: user.plan_name,
+      limit: user.device_limit || 0,
+      devices,
+    });
+  }
+  return res.json({
+    gateway_enabled: config.gateway.enabled,
+    idle_seconds: config.gateway.deviceIdleSeconds,
+    clients,
   });
 });
 

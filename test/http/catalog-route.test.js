@@ -591,8 +591,18 @@ test('the device limit admits the first devices and sends the next to the notice
   assert.equal(state.devices_active, 1);
   const list = await req('GET', `/admin/api/users/${user.body.id}/devices`);
   assert.equal(list.body.limit, 1);
-  assert.equal(list.body.devices.length, 1);
-  assert.equal(list.body.devices[0].allowed, true);
+  // The TV holds the slot; the turned-away phone is listed (so the admin sees
+  // the attempt) but not counted.
+  assert.deepEqual(list.body.devices.map((d) => d.allowed), [true, false]);
+  const all = await req('GET', '/admin/api/devices');
+  const mine = all.body.clients.find((c) => c.user_id === user.body.id);
+  assert.equal(mine.limit, 1);
+  assert.equal(mine.devices.length, 2);
+
+  // Freeing the slots drops both; the TV reclaims its slot on its next refresh.
+  assert.equal((await req('POST', `/admin/api/users/${user.body.id}/devices/reset`, {})).status, 200);
+  assert.equal((await req('GET', `/admin/api/users/${user.body.id}/devices`)).body.devices.length, 0);
+  assert.equal((await get(tv)).status, 200);
 
   // A personal override beats the plan.
   assert.equal((await req('PATCH', `/admin/api/users/${user.body.id}`, { max_devices: 2 })).body.device_limit, 2);

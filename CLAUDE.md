@@ -65,7 +65,7 @@ frontend/              # React + Vite + Ant Design admin app (own package.json)
   src/main.jsx         # entry
   src/App.jsx          # sider shell + hash routing
   src/lib/             # api.js (fetch wrapper + AuthError), plans.js, format.js
-  src/pages/           # one component per nav section (Overview/Playlist/Clients/…)
+  src/pages/           # one component per nav section (Overview/Playlist/Clients/Devices/…)
   src/playlist/        # SourcesPanel + CatalogPanel (categories with channels nested)
   src/clients/         # the per-customer drawer and its tabs
   src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify/Gateway cards
@@ -574,8 +574,10 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `/admin/api` to the backend).
 
    The app is a sider-navigated shell (`App.jsx`) with one page per section —
-   Обзор / Плейлист / Клиенты / Тарифы / Инфоканал / Уведомления — routed off
-   the URL hash (`#/clients`) rather than a router dependency. Mutations that
+   Обзор / Плейлист / Клиенты / Устройства / Тарифы / Инфоканал / Уведомления —
+   routed off the URL hash (`#/clients`) rather than a router dependency; only
+   the first segment picks the section, so `#/clients/<id>` opens that
+   customer's drawer. Mutations that
    *do* re-encode run through the shared `withRegen` banner/reload lifecycle
    (`App.jsx` + `RegenBanner`); the playlist screens deliberately save directly
    instead, since showing an encoding banner for an edit that never encodes
@@ -593,7 +595,15 @@ Request/data flow, entry point [src/server.js](src/server.js):
    The Плейлист section is three tabs: **Каналы и категории** (`CatalogPanel` — a
    category is a row you expand to load that category's channels; typing in the
    search box switches the whole panel to flat, server-filtered results),
-   **Источники**, and **Доступ** (`GatewayCard` — the stream-gateway switch).
+   **Источники** and **Доступ** (`GatewayCard` — the stream-gateway switch and
+   its HLS coverage; the how-it-works notes sit in a collapsed panel, because
+   this screen is for an operator, not a developer). **Устройства** is its own
+   sider section (`pages/DevicesPage.jsx`, with a live count badge in the nav):
+   a polled view of `GET /api/devices` — who is watching, who was turned away
+   by the limit, per-plan limits editable inline, and
+   `POST /api/users/:id/devices/reset` to free stale slots. The tracker
+   remembers a refused newcomer for the same idle window so the admin can see
+   the attempt; it never holds a slot.
    Channels are never all in the browser at once — a provider
    list is tens of thousands of rows, so every view is a server-side page.
 

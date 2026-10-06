@@ -22,7 +22,8 @@
 // A device already watching is never pushed out by a newcomer; the newcomer is
 // refused. Lowering the limit refuses the most recent arrivals until they idle
 // out. Refused requests do not refresh a device, so a refused device never
-// holds a slot.
+// holds a slot. A turned-away newcomer is still *remembered* (separately, same
+// idle window) so the admin can see that someone tried a device too many.
 //
 // Pure apart from its own in-memory map (no I/O, clock injected) — unit-tested
 // in test/playlist/devices.test.js.
@@ -46,6 +47,30 @@ export class DeviceTracker {
   constructor({ idleMs = 60_000 } = {}) {
     this.idleMs = idleMs;
     this.users = new Map(); // userId -> Map(key -> device)
+    this.refused = new Map(); // userId -> Map(key -> device): turned away, no slot
+  }
+
+  pruneRefused(userId, now) {
+    const devices = this.refused.get(userId);
+    if (!devices) return null;
+    for (const [key, device] of devices) {
+      if (now - device.lastSeen > this.idleMs) devices.delete(key);
+    }
+    if (!devices.size) {
+      this.refused.delete(userId);
+      return null;
+    }
+    return devices;
+  }
+
+  noteRefused(userId, key, info, now) {
+    let devices = this.refused.get(userId);
+    if (!devices) {
+      devices = new Map();
+      this.refused.set(userId, devices);
+    }
+    const existing = devices.get(key);
+    devices.set(key, { ...info, firstSeen: existing?.firstSeen ?? now, lastSeen: now });
   }
 
   prune(userId, now) {
@@ -77,8 +102,10 @@ export class DeviceTracker {
     }
 
     if (limit > 0 && (devices?.size || 0) >= limit) {
+      this.noteRefused(userId, key, info, now);
       return { allowed: false, active: devices.size, limit };
     }
+    this.refused.get(userId)?.delete(key);
     if (!devices) {
       devices = new Map();
       this.users.set(userId, devices);
@@ -88,13 +115,23 @@ export class DeviceTracker {
   }
 
   // Devices watching right now, oldest first, each flagged with whether it is
-  // inside the limit.
+  // inside the limit, followed by the newcomers recently turned away.
   list(userId, limit = 0, now = Date.now()) {
     const devices = this.prune(userId, now);
-    if (!devices) return [];
-    return [...devices.values()]
-      .sort((a, b) => a.firstSeen - b.firstSeen)
-      .map((d, index) => ({ ...d, allowed: !(limit > 0 && index >= limit) }));
+    const refused = this.pruneRefused(userId, now);
+    const watching = devices
+      ? [...devices.values()]
+        .sort((a, b) => a.firstSeen - b.firstSeen)
+        .map((d, index) => ({ ...d, allowed: !(limit > 0 && index >= limit) }))
+      : [];
+    const turnedAway = refused
+      ? [...refused.entries()]
+        .filter(([key]) => !devices?.has(key))
+        .map(([, d]) => d)
+        .sort((a, b) => a.firstSeen - b.firstSeen)
+        .map((d) => ({ ...d, allowed: false }))
+      : [];
+    return [...watching, ...turnedAway];
   }
 
   count(userId, now = Date.now()) {
@@ -104,5 +141,6 @@ export class DeviceTracker {
   // Drop every device of one customer (deleted account, rotated token).
   forget(userId) {
     this.users.delete(userId);
+    this.refused.delete(userId);
   }
 }

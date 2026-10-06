@@ -10,7 +10,7 @@ import GatewayCard from '../components/GatewayCard.jsx';
 // which channels are on air. Everything here is served to customers live — no
 // stream re-encode is involved, so saves are plain saves.
 export default function PlaylistPage({
-  api, state, message, onAuthError, reload,
+  api, state, message, onAuthError, reload, go,
 }) {
   const [catalog, setCatalog] = useState(null);
   const [tab, setTab] = useState('catalog');
@@ -67,6 +67,7 @@ export default function PlaylistPage({
                 reload={reload}
                 message={message}
                 onAuthError={onAuthError}
+                onOpenDevices={() => go('devices')}
               />
             ),
           },

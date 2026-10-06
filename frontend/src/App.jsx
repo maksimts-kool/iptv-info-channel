@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  App as AntApp, Button, Drawer, Grid, Layout, Menu, Space, Spin, Typography,
+  App as AntApp, Badge, Button, Drawer, Grid, Layout, Menu, Space, Spin, Typography,
 } from 'antd';
 import {
-  DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LogoutOutlined, MailOutlined,
+  DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
   MenuOutlined, PlaySquareOutlined, TeamOutlined, WifiOutlined,
 } from '@ant-design/icons';
 import {
@@ -14,6 +14,7 @@ import RegenBanner from './components/RegenBanner.jsx';
 import OverviewPage from './pages/OverviewPage.jsx';
 import PlaylistPage from './pages/PlaylistPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
+import DevicesPage from './pages/DevicesPage.jsx';
 import PlansPage from './pages/PlansPage.jsx';
 import InfoChannelPage from './pages/InfoChannelPage.jsx';
 import NotifyPage from './pages/NotifyPage.jsx';
@@ -30,6 +31,7 @@ const SECTIONS = [
   { key: 'overview', label: 'Обзор', Icon: DashboardOutlined, title: 'Обзор', Page: OverviewPage },
   { key: 'playlist', label: 'Плейлист', Icon: PlaySquareOutlined, title: 'Плейлист', Page: PlaylistPage },
   { key: 'clients', label: 'Клиенты', Icon: TeamOutlined, title: 'Клиенты', Page: ClientsPage },
+  { key: 'devices', label: 'Устройства', Icon: LaptopOutlined, title: 'Устройства', Page: DevicesPage },
   { key: 'plans', label: 'Тарифы', Icon: EuroCircleOutlined, title: 'Тарифы и цены', Page: PlansPage },
   { key: 'info', label: 'Инфоканал', Icon: DesktopOutlined, title: 'Информационный канал', Page: InfoChannelPage },
   { key: 'notify', label: 'Уведомления', Icon: MailOutlined, title: 'Уведомления по почте', Page: NotifyPage },
@@ -43,8 +45,10 @@ const HIDDEN = {
 
 // Section routing lives in the URL hash (#/clients) so a screen can be
 // bookmarked and the browser's back button works — without pulling in a router.
+// Only the first segment picks the section; the rest (#/clients/12) is for the
+// page itself.
 function sectionFromHash() {
-  const key = window.location.hash.replace(/^#\/?/, '');
+  const key = window.location.hash.replace(/^#\/?/, '').split('/')[0];
   return SECTIONS.some((s) => s.key === key) ? key : DEFAULT_SECTION;
 }
 
@@ -223,6 +227,8 @@ export default function App() {
   const active = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
   const { Page } = active;
   const compact = !screens.lg;
+  // Live "watching now" count on the Устройства entry (from /api/state).
+  const watching = (state?.users || []).reduce((sum, u) => sum + (u.devices_active || 0), 0);
 
   const menu = (
     <Menu
@@ -234,7 +240,12 @@ export default function App() {
       items={SECTIONS.map((s) => ({
         key: s.key,
         icon: <s.Icon />,
-        label: s.label,
+        label: s.key === 'devices' && watching ? (
+          <Space size={8}>
+            {s.label}
+            <Badge count={watching} color="#52c41a" size="small" />
+          </Space>
+        ) : s.label,
       }))}
     />
   );

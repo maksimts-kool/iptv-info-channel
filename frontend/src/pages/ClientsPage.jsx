@@ -10,6 +10,13 @@ import { AuthError } from '../lib/api.js';
 import { periodSuffix, planOptions, expiryForPlan } from '../lib/plans.js';
 import ClientDrawer from '../clients/ClientDrawer.jsx';
 
+// #/clients/12 opens that customer's card straight away (linked from the
+// Устройства tab).
+function clientIdFromHash() {
+  const m = window.location.hash.match(/^#\/?clients\/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
 const FILTERS = [
   { value: 'all', label: 'Все' },
   { value: 'active', label: 'Активные' },
@@ -34,7 +41,7 @@ export default function ClientsPage(shared) {
 
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const [openId, setOpenId] = useState(null);
+  const [openId, setOpenId] = useState(clientIdFromHash);
   const [createOpen, setCreateOpen] = useState(false);
   const [form] = Form.useForm();
 
@@ -262,7 +269,10 @@ export default function ClientsPage(shared) {
         {...shared}
         user={openUser}
         subscriber={openUser ? subByUser.get(openUser.id) : null}
-        onClose={() => setOpenId(null)}
+        onClose={() => {
+          setOpenId(null);
+          if (clientIdFromHash() !== null) window.history.replaceState(null, '', '#/clients');
+        }}
       />
 
       <Modal
