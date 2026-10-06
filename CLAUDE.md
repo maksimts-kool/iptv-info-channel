@@ -275,7 +275,14 @@ Request/data flow, entry point [src/server.js](src/server.js):
    green; our degraded/outage still wins, uptime is untouched). With notices the
    slide switches to a condensed board + that event list; with none it is
    byte-identical to the classic board. The admin lists them read-only inside
-   the «Статус сервиса» card; `ProviderNewsCard` holds only the switch + cookie. A failed fetch keeps the previous
+   the «Статус сервиса» card; `ProviderNewsCard` holds only the switch + cookie
+   + OpenRouter key. With a key, `news/aisummary.js` replaces each body with a
+   one-line LLM retelling of the notice's full `text` (model `openrouter/free`);
+   summaries are cached in Settings `provider_news.summaries` by notice id +
+   text hash, so the model is asked **only when the original text changes**, and
+   a failure falls back to the parser body and retries next poll. The key is a
+   credential like the cookie (same `provider_news` key, never sent to the
+   browser — only `ai_key_set`). A failed fetch keeps the previous
    notices (they age out after `PROVIDER_NEWS_MAX_AGE_HOURS`), and any change to
    what the slide shows rebuilds all streams once (`consumeShownChange`). The
    session cookie is a credential: `/api/state` goes through `publicSettings`.

@@ -130,6 +130,12 @@ export const config = {
     // A notice has no end date; it leaves the slide this many hours after publication.
     maxAgeHours: num(process.env.PROVIDER_NEWS_MAX_AGE_HOURS, 24),
     timeoutMs: num(process.env.PROVIDER_NEWS_TIMEOUT_MS, 15_000),
+    // AI retelling of a notice to one short line (news/aisummary.js), via
+    // OpenRouter. Blank key = off (the admin card can hold the key instead).
+    // The model is asked only when a notice's original text changes.
+    aiKey: process.env.OPENROUTER_API_KEY || '',
+    aiModel: process.env.PROVIDER_NEWS_AI_MODEL || 'openrouter/free',
+    aiTimeoutMs: num(process.env.PROVIDER_NEWS_AI_TIMEOUT_MS, 30_000),
   },
   catalog: {
     // The curated channel catalog served in every customer's .m3u. Upstream
