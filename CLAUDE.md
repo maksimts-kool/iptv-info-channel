@@ -13,7 +13,9 @@ categories its customers receive, with **per-customer exceptions** on top.
 Every customer playlist also carries a built-in **Информация** category holding
 that customer's personal looping **HLS info channel** (plan, price, expiry, days
 left, colour-coded status over background music). When a subscription expires,
-the info channel is the *only* thing left in their playlist. The info channel
+Информация is the *only* thing left in their playlist. Next to it sits a second
+built-in channel, the **media channel** («Медиа»): one admin-curated loop of
+text pages, images and videos shared by every customer (see Architecture 11). The info channel
 was the original product and is now one feature inside the playlist server —
 weight new work accordingly.
 
@@ -45,9 +47,16 @@ src/
   playlist/ m3u.js model.js catalog.js hls.js devices.js # provider m3u + the channel catalog
                        #   hls.js     rewrite a provider HLS manifest + mid-view splice (gateway)
                        #   devices.js simultaneous-device tracker (gateway)
-  render/  overlay.js status.js                   # SVG frames + their data models
-  encode/  channel.js liveloop.js                 # ffmpeg encode + live HLS window
-  http/    stream.js subscribe.js admin.js catalog.js auth.js # all HTTP surfaces
+  render/  overlay.js status.js markdown.js media.js # SVG frames + their data models:
+                       #   markdown.js Markdown -> satori layout tree (pure)
+                       #   media.js    media-channel slides -> PNG (satori + sharp)
+  encode/  channel.js liveloop.js ffmpeg.js media.js # ffmpeg encode + live HLS window:
+                       #   ffmpeg.js  spawn helpers shared by both channels
+                       #   media.js   media-channel clip/loop arg builders (golden-pinned)
+  media/   store.js build.js                      # the media channel:
+                       #   store.js   slides (Settings `media_channel`), files, disk budget
+                       #   build.js   video queue, clip cache, debounced loop build
+  http/    stream.js subscribe.js admin.js catalog.js media.js auth.js # all HTTP surfaces
   epg/     epg.js epgfoss.js xxhash32.js          # XMLTV + OTT-play FOSS guides
   news/    notices.js providernews.js             # provider service notices on the status slide:
                        #   notices.js      pure: feed HTML -> notices, filter, cookie jar
@@ -69,6 +78,7 @@ frontend/              # React + Vite + Ant Design admin app (own package.json)
   src/playlist/        # SourcesPanel + CatalogPanel (categories with channels nested)
   src/clients/         # the per-customer drawer and its tabs
   src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify/Gateway cards
+  src/media/           # Медиаканал: SlideList (dnd-kit sortable), Text/Image slide editors
 ```
 
 ## Commands
@@ -274,7 +284,8 @@ Request/data flow, entry point [src/server.js](src/server.js):
      channel still appears only when the player re-downloads the playlist.
    - **The expiry gate is derived, never persisted.** `resolveUserChannels`
      takes a `locked` flag (account expired or deactivated) and collapses the
-     list to the built-in `Информация` category. Nothing is written when an
+     list to the built-in `Информация` category (the account channel, plus the
+     media channel when it is on). Nothing is written when an
      account lapses, so a renewal restores everything on the next request and
      can't drift out of sync with a stored "disabled everything" flag. The
      built-in category therefore cannot be deleted, switched off, or withheld
@@ -574,7 +585,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `/admin/api` to the backend).
 
    The app is a sider-navigated shell (`App.jsx`) with one page per section —
-   Обзор / Плейлист / Клиенты / Устройства / Тарифы / Инфоканал / Уведомления —
+   Обзор / Плейлист / Клиенты / Устройства / Тарифы / Инфоканал / Медиаканал / Уведомления —
    routed off the URL hash (`#/clients`) rather than a router dependency; only
    the first segment picks the section, so `#/clients/<id>` opens that
    customer's drawer. Mutations that
@@ -616,6 +627,47 @@ Request/data flow, entry point [src/server.js](src/server.js):
    the selection replaces. Expansion is driven by the category name and a
    full-size chevron button (AntD's default 16px +/- glyph was too small to
    aim at), both calling `toggleCategory`.
+
+11. **Media channel** — the second built-in row of Информация
+   (`INFO_MEDIA_CHANNEL_ID = 'info-media'`, created by `ensureBuiltins`). Unlike
+   the account channel it can be switched off (`applyChannelFields` lets
+   `enabled` through for it alone, and per-customer pins apply), but it cannot
+   leave Информация, so an expired customer keeps it. Its name and switch live
+   on that catalog row — the admin page edits the row, not a copy. The slides
+   live in Settings `media_channel` (`media/store.js`; left out of
+   `publicSettings`); files under `DATA_DIR/media/`; the loop in
+   `DATA_DIR/hls/_media/`, served at `/m/:token/` through the same
+   `serveLoopFile`/liveloop path as the account channel. The `.m3u` (and the
+   admin's visible count) lists it **only once that loop exists** — an empty
+   channel is a black screen.
+
+   Encoding is two-step (`encode/media.js`, comment at the top): every slide is
+   its own **clip**, cached by content hash in `media/clips/`, then the **loop**
+   joins them with the concat demuxer — video stream-copied, audio re-encoded
+   with `aresample=async` (copied AAC overlaps by a few ms at every join, since
+   a copy ignores the mp4 edit list). Two invariants make the copy valid and
+   keep liveloop's one-discontinuity-per-wrap model: **identical encode params
+   on every clip** (`clipEncodeArgs`) and **every clip a whole number of
+   segments** (`tileUp`) with keyframes on the boundaries. A loop shorter than
+   one live window is repeated (`loopRepeats`). The builders are pinned by
+   [test/encode/media-args.test.js](test/encode/media-args.test.js) against
+   their own golden — same rule as channel-args: never rewrite it silently.
+
+   Text pages: `marked` tokenises, `render/markdown.js` maps tokens to a satori
+   flexbox tree (satori has no inline formatting context, so a paragraph is a
+   wrapping row of one span per word), `render/media.js` rasterises with the
+   Inter .otf files (`MEDIA_FONT_DIR`). **satori is loaded lazily through its
+   CommonJS build** — its ESM build references `__dirname` and throws on
+   import — which also keeps it off the host-run test path. A page taller than
+   the screen scrolls (`scrollClipArgs`: crop over the static background, the
+   background's faded edges on top). Videos are re-encoded ONCE at upload into
+   their clip form, in a one-at-a-time queue, and the upload is deleted; a later
+   change of resolution/segment length re-encodes from that copy
+   (`encodeKey`). Deleting a slide deletes its files; `sweepOrphans` at startup
+   clears `incoming/` and unreferenced files, and fails videos left
+   `processing`. Uploads (multer) are capped per file and refused up front when
+   the estimated result would cross `MEDIA_QUOTA_MB`. Bump `CLIP_VERSION` /
+   `LOOP_VERSION` in `media/build.js` when the look or the loop recipe changes.
 
 ## Config
 

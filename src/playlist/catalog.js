@@ -15,7 +15,8 @@ import { config } from '../config.js';
 import { log } from '../core/logger.js';
 import { parseM3u } from './m3u.js';
 import {
-  INFO_CATEGORY_ID, INFO_CHANNEL_ID, ensureBuiltins, mergeSourceChannels,
+  INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME,
+  ensureBuiltins, mergeSourceChannels,
   normalizeName, resolveUserChannels, resolveChannelAccess, channelCounts,
   REFRESH_INTERVALS, sourceDueAt, sourceIsDue,
 } from './model.js';
@@ -436,9 +437,12 @@ export const Channels = {
 
 // The built-in info channel may be renamed but must keep its category and stay
 // on: it is what an expired customer is left with, and moving it into a
-// category that can be switched off would empty that fallback.
+// category that can be switched off would empty that fallback. The built-in
+// media channel may also be switched off — it is optional content — but it too
+// stays in Информация.
 function applyChannelFields(channel, fields) {
   if (fields.name !== undefined) channel.name = normalizeName(fields.name);
+  if (fields.enabled !== undefined && channel.id === INFO_MEDIA_CHANNEL_ID) channel.enabled = !!fields.enabled;
   if (channel.builtin) return;
   if (fields.enabled !== undefined) channel.enabled = !!fields.enabled;
   if (fields.category_id !== undefined && data.categories.some((c) => c.id === fields.category_id)) {
@@ -518,4 +522,6 @@ export function channelAccessForUser(userId, channelId, { locked = false, planCa
   });
 }
 
-export { INFO_CATEGORY_ID, INFO_CHANNEL_ID, REFRESH_INTERVALS };
+export {
+  INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME, REFRESH_INTERVALS,
+};

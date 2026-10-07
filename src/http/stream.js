@@ -25,7 +25,10 @@ import {
 import { DeviceTracker, deviceKey, deviceTag as tagForUserAgent } from '../playlist/devices.js';
 import {
   channelsForUser, channelAccessForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
+  INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME,
 } from '../playlist/catalog.js';
+import { mediaLoopReady } from '../media/build.js';
+import { mediaLoopDir } from '../media/store.js';
 import { accountStatus } from '../core/util.js';
 import {
   fossIdHash,
@@ -85,6 +88,12 @@ export function fossEpgDirUrl(user, cfg) {
 // instead of a playback error that reads like a broken server.
 export function userStreamUrl(user, cfg) {
   return `${cfg.publicBaseUrl}/hls/${encodeURIComponent(user.token)}/index.m3u8`;
+}
+
+// The media channel (Информация -> «Медиа»): one loop shared by every
+// customer, but still behind the customer's token like everything else here.
+export function mediaStreamUrl(user, cfg) {
+  return `${cfg.publicBaseUrl}/m/${encodeURIComponent(user.token)}/index.m3u8`;
 }
 
 // Where the .m3u points for one imported channel.
@@ -187,6 +196,14 @@ export function buildUserPlaylist(user, settings, cfg, entries = [], epgUrls = [
         },
       };
     }
+    if (channel.id === INFO_MEDIA_CHANNEL_ID) {
+      const name = channel.name || INFO_MEDIA_DEFAULT_NAME;
+      return {
+        name,
+        url: mediaStreamUrl(user, cfg),
+        attrs: { 'tvg-name': name, 'group-title': category.name },
+      };
+    }
     return {
       name: channel.name,
       url: channelStreamUrl(user, channel, cfg, { deviceTag }),
@@ -206,7 +223,10 @@ export function renderUserPlaylist(user, settings = Settings.all(), { deviceTag 
   const locked = status === 'expired' || status === 'disabled';
   // The plan is the base entitlement: a customer sees the categories their plan
   // grants (an empty plan grants none), then their personal exceptions.
-  const entries = channelsForUser(user.id, { locked, planCategories: planCategorySet(user) });
+  // The media channel is listed only once its loop exists: an empty channel
+  // would be a black screen, i.e. a support ticket.
+  const entries = channelsForUser(user.id, { locked, planCategories: planCategorySet(user) })
+    .filter((e) => e.channel.id !== INFO_MEDIA_CHANNEL_ID || mediaLoopReady());
   const usedSources = new Set(entries.map((e) => e.channel.source_id).filter(Boolean));
   const epgUrls = Sources.all()
     .filter((s) => s.epg_url && usedSources.has(s.id))
@@ -511,6 +531,9 @@ async function gateRequest(req, res, { token, tag, id, variant = null }) {
   if (access.allowed && access.channel.id === INFO_CHANNEL_ID) {
     return redirectStream(res, userStreamUrl(user, config));
   }
+  if (access.allowed && access.channel.id === INFO_MEDIA_CHANNEL_ID) {
+    return redirectStream(res, mediaStreamUrl(user, config));
+  }
   // Non-HLS: nothing to rewrite, so the redirect is all there is. New playlists
   // no longer point here for those channels (see channelStreamUrl), but links
   // already sitting in players must keep doing what they always did.
@@ -682,6 +705,29 @@ router.get('/notice/devices/:file', async (req, res) => {
     }
   }
   return serveLoopFile(req, res, noticeHlsDir(), file, { notice: 'devices' });
+});
+
+// GET /m/:token/:file -> the media channel's loop (built by media/build.js,
+// shared by everyone). The token keeps it a capability URL like the rest, and
+// the playlist is re-checked against the customer's access on every refresh,
+// so switching the channel off (globally or for one customer) ends playback by
+// sending the player to the customer's own info card.
+router.get('/m/:token/:file', (req, res) => {
+  const { token, file } = req.params;
+  if (!SAFE_FILE.test(file)) return res.status(400).type('text/plain').send('Bad file');
+  const user = Users.getByToken(token);
+  if (!user) {
+    log.warn('stream', 'media channel requested with unknown token', { file });
+    return res.status(404).type('text/plain').send('Unknown token');
+  }
+  if (file === 'index.m3u8') {
+    const status = accountStatus(user, config.expiringThresholdDays);
+    const access = channelAccessForUser(user.id, INFO_MEDIA_CHANNEL_ID, {
+      locked: status === 'expired' || status === 'disabled', planCategories: planCategorySet(user),
+    });
+    if (!access.allowed || !mediaLoopReady()) return redirectStream(res, userStreamUrl(user, config));
+  }
+  return serveLoopFile(req, res, mediaLoopDir(), file, { media: true, user_id: user.id });
 });
 
 function serveLoopFile(req, res, dir, file, logContext) {

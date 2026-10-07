@@ -8,6 +8,13 @@
 // deleted and its per-user visibility is not overridable.
 export const INFO_CATEGORY_ID = 'info';
 export const INFO_CHANNEL_ID = 'info-account';
+// The second built-in row of Информация: the admin-curated media loop (text
+// pages, images, videos — src/media/). Shared by every customer, expired ones
+// included, but unlike the account channel it CAN be switched off (globally or
+// pinned per customer), and the playlist builder leaves it out while it has
+// nothing to play.
+export const INFO_MEDIA_CHANNEL_ID = 'info-media';
+export const INFO_MEDIA_DEFAULT_NAME = 'Медиа';
 
 // Built-in rows sort ahead of imported ones so Информация is always first.
 const INFO_SORT = -1;
@@ -81,6 +88,23 @@ export function ensureBuiltins(state, { infoCategoryName = 'Информация
       sort: INFO_SORT,
     };
     state.channels.push(channel);
+  }
+  if (!state.channels.some((c) => c.id === INFO_MEDIA_CHANNEL_ID)) {
+    state.channels.push({
+      id: INFO_MEDIA_CHANNEL_ID,
+      key: INFO_MEDIA_CHANNEL_ID,
+      source_id: null,
+      category_id: INFO_CATEGORY_ID,
+      name: INFO_MEDIA_DEFAULT_NAME,
+      original_name: '',
+      url: '', // per-user; filled in by the playlist builder
+      attrs: {},
+      extras: [],
+      enabled: true,
+      builtin: true,
+      missing: false,
+      sort: INFO_SORT + 1, // right after the account channel
+    });
   }
   return state;
 }
@@ -305,6 +329,13 @@ export function resolveChannelAccess(catalog, channelId, {
 
   // The account channel is the one entry every customer keeps, expired or not.
   if (channel.id === INFO_CHANNEL_ID) return { channel, category, allowed: true, reason: 'info' };
+  // The media channel lives in Информация, which a locked account keeps, so
+  // only its own switch (global or pinned) decides — as in resolveUserChannels.
+  if (channel.id === INFO_MEDIA_CHANNEL_ID) {
+    return effectiveEnabled(channel, (overrides.channels || {})[channel.id])
+      ? { channel, category, allowed: true, reason: 'info' }
+      : deny('channel');
+  }
 
   if (channel.missing) return deny('missing');
   if (!category) return deny('category');

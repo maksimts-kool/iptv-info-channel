@@ -11,6 +11,8 @@ import {
 import { Users, Plans } from './data/store.js';
 import { catalog, startSourceAutoRefresh } from './playlist/catalog.js';
 import { startProviderNewsWatcher } from './news/providernews.js';
+import { sweepOrphans } from './media/store.js';
+import { buildMediaLoop } from './media/build.js';
 import { log } from './core/logger.js';
 
 const app = express();
@@ -75,6 +77,16 @@ const server = app.listen(config.port, async () => {
     await generateAll({ reason: 'startup pre-generation' });
   } catch (e) {
     log.error('startup', 'channel pre-generation issue', { error: e.message });
+  }
+  // The media channel: clear half-received uploads and unreferenced files, then
+  // make sure the loop matches the slides (a no-op when it already does; a
+  // re-encode when the channel resolution or segment length changed).
+  try {
+    const removed = sweepOrphans();
+    if (removed) log.info('media', 'removed unreferenced media files', { files: removed });
+    await buildMediaLoop({ reason: 'startup' });
+  } catch (e) {
+    log.error('startup', 'media channel build issue', { error: e.message });
   }
   startDailyRefresh();
   // Unattended playlist re-downloads, on each source's own interval.

@@ -17,8 +17,9 @@ import { Users, Plans } from '../data/store.js';
 import {
   Sources, Categories, Channels, Overrides,
   queryChannels, refreshSource, refreshAllSources, catalog,
-  planCategorySet, planCountsByCategory, INFO_CATEGORY_ID, REFRESH_INTERVALS,
+  planCategorySet, planCountsByCategory, INFO_CATEGORY_ID, INFO_MEDIA_CHANNEL_ID, REFRESH_INTERVALS,
 } from '../playlist/catalog.js';
+import { mediaLoopReady } from '../media/build.js';
 import {
   channelCounts, categoryEnabledFor, effectiveEnabled, resolveUserChannels,
 } from '../playlist/model.js';
@@ -463,7 +464,9 @@ router.get('/users/:id/channels', (req, res) => {
     plan: { id: user.plan_id, name: user.plan_name, categories: [...planCategories] },
     categories,
     overrideCount: Object.keys(overrides.categories).length + Object.keys(overrides.channels).length,
-    visibleCount: resolveUserChannels(catalog(), { overrides, locked, planCategories }).length,
+    // Counted like the .m3u is built: the media channel only once it has a loop.
+    visibleCount: resolveUserChannels(catalog(), { overrides, locked, planCategories })
+      .filter((e) => e.channel.id !== INFO_MEDIA_CHANNEL_ID || mediaLoopReady()).length,
     channels: {
       total,
       page: params.page,

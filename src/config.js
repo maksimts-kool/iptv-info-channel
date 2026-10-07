@@ -225,9 +225,31 @@ export const config = {
     // without a real API key.
     dryRun: bool(process.env.NOTIFY_DRY_RUN, false),
   },
+  media: {
+    // The media channel (Информация -> «Медиа»): an admin-curated loop of text
+    // pages, images and videos, encoded once for every customer (src/media/).
+    // Upload caps are checked while the file streams in, before it is processed.
+    maxVideoMb: num(process.env.MEDIA_MAX_VIDEO_MB, 300),
+    maxImageMb: num(process.env.MEDIA_MAX_IMAGE_MB, 20),
+    // Everything the feature keeps on disk — stored images, the 720p video
+    // copies, cached slide clips and the finished loop — must fit in this. An
+    // upload that would cross it is refused, so a small droplet can't fill up.
+    quotaMb: num(process.env.MEDIA_QUOTA_MB, 2048),
+    // Every clip is encoded with the SAME settings, because the loop is joined
+    // with a stream copy (no re-encode) and a player then sees one continuous
+    // stream. 25 fps is what makes the scrolling text smooth.
+    fps: num(process.env.MEDIA_FPS, 25),
+    preset: process.env.MEDIA_PRESET || 'veryfast',
+    crf: num(process.env.MEDIA_CRF, 24),
+    maxrate: process.env.MEDIA_MAXRATE || '2500k',
+    // Inter .otf files for the text slides (satori needs font files, not a
+    // fontconfig name). The Docker image installs them here via fonts-inter.
+    fontDir: process.env.MEDIA_FONT_DIR || '/usr/share/fonts/opentype/inter',
+  },
   expiringThresholdDays: num(process.env.EXPIRING_THRESHOLD_DAYS, 7),
 
   dataDir: DATA_DIR,
+  mediaDir: path.join(DATA_DIR, 'media'),
   hlsDir: path.join(DATA_DIR, 'hls'),
   musicFile: configuredMusicFile,
   defaultMusicFile: DEFAULT_MUSIC_FILE,

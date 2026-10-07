@@ -132,7 +132,7 @@ test('a fresh catalog has only the built-in Информация category', asyn
   assert.equal(status, 200);
   assert.deepEqual(body.categories.map((c) => c.name), ['Информация']);
   assert.equal(body.categories[0].builtin, true);
-  assert.equal(body.totals.channels, 1);
+  assert.equal(body.totals.channels, 2); // the account + media channels
 });
 
 test('adding and refreshing a source imports the upstream channels', async () => {
@@ -148,7 +148,7 @@ test('adding and refreshing a source imports the upstream channels', async () =>
 
   const { body } = await req('GET', '/admin/api/catalog');
   assert.deepEqual(body.categories.map((c) => c.name), ['Информация', 'Спорт', 'Новости']);
-  assert.equal(body.totals.channels, 4); // 3 imported + the info channel
+  assert.equal(body.totals.channels, 5); // 3 imported + the account and media channels
   // The provider's own guide is remembered for pass-through.
   assert.equal(body.sources[0].epg_url, 'http://provider/epg.xml');
 
@@ -725,4 +725,140 @@ test('the gateway passes a provider URL through without re-encoding it', async (
 
   await req('DELETE', `/admin/api/users/${user.body.id}`);
   await req('DELETE', `/admin/api/catalog/channels/${created.body.id}`);
+});
+
+// ---------------------------------------------------------------------------
+// The media channel (Информация -> «Медиа»)
+// ---------------------------------------------------------------------------
+
+// A finished loop on disk, as media/build.js leaves it — the encode itself is
+// covered by test/encode/media-args.test.js and needs ffmpeg + fonts.
+function fakeMediaLoop() {
+  const dir = path.join(DATA_DIR, 'hls', '_media');
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:6', '#EXT-X-TARGETDURATION:6', '#EXT-X-PLAYLIST-TYPE:VOD'];
+  for (let i = 0; i < 8; i += 1) {
+    lines.push('#EXTINF:6.000000,', `seg_${String(i).padStart(3, '0')}.ts`);
+    fs.writeFileSync(path.join(dir, `seg_${String(i).padStart(3, '0')}.ts`), 'ts');
+  }
+  lines.push('#EXT-X-ENDLIST', '');
+  fs.writeFileSync(path.join(dir, 'index.m3u8'), lines.join('\n'));
+  return dir;
+}
+
+test('the media channel joins every playlist once its loop exists — even an expired one', async () => {
+  const user = await req('POST', '/admin/api/users', {
+    username: 'media-viewer',
+    plan_id: ids.plan,
+    expires_at: new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10),
+  });
+  ids.mediaUser = user.body.id;
+  ids.mediaToken = user.body.token;
+  const mediaUrl = `${'https://iptv.example'}/m/${ids.mediaToken}/index.m3u8`;
+
+  const before = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.ok(!before.text.includes('/m/'), 'nothing to play yet, so not listed');
+
+  fakeMediaLoop();
+  const listed = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.match(listed.text, /group-title="Информация",Медиа\n/);
+  assert.ok(listed.text.includes(mediaUrl));
+
+  const live = await req('GET', `/m/${ids.mediaToken}/index.m3u8`, null, { raw: true });
+  assert.equal(live.status, 200);
+  assert.match(live.text, /#EXT-X-MEDIA-SEQUENCE:/);
+  assert.doesNotMatch(live.text, /#EXT-X-ENDLIST/, 'served as a live channel');
+  assert.equal((await req('GET', `/m/${ids.mediaToken}/seg_000.ts`, null, { raw: true })).status, 200);
+  assert.equal((await req('GET', '/m/not-a-token/index.m3u8', null, { raw: true })).status, 404);
+  assert.equal((await req('GET', `/m/${ids.mediaToken}/..%2Fdb.json`, null, { raw: true })).status, 400);
+
+  const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+  await req('PATCH', `/admin/api/users/${ids.mediaUser}`, { expires_at: yesterday });
+  const expired = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.equal(expired.text.split('\n').filter((l) => l.startsWith('#EXTINF')).length, 2);
+  assert.ok(expired.text.includes(mediaUrl), 'expired customers keep it, with the account card');
+});
+
+test('switching the media channel off hides it and sends open players to the card', async () => {
+  const off = await req('PATCH', '/admin/api/media/channel', { enabled: false, name: 'Новости сервиса' });
+  assert.equal(off.status, 200);
+  assert.deepEqual(off.body.channel, { id: 'info-media', name: 'Новости сервиса', enabled: false });
+
+  const playlist = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.ok(!playlist.text.includes('/m/'));
+  const hopped = await hop(`/m/${ids.mediaToken}/index.m3u8`);
+  assert.equal(hopped.status, 302);
+  assert.match(hopped.location, /\/hls\/[^/]+\/index\.m3u8$/);
+
+  await req('PATCH', '/admin/api/media/channel', { enabled: true });
+  const back = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.match(back.text, /,Новости сервиса\n/);
+  assert.equal((await req('PATCH', '/admin/api/media/channel', { name: '  ' })).status, 400);
+});
+
+test('the admin adds, edits, reorders and deletes media slides', async () => {
+  const added = await req('POST', '/admin/api/media/items', { type: 'text', markdown: '# Привет', seconds: 20 });
+  assert.equal(added.status, 200);
+  const text = added.body.items.at(-1);
+  assert.equal(text.type, 'text');
+  assert.equal(text.seconds, 20);
+  assert.equal(text.scroll_speed, 40);
+
+  assert.equal((await req('POST', '/admin/api/media/items', { type: 'text', markdown: '' })).status, 400);
+  assert.equal((await req('POST', '/admin/api/media/items', { type: 'video' })).status, 400);
+  assert.equal((await req('PATCH', `/admin/api/media/items/${text.id}`, { seconds: 0 })).status, 400);
+  const edited = await req('PATCH', `/admin/api/media/items/${text.id}`, { markdown: '# Пока', scroll_speed: 80 });
+  assert.equal(edited.body.items.find((i) => i.id === text.id).markdown, '# Пока');
+
+  // A real multipart upload of a small PNG.
+  const sharp = (await import('sharp')).default;
+  const png = await sharp({
+    create: { width: 64, height: 48, channels: 3, background: '#336699' },
+  }).png().toBuffer();
+  const form = new FormData();
+  form.append('file', new Blob([png], { type: 'image/png' }), 'картинка.png');
+  form.append('caption', 'Подпись');
+  const uploaded = await fetch(`${base}/admin/api/media/upload`, {
+    method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: form,
+  });
+  assert.equal(uploaded.status, 200);
+  const image = (await uploaded.json()).items.at(-1);
+  assert.equal(image.type, 'image');
+  assert.equal(image.caption, 'Подпись');
+  assert.equal(image.original_name, 'картинка.png');
+  const filesDir = path.join(DATA_DIR, 'media', 'files');
+  assert.equal(fs.readdirSync(filesDir).length, 1);
+  assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'media', 'incoming')), [], 'the raw upload is gone');
+  assert.equal((await req('GET', `/admin/api/media/items/${image.id}/thumb`, null, { raw: true })).status, 200);
+
+  // Not an accepted type, and not really an image.
+  const pdf = new FormData();
+  pdf.append('file', new Blob(['%PDF'], { type: 'application/pdf' }), 'doc.pdf');
+  const refused = await fetch(`${base}/admin/api/media/upload`, {
+    method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: pdf,
+  });
+  assert.equal(refused.status, 415);
+  const fake = new FormData();
+  fake.append('file', new Blob(['not an image'], { type: 'image/png' }), 'fake.png');
+  const broken = await fetch(`${base}/admin/api/media/upload`, {
+    method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: fake,
+  });
+  assert.equal(broken.status, 400);
+  assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'media', 'incoming')), []);
+
+  // An upload without the CSRF header is refused like every other mutation.
+  const noCsrf = await fetch(`${base}/admin/api/media/upload`, { method: 'POST', headers: { cookie }, body: form });
+  assert.equal(noCsrf.status, 403);
+
+  const order = await req('PUT', '/admin/api/media/order', { ids: [image.id, text.id] });
+  assert.deepEqual(order.body.items.map((i) => i.id), [image.id, text.id]);
+  assert.equal((await req('PUT', '/admin/api/media/order', { ids: [image.id] })).status, 400);
+
+  // Deleting a slide deletes its file from disk.
+  const removed = await req('DELETE', `/admin/api/media/items/${image.id}`);
+  assert.deepEqual(removed.body.items.map((i) => i.id), [text.id]);
+  assert.deepEqual(fs.readdirSync(filesDir), []);
+  await req('DELETE', `/admin/api/media/items/${text.id}`);
+  assert.equal((await req('DELETE', `/admin/api/media/items/${text.id}`)).status, 404);
+  await req('DELETE', `/admin/api/users/${ids.mediaUser}`);
 });

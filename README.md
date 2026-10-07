@@ -31,6 +31,7 @@ lost access and what a renewal costs.
 - **Expired-account offer slide** — expired customers see the available plans in an automatic 2-, 3- or 4-column grid, each listing the channel categories it includes.
 - **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin, plus the upstream provider's own maintenance/outage notices pulled automatically from its news feed (listed alongside your incidents in blue — the status turns blue rather than green when only the provider has trouble; channel-lineup news is filtered out).
 - **Branding intro animation**, configurable (`INTRO_*`) or disablable, and **background music** (bundled track or your own).
+- **Media channel** — a second channel in **Информация** with your own looping slides: formatted text pages (Markdown, long pages scroll), images with captions and videos. One loop for every customer, expired ones included. Videos are re-encoded to 720p and the original deleted; a disk budget caps the total.
 - **Programme guide** — a per-customer XMLTV guide (plus the OTT-play FOSS JSON format) carrying service and account status.
 - **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API.
 
@@ -97,12 +98,14 @@ regeneration, no re-issued link.
 What it contains, in order:
 
 - the **Информация** channel first (this server's own HLS stream at
-  `/hls/<token>/index.m3u8`), then
+  `/hls/<token>/index.m3u8`), and the **Медиа** channel after it once it has
+  slides (`/m/<token>/index.m3u8`), then
 - the categories their **plan** grants — minus anything withheld from this
   customer personally, plus anything granted only to them.
 
 When the subscription expires — or you deactivate the customer — the same URL
-starts returning **only** the Информация channel. Move the expiry date forward
+starts returning **only** the Информация category (the account channel, plus
+the media channel if it is on). Move the expiry date forward
 and the full list is back on the next refresh.
 
 ### Stream gateway (taking a channel back without a playlist refresh)
@@ -263,7 +266,7 @@ the other channels in a combined playlist.
 
 ## Admin panel
 
-`http://<host>:9222/admin` — sign in with `ADMIN_PASSWORD`. Six sections:
+`http://<host>:9222/admin` — sign in with `ADMIN_PASSWORD`. The sections:
 
 **Обзор** — headline numbers, who is about to expire, current service status.
 
@@ -315,11 +318,28 @@ customers can't be deleted until they are moved off it.
 **Инфоканал** — branding (service name + tagline), incidents feeding the status
 board, and the "rebuild all streams" control.
 
+**Медиаканал** — the second channel of Информация («Медиа» by default; rename
+or switch it off here). Its slides play in order, in a loop, the same for every
+customer:
+
+- *Текст* — a page written in Markdown (headings, **bold**, *italic*, lists,
+  quotes, tables) with a live preview rendered by the same code as the channel.
+  A page that fits the screen holds for its seconds; a longer one scrolls at the
+  speed you set.
+- *Изображение* — JPG/PNG/WebP, fitted to the screen with an optional caption.
+- *Видео* — MP4/MKV/MOV/WebM. Re-encoded once to the channel resolution with its
+  own sound (background music if it has none); the original upload is deleted.
+
+Drag the handle to reorder. Deleting a slide deletes its file from disk. The
+channel appears in playlists once it has a ready slide, and the page shows the
+disk used against `MEDIA_QUOTA_MB` — an upload that would not fit is refused.
+
 **Уведомления** — the global email switch, provider health and the send log.
 
 > Playlist edits never trigger an ffmpeg rebuild — the `.m3u` is rendered per
 > request. Only plan, branding and incident changes re-encode the info channel,
-> and those show the progress banner.
+> and those show the progress banner. Media-channel edits rebuild only the media
+> loop, in the background, re-encoding just the slides that changed.
 
 ## Background music
 
@@ -369,6 +389,8 @@ it to `.env` and edit. The most-used settings:
 | `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
 | `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
 | `INTRO_TRANSITION` | `slideleft` | ffmpeg `xfade` transition from the brand slide into the card (`fade`, `wipeleft`, `dissolve`, `smoothleft`, …). |
+| `MEDIA_MAX_VIDEO_MB` / `MEDIA_MAX_IMAGE_MB` | `300` / `20` | Media channel: largest accepted upload per file. |
+| `MEDIA_QUOTA_MB` | `2048` | Media channel: disk budget for everything it stores (images, 720p video copies, cached clips, the loop). |
 | `MUSIC_FILE` | `assets/music/background.mp3` | Background track. |
 | `DATA_DIR` | `data` | Where the JSON stores + generated HLS live (the Docker volume). |
 
@@ -381,6 +403,8 @@ State is kept in two JSON files, plus the generated streams:
 | `DATA_DIR/db.json` | customers, plans, incidents, subscribers, settings |
 | `DATA_DIR/catalog.json` | playlist sources, categories, channels, per-customer access |
 | `DATA_DIR/hls/<userId>/` | that customer's generated info-channel segments |
+| `DATA_DIR/media/` | media channel files: images, 720p video copies, cached per-slide clips |
+| `DATA_DIR/hls/_media/` | the media channel's loop (one for everyone) |
 
 The catalog is a separate file on purpose: a provider list can be tens of
 thousands of channels, and both stores rewrite the whole file on every save —
@@ -477,6 +501,14 @@ out by `/admin/api/state`.
 | `PATCH` | `/admin/api/settings` | `{brand_name, tagline}` |
 | `PATCH` | `/admin/api/gateway` | `{enabled}` — stream gateway on/off (no regeneration) |
 | `POST` | `/admin/api/regenerate-all` | rebuild all streams |
+| `GET` | `/admin/api/media` | media channel: name/switch, slides, build status, disk usage |
+| `PATCH` | `/admin/api/media/channel` | `{name, enabled}` |
+| `POST` | `/admin/api/media/items` | add a text page `{type: 'text', markdown, seconds, scroll_speed}` |
+| `POST` | `/admin/api/media/upload` | multipart `file` (+ optional `caption`, `seconds`) → image or video slide |
+| `PATCH`/`DELETE` | `/admin/api/media/items/:id` | edit a slide / delete it and its files |
+| `PUT` | `/admin/api/media/order` | `{ids[]}` → new play order |
+| `POST` | `/admin/api/media/preview` | `{markdown, …}` → how the text page renders |
+| `POST` | `/admin/api/media/rebuild` | rebuild the media loop from scratch |
 
 ## Security
 

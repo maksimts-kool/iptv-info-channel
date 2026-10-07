@@ -23,6 +23,7 @@ import {
   requireAuth, requireCsrf, csrfToken, checkPassword, setSession, clearSession,
 } from './auth.js';
 import catalogRouter from './catalog.js';
+import mediaRouter from './media.js';
 import {
   renderUserPlaylist, syncGatewaySettings, gatewayDevices, gatewayDeviceCount, forgetGatewayDevices,
 } from './stream.js';
@@ -63,8 +64,10 @@ export function incidentJson(i) {
 
 // Settings as handed to the browser: the provider session cookie is a
 // credential and stays server-side (the admin sees only `cookie_set`).
+// The media channel's slides are left out too — not secret, but they can be
+// tens of kilobytes of text and have their own endpoint (GET /api/media).
 export function publicSettings(settings) {
-  const { provider_news: _secret, ...rest } = settings || {};
+  const { provider_news: _secret, media_channel: _media, ...rest } = settings || {};
   return rest;
 }
 
@@ -402,6 +405,8 @@ router.use('/api', requireAuth, requireCsrf, express.json());
 // Channel-catalog surface (sources, categories, channels, per-customer access).
 // Mounted inside /api so it inherits the auth + CSRF middleware above.
 router.use('/api', catalogRouter);
+// Media channel (text/image/video slides) — same inheritance as the catalog.
+router.use('/api', mediaRouter);
 
 router.get('/api/state', (req, res) => {
   const incidents = Incidents.all();

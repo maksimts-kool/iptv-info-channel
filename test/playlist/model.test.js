@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseM3u } from '../../src/playlist/m3u.js';
 import {
-  INFO_CATEGORY_ID, INFO_CHANNEL_ID,
+  INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID,
   ensureBuiltins, mergeSourceChannels, resolveUserChannels, resolveChannelAccess,
   effectiveEnabled, categoryEnabledFor, channelKey, categoryKey, channelCounts,
   sourceDueAt, sourceIsDue,
@@ -167,7 +167,7 @@ test('categoryEnabledFor: pin beats the kill switch, which beats the plan', () =
 test('resolveUserChannels returns every enabled channel when no plan restricts it', () => {
   const { state } = seeded();
   const names = resolveUserChannels(state).map((e) => e.channel.name);
-  assert.deepEqual(names, ['', 'Sport 1', 'Sport 2', 'News 1']);
+  assert.deepEqual(names, ['', 'Медиа', 'Sport 1', 'Sport 2', 'News 1']);
   // The info channel leads the list (its category sorts first).
   assert.equal(resolveUserChannels(state)[0].channel.id, INFO_CHANNEL_ID);
 });
@@ -179,13 +179,13 @@ test('a customer only receives the categories their plan grants', () => {
   const names = resolveUserChannels(state, {
     planCategories: new Set([sport.id]),
   }).map((e) => e.channel.name);
-  assert.deepEqual(names, ['', 'Sport 1', 'Sport 2'], 'news is not in the plan');
+  assert.deepEqual(names, ['', 'Медиа', 'Sport 1', 'Sport 2'], 'news is not in the plan');
 });
 
 test('a plan granting nothing leaves the customer with Информация alone', () => {
   const { state } = seeded();
   const entries = resolveUserChannels(state, { planCategories: new Set() });
-  assert.deepEqual(entries.map((e) => e.channel.id), [INFO_CHANNEL_ID]);
+  assert.deepEqual(entries.map((e) => e.channel.id), [INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID]);
 });
 
 test('changing the plan changes the playlist with no other edit', () => {
@@ -195,8 +195,8 @@ test('changing the plan changes the playlist with no other edit', () => {
 
   const cheap = resolveUserChannels(state, { planCategories: new Set([news.id]) });
   const full = resolveUserChannels(state, { planCategories: new Set([sport.id, news.id]) });
-  assert.deepEqual(cheap.map((e) => e.channel.name), ['', 'News 1']);
-  assert.deepEqual(full.map((e) => e.channel.name), ['', 'Sport 1', 'Sport 2', 'News 1']);
+  assert.deepEqual(cheap.map((e) => e.channel.name), ['', 'Медиа', 'News 1']);
+  assert.deepEqual(full.map((e) => e.channel.name), ['', 'Медиа', 'Sport 1', 'Sport 2', 'News 1']);
 });
 
 test('a personal pin is an exception on top of the plan, in both directions', () => {
@@ -209,13 +209,13 @@ test('a personal pin is an exception on top of the plan, in both directions', ()
     planCategories,
     overrides: { categories: { [news.id]: true } },
   });
-  assert.deepEqual(bonus.map((e) => e.channel.name), ['', 'Sport 1', 'Sport 2', 'News 1']);
+  assert.deepEqual(bonus.map((e) => e.channel.name), ['', 'Медиа', 'Sport 1', 'Sport 2', 'News 1']);
 
   const trimmed = resolveUserChannels(state, {
     planCategories,
     overrides: { categories: { [sport.id]: false } },
   });
-  assert.deepEqual(trimmed.map((e) => e.channel.name), ['']);
+  assert.deepEqual(trimmed.map((e) => e.channel.name), ['', 'Медиа']);
 });
 
 test('the global kill switch hides a category even from a plan that grants it', () => {
@@ -225,14 +225,14 @@ test('the global kill switch hides a category even from a plan that grants it', 
   const names = resolveUserChannels(state, {
     planCategories: new Set([sport.id]),
   }).map((e) => e.channel.name);
-  assert.deepEqual(names, ['']);
+  assert.deepEqual(names, ['', 'Медиа']);
 });
 
 test('a globally disabled category hides its channels', () => {
   const { state } = seeded();
   state.categories.find((c) => c.name === 'Спорт').enabled = false;
   const names = resolveUserChannels(state).map((e) => e.channel.name);
-  assert.deepEqual(names, ['', 'News 1']);
+  assert.deepEqual(names, ['', 'Медиа', 'News 1']);
 });
 
 test('per-customer overrides subtract and grant without touching other customers', () => {
@@ -244,12 +244,12 @@ test('per-customer overrides subtract and grant without touching other customers
   const vip = resolveUserChannels(state, {
     overrides: { categories: { [news.id]: true } },
   }).map((e) => e.channel.name);
-  assert.deepEqual(vip, ['', 'Sport 1', 'Sport 2', 'News 1'], 'granted the hidden category');
+  assert.deepEqual(vip, ['', 'Медиа', 'Sport 1', 'Sport 2', 'News 1'], 'granted the hidden category');
 
   const trimmed = resolveUserChannels(state, {
     overrides: { categories: { [sport.id]: false } },
   }).map((e) => e.channel.name);
-  assert.deepEqual(trimmed, [''], 'lost sport, never had news');
+  assert.deepEqual(trimmed, ['', 'Медиа'], 'lost sport, never had news');
 
   // The catalog itself is untouched by either resolution.
   assert.equal(sport.enabled, true);
@@ -261,7 +261,7 @@ test('a single channel can be withheld from one customer', () => {
   const names = resolveUserChannels(state, {
     overrides: { channels: { [sport2.id]: false } },
   }).map((e) => e.channel.name);
-  assert.deepEqual(names, ['', 'Sport 1', 'News 1']);
+  assert.deepEqual(names, ['', 'Медиа', 'Sport 1', 'News 1']);
 });
 
 test('a locked account keeps only Информация, whatever its plan or overrides say', () => {
@@ -272,7 +272,7 @@ test('a locked account keeps only Информация, whatever its plan or ove
     planCategories: new Set(state.categories.map((c) => c.id)),
     overrides: { categories: { [sport.id]: true } },
   });
-  assert.deepEqual(entries.map((e) => e.channel.id), [INFO_CHANNEL_ID]);
+  assert.deepEqual(entries.map((e) => e.channel.id), [INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID]);
   assert.equal(entries[0].category.id, INFO_CATEGORY_ID);
 });
 
@@ -280,15 +280,15 @@ test('unlocking restores the plan\'s categories with no write in between', () =>
   const { state } = seeded();
   const sport = state.categories.find((c) => c.name === 'Спорт');
   const plan = { planCategories: new Set([sport.id]) };
-  assert.equal(resolveUserChannels(state, { ...plan, locked: true }).length, 1);
-  assert.equal(resolveUserChannels(state, { ...plan, locked: false }).length, 3);
+  assert.equal(resolveUserChannels(state, { ...plan, locked: true }).length, 2);
+  assert.equal(resolveUserChannels(state, { ...plan, locked: false }).length, 4);
 });
 
 test('missing channels never reach a customer', () => {
   const { state } = seeded();
   state.channels.find((c) => c.name === 'Sport 1').missing = true;
   const names = resolveUserChannels(state).map((e) => e.channel.name);
-  assert.deepEqual(names, ['', 'Sport 2', 'News 1']);
+  assert.deepEqual(names, ['', 'Медиа', 'Sport 2', 'News 1']);
 });
 
 test('channelCounts totals per category and ignores missing rows', () => {
@@ -385,4 +385,34 @@ test('the account channel stays playable for an expired customer', () => {
   });
   assert.equal(access.allowed, true);
   assert.equal(access.category.id, INFO_CATEGORY_ID);
+});
+
+test('ensureBuiltins adds the media channel to Информация, right after the account channel', () => {
+  const state = emptyState();
+  ensureBuiltins(state);
+  const media = state.channels.filter((c) => c.id === INFO_MEDIA_CHANNEL_ID);
+  assert.equal(media.length, 1, 'created exactly once');
+  assert.equal(media[0].category_id, INFO_CATEGORY_ID);
+  assert.equal(media[0].builtin, true);
+  assert.deepEqual(resolveUserChannels(state).map((e) => e.channel.id), [INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID]);
+  // An admin rename survives a later ensureBuiltins.
+  media[0].name = 'Новости сервиса';
+  ensureBuiltins(state);
+  assert.equal(state.channels.find((c) => c.id === INFO_MEDIA_CHANNEL_ID).name, 'Новости сервиса');
+});
+
+test('the media channel reaches expired customers, but obeys its own switch', () => {
+  const { state } = seeded();
+  const locked = { locked: true, planCategories: new Set() };
+  assert.equal(resolveChannelAccess(state, INFO_MEDIA_CHANNEL_ID, locked).allowed, true);
+
+  const media = state.channels.find((c) => c.id === INFO_MEDIA_CHANNEL_ID);
+  media.enabled = false;
+  assert.equal(resolveChannelAccess(state, INFO_MEDIA_CHANNEL_ID, locked).reason, 'channel');
+  assert.deepEqual(resolveUserChannels(state, locked).map((e) => e.channel.id), [INFO_CHANNEL_ID]);
+
+  // …and a per-customer pin wins either way, in both resolvers.
+  const pinned = { ...locked, overrides: { channels: { [INFO_MEDIA_CHANNEL_ID]: true } } };
+  assert.equal(resolveChannelAccess(state, INFO_MEDIA_CHANNEL_ID, pinned).allowed, true);
+  assert.ok(resolveUserChannels(state, pinned).some((e) => e.channel.id === INFO_MEDIA_CHANNEL_ID));
 });

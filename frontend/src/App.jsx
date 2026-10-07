@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
-  MenuOutlined, PlaySquareOutlined, TeamOutlined, WifiOutlined,
+  MenuOutlined, PictureOutlined, PlaySquareOutlined, TeamOutlined, WifiOutlined,
 } from '@ant-design/icons';
 import {
   api, AuthError, login, logout, setCsrfToken,
@@ -17,6 +17,7 @@ import ClientsPage from './pages/ClientsPage.jsx';
 import DevicesPage from './pages/DevicesPage.jsx';
 import PlansPage from './pages/PlansPage.jsx';
 import InfoChannelPage from './pages/InfoChannelPage.jsx';
+import MediaPage from './pages/MediaPage.jsx';
 import NotifyPage from './pages/NotifyPage.jsx';
 
 const { Header, Content, Sider } = Layout;
@@ -34,6 +35,7 @@ const SECTIONS = [
   { key: 'devices', label: 'Устройства', Icon: LaptopOutlined, title: 'Устройства', Page: DevicesPage },
   { key: 'plans', label: 'Тарифы', Icon: EuroCircleOutlined, title: 'Тарифы и цены', Page: PlansPage },
   { key: 'info', label: 'Инфоканал', Icon: DesktopOutlined, title: 'Информационный канал', Page: InfoChannelPage },
+  { key: 'media', label: 'Медиаканал', Icon: PictureOutlined, title: 'Медиаканал', Page: MediaPage },
   { key: 'notify', label: 'Уведомления', Icon: MailOutlined, title: 'Уведомления по почте', Page: NotifyPage },
 ];
 
