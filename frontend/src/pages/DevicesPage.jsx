@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Col, Empty, InputNumber, Popconfirm, Progress, Row, Space,
-  Statistic, Switch, Table, Tag, Tooltip, Typography,
+  Statistic, Switch, Tag, Tooltip, Typography,
 } from 'antd';
 import {
   ClearOutlined, DesktopOutlined, ReloadOutlined, TeamOutlined, UserOutlined, WarningOutlined,
 } from '@ant-design/icons';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
 
@@ -27,6 +28,9 @@ function shortAgent(ua) {
   const first = ua.split(/[\s(]/)[0];
   return first.length > 32 ? `${first.slice(0, 32)}…` : first;
 }
+
+// An IPv4 client reaches a dual-stack socket as "::ffff:1.2.3.4"; show the plain address.
+const plainIp = (ip) => (ip || '').replace(/^::ffff:/i, '');
 
 const openClient = (id) => { window.location.hash = `#/clients/${id}`; };
 
@@ -127,7 +131,9 @@ export default function DevicesPage({
       title: 'IP',
       dataIndex: 'ip',
       width: 150,
-      render: (ip) => <Typography.Text type="secondary" copyable={{ text: ip }}>{ip}</Typography.Text>,
+      render: (ip) => (
+        <Typography.Text type="secondary" copyable={{ text: plainIp(ip) }}>{plainIp(ip)}</Typography.Text>
+      ),
     },
     { title: 'Смотрит', width: 120, render: (_, d) => ago(d.first_seen) },
   ];
@@ -274,7 +280,7 @@ export default function DevicesPage({
         styles={{ body: { padding: clients.length ? 0 : undefined } }}
       >
         {clients.length ? (
-          <Table
+          <ResponsiveTable
             size="middle"
             rowKey="user_id"
             pagination={clients.length > 20 ? { pageSize: 20 } : false}
@@ -283,7 +289,7 @@ export default function DevicesPage({
             rowClassName={(c) => (c.devices.some((d) => !d.allowed) ? 'row-over-limit' : '')}
             expandable={{
               expandedRowRender: (c) => (
-                <Table
+                <ResponsiveTable
                   size="small"
                   pagination={false}
                   rowKey={(d) => `${d.ip}|${d.first_seen}`}
@@ -324,7 +330,7 @@ export default function DevicesPage({
                         onPressEnter={(e) => savePlanLimit(p, e.target.value)}
                       />
                     </Col>
-                    <Col style={{ width: 110 }}>
+                    <Col flex="none">
                       {p.max_devices > 0
                         ? <Tag color="blue">ограничен</Tag>
                         : <Tag>без лимита</Tag>}

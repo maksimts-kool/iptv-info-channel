@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Badge, Button, Card, Input, Space, Switch, Table, Tag, Typography,
+  Badge, Button, Card, Input, Space, Switch, Tag, Typography,
 } from 'antd';
 import { CheckCircleOutlined, SendOutlined } from '@ant-design/icons';
+import ResponsiveTable from './ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 
 const NOTIFY_TYPE = {
@@ -86,18 +87,19 @@ export default function NotifyCard({
         />
       ) : null}
     >
-      <Space size="large" align="center" wrap style={{ marginBottom: 16 }}>
+      {/* A wrapping flex row rather than <Space>: the address field has to be
+          able to shrink to the screen, which a Space item never does. */}
+      <div className="notify-controls">
         <Space>
           <Switch checked={!!data?.enabled} onChange={toggle} />
           <span>Включить уведомления (QR на интро-слайде)</span>
         </Space>
-        <Space.Compact>
+        <Space.Compact className="notify-test">
           <Input
             type="email"
             placeholder="you@example.com"
             value={testEmail}
             onChange={(e) => setTestEmail(e.target.value)}
-            style={{ width: 220 }}
           />
           <Button icon={<SendOutlined />} onClick={sendTest}>Отправить тест</Button>
         </Space.Compact>
@@ -109,8 +111,8 @@ export default function NotifyCard({
             </>
           )}
         </Typography.Text>
-      </Space>
-      <Table
+      </div>
+      <ResponsiveTable
         size="small"
         rowKey={(e) => `${e.at}|${e.type}|${e.email || ''}`}
         columns={LOG_COLUMNS}

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Empty, Space, Table, Typography,
+  Alert, Badge, Button, Card, Empty, Space, Typography,
 } from 'antd';
 import { DesktopOutlined, ReloadOutlined } from '@ant-design/icons';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 
 // Who is watching this customer right now, as the stream gateway sees it: every
@@ -77,7 +78,7 @@ export default function ClientDevicesCard({ user, api, onAuthError, message }) {
           />
         ) : null}
         {devices.length ? (
-          <Table
+          <ResponsiveTable
             size="small"
             pagination={false}
             rowKey={(d) => `${d.ip}|${d.first_seen}`}

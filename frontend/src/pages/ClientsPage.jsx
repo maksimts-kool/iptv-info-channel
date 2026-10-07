@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import {
-  Button, Card, Form, Input, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tag,
+  Button, Card, Form, Grid, Input, Modal, Popconfirm, Segmented, Select, Space, Switch, Tag,
   Typography,
 } from 'antd';
 import {
   CopyOutlined, DeleteOutlined, FolderOpenOutlined, PlusOutlined,
 } from '@ant-design/icons';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { periodSuffix, planOptions, expiryForPlan } from '../lib/plans.js';
 import ClientDrawer from '../clients/ClientDrawer.jsx';
@@ -32,6 +33,8 @@ export default function ClientsPage(shared) {
   const {
     state, api, withRegen, reload, message, onAuthError,
   } = shared;
+  const screens = Grid.useBreakpoint();
+  const phone = screens.md === false;
   const users = state?.users || [];
   const plans = state?.plans || [];
   const subByUser = useMemo(
@@ -240,18 +243,21 @@ export default function ClientsPage(shared) {
         </Button>
       )}
     >
-      <Space wrap style={{ marginBottom: 16 }}>
-        <Segmented options={FILTERS} value={statusFilter} onChange={setStatusFilter} />
+      {/* Five segments are wider than a phone, so there they become a dropdown. */}
+      <Space wrap style={{ marginBottom: 16, width: phone ? '100%' : undefined }} className={phone ? 'filter-bar-phone' : undefined}>
+        {phone
+          ? <Select options={FILTERS} value={statusFilter} onChange={setStatusFilter} style={{ width: '100%' }} />
+          : <Segmented options={FILTERS} value={statusFilter} onChange={setStatusFilter} />}
         <Input.Search
           allowClear
           placeholder="Поиск по имени"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ width: 240 }}
+          style={{ width: phone ? '100%' : 240 }}
         />
       </Space>
 
-      <Table
+      <ResponsiveTable
         rowKey="id"
         size="small"
         columns={columns}

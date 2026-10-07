@@ -132,9 +132,136 @@ body {
   .ant-card-head {
     padding-inline: 12px;
   }
+
+  /* A card header with controls on the right ("Сейчас смотрят" + refresh,
+   * "Клиенты" + add button) squeezed the title down to a few letters. Let the
+   * controls drop below the title instead. */
+  .ant-card .ant-card-head-wrapper {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding-block: 10px;
+  }
+  .ant-card .ant-card-head-title {
+    flex: 1 0 auto;
+    max-width: 100%;
+    white-space: normal;
+  }
+  .ant-card .ant-card-extra {
+    margin-inline-start: 0;
+  }
+}
+
+/* Phone filter bar on Клиенты: dropdown and search each take a full line. */
+.filter-bar-phone > .ant-space-item {
+  width: 100%;
+}
+
+/* Уведомления: switch, test-send field and provider line wrap as needed; the
+ * address field shrinks to fit instead of pushing the button off-screen. */
+.notify-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  margin-bottom: 16px;
+}
+.notify-test {
+  flex: 1 1 300px;
+  max-width: 380px;
+  min-width: 0;
+}
+.notify-test .ant-input {
+  min-width: 0;
 }
 
 /* Устройства tab: a customer with a device refused by the limit. */
 .row-over-limit > td {
   background: #fff1f0;
+}
+.table-stacked tr.row-over-limit {
+  background: #fff1f0;
+}
+
+/* --- Tables on a phone (ResponsiveTable) -------------------------------- *
+ * Each row becomes a card: the first column is the heading (next to the
+ * checkbox / expand button, if any), every other cell is a "label  value" line
+ * with the label taken from the cell's data-label. Cells without a label
+ * (action buttons) take a full line of their own. */
+.table-stacked .ant-table-thead,
+.table-stacked colgroup,
+.table-stacked .ant-table-measure-row {
+  display: none;
+}
+.table-stacked table,
+.table-stacked tbody {
+  display: block;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-row > td {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  width: auto !important;
+  padding: 3px 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-row > td[data-label]::before {
+  content: attr(data-label);
+  flex: none;
+  max-width: 45%;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  text-align: left;
+}
+/* Unlabelled, non-heading cells (row actions) line up on the left. */
+.table-stacked .ant-table-tbody > tr.ant-table-row > td:not([data-label]) {
+  justify-content: flex-start;
+  text-align: left;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-row > td.stacked-primary {
+  flex: 1 1 0;
+  font-size: 15px;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-row > td.ant-table-selection-column,
+.table-stacked .ant-table-tbody > tr.ant-table-row > td.ant-table-row-expand-icon-cell {
+  flex: none;
+  justify-content: center;
+}
+/* Rows keep their states as a whole-card tint now that cells are transparent. */
+.table-stacked .ant-table-tbody > tr.ant-table-row:hover {
+  background: #fafafa;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-row-selected {
+  background: #e6f4ff;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-expanded-row,
+.table-stacked .ant-table-tbody > tr.ant-table-placeholder {
+  display: block;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-placeholder > td {
+  display: block;
+}
+.table-stacked .ant-table-tbody > tr.ant-table-expanded-row > td {
+  display: block;
+  padding: 8px !important;
+}
+/* AntD indents a nested table past the expand column; there is none here. */
+.table-stacked .ant-table-tbody > tr.ant-table-expanded-row .ant-table {
+  margin: 0 !important;
 }

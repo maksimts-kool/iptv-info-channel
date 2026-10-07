@@ -1,5 +1,6 @@
-import { Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Row, Space, Statistic, Tag, Typography } from 'antd';
 import { NotificationOutlined } from '@ant-design/icons';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { count } from '../lib/format.js';
 import { PROVIDER_BLUE } from '../components/ProviderNewsCard.jsx';
 
@@ -96,7 +97,7 @@ export default function OverviewPage({ state, go }) {
             title="Требуют внимания"
             extra={<Button size="small" onClick={() => go('clients')}>Все клиенты</Button>}
           >
-            <Table
+            <ResponsiveTable
               rowKey="id"
               size="small"
               pagination={false}

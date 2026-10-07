@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Button, Input, Popconfirm, Segmented, Select, Space, Spin, Table, Tag, Typography,
+  Alert, Button, Input, Popconfirm, Segmented, Select, Space, Spin, Tag, Typography,
 } from 'antd';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 
 // Per-customer channel access.
@@ -236,7 +237,7 @@ export default function ClientAccessTab({ user, api, message, onAuthError, reloa
       />
 
       {view === 'categories' ? (
-        <Table
+        <ResponsiveTable
           rowKey="id"
           size="small"
           loading={saving}
@@ -265,7 +266,7 @@ export default function ClientAccessTab({ user, api, message, onAuthError, reloa
               ]}
             />
           </Space>
-          <Table
+          <ResponsiveTable
             rowKey="id"
             size="small"
             loading={loading || saving}

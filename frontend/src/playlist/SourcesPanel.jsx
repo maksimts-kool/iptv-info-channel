@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import {
-  Alert, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag,
+  Alert, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Switch, Tag,
   Typography,
 } from 'antd';
 import {
   DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined, SyncOutlined,
 } from '@ant-design/icons';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { intervalLabel, untilPretty } from '../lib/format.js';
 
@@ -257,7 +258,7 @@ export default function SourcesPanel({
       ) : null}
 
       {sources.length ? (
-        <Table rowKey="id" size="small" columns={columns} dataSource={sources} pagination={false} scroll={{ x: 'max-content' }} />
+        <ResponsiveTable rowKey="id" size="small" columns={columns} dataSource={sources} pagination={false} scroll={{ x: 'max-content' }} />
       ) : (
         <Empty description="Источников нет. Добавьте ссылку на m3u вашего провайдера — каналы попадут в каталог, и их можно будет переименовывать, перегруппировать и отключать." />
       )}

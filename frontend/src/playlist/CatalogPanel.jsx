@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert, Button, Card, Empty, Form, Input, Modal, Popconfirm, Select, Space, Spin,
-  Switch, Table, Tag, Typography,
+  Switch, Tag, Typography,
 } from 'antd';
 import {
   ArrowDownOutlined, ArrowUpOutlined, DownOutlined, EditOutlined, FolderOpenOutlined,
   PlusOutlined, RightOutlined,
 } from '@ant-design/icons';
+import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
 
@@ -546,7 +547,7 @@ export default function CatalogPanel({
           </Typography.Text>
         </Space>
         {bulkBar(key, state.total, (state.rows || []).length)}
-        <Table
+        <ResponsiveTable
           rowKey="id"
           size="small"
           loading={state.loading}
@@ -638,7 +639,7 @@ export default function CatalogPanel({
             {flat.total ? ' — отметьте нужные, чтобы включить, выключить или перенести их.' : ''}
           </Typography.Text>
           {bulkBar('flat', flat.total, flat.rows.length)}
-          <Table
+          <ResponsiveTable
             rowKey="id"
             size="small"
             loading={flat.loading}
@@ -658,7 +659,7 @@ export default function CatalogPanel({
           />
         </>
       ) : categories.length ? (
-        <Table
+        <ResponsiveTable
           rowKey="id"
           size="small"
           columns={categoryColumns}
