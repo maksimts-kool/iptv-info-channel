@@ -31,7 +31,7 @@ lost access and what a renewal costs.
 - **Expired-account offer slide** — expired customers see the available plans in an automatic 2-, 3- or 4-column grid, each listing the channel categories it includes.
 - **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin, plus the upstream provider's own maintenance/outage notices pulled automatically from its news feed (listed alongside your incidents in blue — the status turns blue rather than green when only the provider has trouble; channel-lineup news is filtered out).
 - **Branding intro animation**, configurable (`INTRO_*`) or disablable, and **background music** (bundled track or your own).
-- **Media channel** — a second channel in **Информация** with your own looping slides: formatted text pages (Markdown, long pages scroll), images with captions and videos. One loop for every customer, expired ones included. Videos are re-encoded to 720p and the original deleted; a disk budget caps the total.
+- **Media channel** — a second channel in **Информация** with your own articles: formatted text with images and videos inside, written in a visual editor. On TV a long article scrolls, stops while each video plays in place, and shows «1/3 · title» in the corner. One loop for every customer, expired ones included. Videos are re-encoded to 720p and the original deleted; a disk budget caps the total.
 - **Programme guide** — a per-customer XMLTV guide (plus the OTT-play FOSS JSON format) carrying service and account status.
 - **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API.
 
@@ -99,7 +99,7 @@ What it contains, in order:
 
 - the **Информация** channel first (this server's own HLS stream at
   `/hls/<token>/index.m3u8`), and the **Медиа** channel after it once it has
-  slides (`/m/<token>/index.m3u8`), then
+  content (`/m/<token>/index.m3u8`), then
 - the categories their **plan** grants — minus anything withheld from this
   customer personally, plus anything granted only to them.
 
@@ -319,27 +319,32 @@ customers can't be deleted until they are moved off it.
 board, and the "rebuild all streams" control.
 
 **Медиаканал** — the second channel of Информация («Медиа» by default; rename
-or switch it off here). Its slides play in order, in a loop, the same for every
-customer:
+or switch it off here). It shows **articles**, one after another, the same for
+every customer:
 
-- *Текст* — a page written in Markdown (headings, **bold**, *italic*, lists,
-  quotes, tables) with a live preview rendered by the same code as the channel.
-  A page that fits the screen holds for its seconds; a longer one scrolls at the
-  speed you set.
-- *Изображение* — JPG/PNG/WebP, fitted to the screen with an optional caption.
-- *Видео* — MP4/MKV/MOV/WebM. Re-encoded once to the channel resolution with its
-  own sound (background music if it has none); the original upload is deleted.
+- **Новая статья** opens the editor: a title (shown in the corner of the
+  screen as «1/3 · Заголовок») and a body written with the toolbar — headings,
+  **bold**, *italic*, strikethrough, code, lists, quotes, code blocks, rules and
+  tables — no Markdown to type. The body is styled like the TV page.
+- **Images and videos go inside the article** from the toolbar (or by dropping
+  or pasting a file into the text). Each one can be full width, half or small,
+  with a caption. JPG/PNG/WebP images; MP4/MKV/MOV/WebM videos, re-encoded once
+  to 720p with the original upload deleted.
+- **Как на ТВ** renders the article on the server exactly as it will air.
+- On TV a long article scrolls; when it reaches a video it **stops while the
+  video plays in its place** (with the video's sound), then carries on.
 
-Drag the handle to reorder. Deleting a slide deletes its file from disk. The
-channel appears in playlists once it has a ready slide, and the page shows the
-disk used against `MEDIA_QUOTA_MB` — an upload that would not fit is refused.
+Drag the handle to reorder articles. Taking an image or video out of an
+article, or deleting the article, deletes its files from disk. The page shows
+the disk used against `MEDIA_QUOTA_MB` — an upload that would not fit is
+refused. The channel appears in playlists once an article has content.
 
 **Уведомления** — the global email switch, provider health and the send log.
 
 > Playlist edits never trigger an ffmpeg rebuild — the `.m3u` is rendered per
 > request. Only plan, branding and incident changes re-encode the info channel,
 > and those show the progress banner. Media-channel edits rebuild only the media
-> loop, in the background, re-encoding just the slides that changed.
+> loop, in the background, re-encoding just the articles that changed.
 
 ## Background music
 
@@ -501,13 +506,14 @@ out by `/admin/api/state`.
 | `PATCH` | `/admin/api/settings` | `{brand_name, tagline}` |
 | `PATCH` | `/admin/api/gateway` | `{enabled}` — stream gateway on/off (no regeneration) |
 | `POST` | `/admin/api/regenerate-all` | rebuild all streams |
-| `GET` | `/admin/api/media` | media channel: name/switch, slides, build status, disk usage |
+| `GET` | `/admin/api/media` | media channel: name/switch, article summaries, build status, disk usage |
 | `PATCH` | `/admin/api/media/channel` | `{name, enabled}` |
-| `POST` | `/admin/api/media/items` | add a text page `{type: 'text', markdown, seconds, scroll_speed}` |
-| `POST` | `/admin/api/media/upload` | multipart `file` (+ optional `caption`, `seconds`) → image or video slide |
-| `PATCH`/`DELETE` | `/admin/api/media/items/:id` | edit a slide / delete it and its files |
+| `POST` | `/admin/api/media/articles` | create an article `{title?, doc?}` |
+| `GET`/`PATCH`/`DELETE` | `/admin/api/media/articles/:id` | the article with its document / save `{title, doc, seconds, scroll_speed}` / delete it and its files |
+| `POST` | `/admin/api/media/articles/:id/assets` | multipart `file` → an image or video asset for that article |
+| `GET` | `/admin/api/media/assets/:id` (`/picture`) | asset status (a video is `processing` until re-encoded) / its picture |
 | `PUT` | `/admin/api/media/order` | `{ids[]}` → new play order |
-| `POST` | `/admin/api/media/preview` | `{markdown, …}` → how the text page renders |
+| `POST` | `/admin/api/media/preview` | `{doc, …}` → how the article renders on TV |
 | `POST` | `/admin/api/media/rebuild` | rebuild the media loop from scratch |
 
 ## Security

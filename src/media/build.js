@@ -1,12 +1,11 @@
-// Turns the media channel's slides into the shared live loop served at
+// Turns the media channel's articles into the shared live loop served at
 // /m/:token/ (see encode/media.js for the two-step clip -> loop design).
 //
-//   - Uploaded videos are re-encoded ONCE, in a one-at-a-time queue, straight
-//     into their clip form; the original upload is deleted afterwards, so only
-//     the 720p copy ever stays on disk.
-//   - Text and image clips are rendered on demand and cached by a hash of
-//     everything that affects them, so a rebuild after editing one slide
-//     re-encodes that slide only.
+//   - Uploaded videos are re-encoded ONCE, in a one-at-a-time queue, into the
+//     720p copy that is kept; the original upload is deleted afterwards.
+//   - Each article is rendered + encoded into one clip, cached by a hash of
+//     everything that affects it (its document, its assets, its place in the
+//     «1/3» order), so a rebuild after editing one article re-encodes only it.
 //   - The loop rebuild is debounced (a burst of edits = one build) and a newer
 //     build aborts a running one, like generateForUser in encode/channel.js.
 import fs from 'node:fs';
@@ -19,30 +18,34 @@ import { FFMPEG, AbortedError, run } from '../encode/ffmpeg.js';
 import { ensureMusic } from '../encode/channel.js';
 import { currentLoopPosition, writeLoopState, LIVE_WINDOW_SEGMENTS } from '../encode/liveloop.js';
 import {
-  stillClipArgs, scrollClipArgs, videoClipArgs, videoThumbArgs, tileUp, textSlideSeconds,
+  articleTimeline, articleClipArgs, videoNormalizeArgs, videoPosterArgs,
   loopRepeats, concatList, loopArgs, probeMedia,
 } from '../encode/media.js';
 import {
-  renderBackgroundPng, renderTextLayer, composeTextFrame, renderImageFrame, slideScale,
+  renderBackgroundPng, renderArticleLayer, renderIndicatorPng, slideScale,
 } from '../render/media.js';
+import { docAssetIds, docHasContent } from './doc.js';
 import {
-  MediaItems, MEDIA_DIRS, DEFAULTS, mediaLoopDir, itemFilePath, ensureMediaDirs, mediaUsage,
+  Articles, Assets, MEDIA_DIRS, DEFAULTS, mediaLoopDir, assetFilePath, assetThumbPath,
+  ensureMediaDirs, mediaUsage, sweepUnusedAssets, sweepAbandonedArticles,
 } from './store.js';
 
-// Bump when the look of text/image slides changes, so cached clips re-render.
-const CLIP_VERSION = 2;
+// Bump when the look of an article changes, so cached clips re-render.
+const CLIP_VERSION = 3;
 // Bump when the loop step itself (loopArgs) changes, so existing loops rebuild.
 const LOOP_VERSION = 2;
 const SIG_FILE = 'sig';
+// An upload nobody saved into an article — or a new article left empty and
+// untitled — is kept this long (its editor may still be open), then swept.
+const UNSAVED_ASSET_TTL_MS = 6 * 60 * 60 * 1000;
 
-// Everything every clip depends on. A video clip encoded under another key
-// (resolution, segment length, …) is re-encoded from itself at the next build.
+// Everything every clip depends on. A video copy made under another key
+// (resolution, frame rate, …) is re-encoded from itself at the next build.
 export function encodeKey() {
   const c = config.channel;
   const m = config.media;
   return JSON.stringify({
-    v: CLIP_VERSION, W: c.width, H: c.height, seg: c.hlsTime,
-    fps: m.fps, preset: m.preset, crf: m.crf, maxrate: m.maxrate,
+    W: c.width, H: c.height, seg: c.hlsTime, fps: m.fps, preset: m.preset, crf: m.crf, maxrate: m.maxrate,
   });
 }
 
@@ -58,7 +61,7 @@ function musicMtime(music) {
 // Status (for the admin page)
 // ---------------------------------------------------------------------------
 
-let status = { state: 'idle', error: null, built_at: null, seconds: 0, slides: 0 };
+let status = { state: 'idle', error: null, built_at: null, seconds: 0, articles: 0 };
 let pendingTimer = null;
 
 export function mediaStatus() {
@@ -70,111 +73,113 @@ export function mediaLoopReady() {
 }
 
 // ---------------------------------------------------------------------------
-// Video uploads
+// Uploads
 // ---------------------------------------------------------------------------
 
-const videoJobs = new Map(); // item id -> AbortController
-let videoQueue = Promise.resolve();
-
-// Queue an uploaded video (already saved as a `processing` item) for its
-// one-time encode. `raw` is the upload in incoming/, deleted afterwards.
-export function queueVideo(itemId, raw) {
-  const ac = new AbortController();
-  videoJobs.set(itemId, ac);
-  videoQueue = videoQueue
-    .then(() => processVideo(itemId, raw, ac.signal))
-    .catch(() => {})
-    .finally(() => videoJobs.delete(itemId));
-  return videoQueue;
-}
-
-// Stop a video's encode (its slide was deleted mid-way).
-export function cancelVideo(itemId) {
-  videoJobs.get(itemId)?.abort();
-}
-
-async function processVideo(itemId, raw, signal) {
-  const startedAt = Date.now();
-  const out = path.join(MEDIA_DIRS.files, `${itemId}.mp4`);
-  const tmp = path.join(MEDIA_DIRS.files, `${itemId}.tmp.mp4`);
-  const thumb = path.join(MEDIA_DIRS.thumbs, `${itemId}.jpg`);
-  try {
-    if (signal.aborted || !MediaItems.get(itemId)) throw new AbortedError();
-    const info = await probeMedia(raw);
-    if (!info.hasVideo || !(info.duration > 0)) throw new Error('в файле нет видеодорожки');
-    const music = await ensureMusic();
-    await run(FFMPEG, videoClipArgs({
-      input: raw, duration: info.duration, hasAudio: info.hasAudio, music, out: tmp,
-    }), `media video encode ${itemId}`, signal);
-    fs.renameSync(tmp, out);
-    await run(FFMPEG, videoThumbArgs({ input: out, duration: info.duration, out: thumb }), `media thumb ${itemId}`)
-      .catch(() => {}); // a missing thumbnail is cosmetic
-    const saved = MediaItems.update(itemId, {
-      status: 'ready',
-      error: null,
-      file: path.basename(out),
-      thumb: fs.existsSync(thumb) ? path.basename(thumb) : null,
-      duration: Math.round(info.duration * 10) / 10,
-      seconds: tileUp(info.duration),
-      size: fs.statSync(out).size,
-      enc: encodeKey(),
-    });
-    if (!saved) throw new AbortedError(); // deleted while encoding
-    log.info('media', 'video ready', {
-      item_id: itemId, duration_s: info.duration, duration_ms: elapsedMs(startedAt),
-    });
-    scheduleMediaBuild('video processed');
-  } catch (e) {
-    for (const file of [tmp, ...(MediaItems.get(itemId) ? [] : [out, thumb])]) fs.rmSync(file, { force: true });
-    if (!e.aborted) {
-      log.error('media', 'video processing failed', { item_id: itemId, error: e.message });
-      MediaItems.update(itemId, { status: 'error', error: String(e.message).slice(0, 200) });
-    }
-  } finally {
-    fs.rmSync(raw, { force: true });
-  }
-}
-
-// Re-encode a ready video whose clip was made under different encode settings
-// (the admin changed the resolution or segment length). Lossy, but the
-// original is gone by design, and it only happens on a settings change.
-async function reencodeVideo(item, music, signal) {
-  const file = itemFilePath(item);
-  const tmp = path.join(MEDIA_DIRS.files, `${item.id}.tmp.mp4`);
-  const info = await probeMedia(file);
-  try {
-    await run(FFMPEG, videoClipArgs({
-      input: file, duration: item.duration || info.duration, hasAudio: info.hasAudio, music, out: tmp,
-    }), `media video re-encode ${item.id}`, signal);
-    fs.renameSync(tmp, file);
-  } finally {
-    fs.rmSync(tmp, { force: true });
-  }
-  return MediaItems.update(item.id, {
-    enc: encodeKey(), seconds: tileUp(item.duration || info.duration), size: fs.statSync(file).size,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Uploaded images: stored downscaled, so a 40-megapixel phone photo doesn't
-// cost 15 MB of the disk budget for a 720p slide.
-// ---------------------------------------------------------------------------
-
-export async function storeImage(itemId, raw) {
+// Images are stored downscaled, so a 40-megapixel phone photo doesn't cost
+// 15 MB of the disk budget for a 720p page. Returns the asset fields.
+export async function storeImage(assetId, raw) {
   const image = sharp(raw, { failOn: 'error' }).rotate();
   const meta = await image.metadata();
   // PNG only when there really is transparency: screenshots and canvas exports
   // carry an alpha channel that is fully opaque, and a JPEG is far smaller.
   const transparent = meta.hasAlpha && !(await sharp(raw).stats()).isOpaque;
   const ext = transparent ? 'png' : 'jpg';
-  const out = path.join(MEDIA_DIRS.files, `${itemId}.${ext}`);
+  const out = path.join(MEDIA_DIRS.files, `${assetId}.${ext}`);
   const resized = image.resize({ width: 1920, height: 1080, fit: 'inside', withoutEnlargement: true });
-  await (ext === 'png' ? resized.png() : resized.jpeg({ quality: 88 })).toFile(out);
-  return { file: path.basename(out), size: fs.statSync(out).size };
+  const info = await (ext === 'png' ? resized.png() : resized.jpeg({ quality: 88 })).toFile(out);
+  return {
+    file: path.basename(out), size: info.size, width: info.width, height: info.height,
+  };
+}
+
+const videoJobs = new Map(); // asset id -> AbortController
+let videoQueue = Promise.resolve();
+
+// Queue an uploaded video (already saved as a `processing` asset) for its
+// one-time encode. `raw` is the upload in incoming/, deleted afterwards.
+export function queueVideo(assetId, raw, info) {
+  const ac = new AbortController();
+  videoJobs.set(assetId, ac);
+  videoQueue = videoQueue
+    .then(() => processVideo(assetId, raw, info, ac.signal))
+    .catch(() => {})
+    .finally(() => videoJobs.delete(assetId));
+  return videoQueue;
+}
+
+// Stop a video's encode (its article was deleted mid-way).
+export function cancelVideo(assetId) {
+  videoJobs.get(assetId)?.abort();
+}
+
+async function encodeVideoCopy(assetId, input, hasAudio, signal) {
+  const out = path.join(MEDIA_DIRS.files, `${assetId}.mp4`);
+  const tmp = path.join(MEDIA_DIRS.files, `${assetId}.tmp.mp4`);
+  const poster = path.join(MEDIA_DIRS.thumbs, `${assetId}.jpg`);
+  try {
+    await run(FFMPEG, videoNormalizeArgs({ input, hasAudio, out: tmp }), `media video encode ${assetId}`, signal);
+    fs.renameSync(tmp, out);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  await run(FFMPEG, videoPosterArgs({ input: out, out: poster }), `media poster ${assetId}`);
+  const info = await probeMedia(out);
+  return {
+    file: path.basename(out),
+    thumb: path.basename(poster),
+    width: info.width,
+    height: info.height,
+    duration: Math.round(info.duration * 1000) / 1000,
+    has_audio: info.hasAudio,
+    size: fs.statSync(out).size,
+    enc: encodeKey(),
+  };
+}
+
+async function processVideo(assetId, raw, info, signal) {
+  const startedAt = Date.now();
+  try {
+    if (signal.aborted || !Assets.get(assetId)) throw new AbortedError();
+    const fields = await encodeVideoCopy(assetId, raw, info.hasAudio, signal);
+    const saved = Assets.update(assetId, { ...fields, status: 'ready', error: null });
+    if (!saved) throw new AbortedError(); // deleted while encoding
+    log.info('media', 'video ready', {
+      asset_id: assetId, duration_s: fields.duration, bytes: fields.size, duration_ms: elapsedMs(startedAt),
+    });
+    scheduleMediaBuild('video processed');
+  } catch (e) {
+    if (!Assets.get(assetId)) {
+      for (const f of [`${assetId}.mp4`, `${assetId}.tmp.mp4`]) fs.rmSync(path.join(MEDIA_DIRS.files, f), { force: true });
+      fs.rmSync(path.join(MEDIA_DIRS.thumbs, `${assetId}.jpg`), { force: true });
+    } else if (!e.aborted) {
+      log.error('media', 'video processing failed', { asset_id: assetId, error: e.message });
+      Assets.update(assetId, { status: 'error', error: String(e.message).slice(0, 200) });
+    }
+  } finally {
+    fs.rmSync(raw, { force: true });
+  }
+}
+
+// A ready video whose copy was made under other encode settings (the admin
+// changed the resolution): re-encoded from that copy. Lossy, but the original
+// is gone by design, and it only happens on a settings change.
+async function refreshVideoCopy(asset, signal) {
+  const input = path.join(MEDIA_DIRS.files, `${asset.id}.src.mp4`);
+  fs.renameSync(assetFilePath(asset), input);
+  try {
+    const fields = await encodeVideoCopy(asset.id, input, asset.has_audio, signal);
+    return Assets.update(asset.id, fields);
+  } catch (e) {
+    fs.renameSync(input, assetFilePath(asset));
+    throw e;
+  } finally {
+    fs.rmSync(input, { force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Clips
+// Article clips
 // ---------------------------------------------------------------------------
 
 function clipPaths(key) {
@@ -194,74 +199,105 @@ function cachedClip(key) {
   }
 }
 
-// Render + encode one cached clip via `make(workDir, out) -> seconds`.
-async function buildClip(key, make) {
+// The article's ready assets, as the renderer wants them. A video still being
+// processed (or broken) is left out of the page until it is ready.
+export function articleMedia(article) {
+  return docAssetIds(article.doc)
+    .map((id) => Assets.get(id))
+    .filter((a) => a && a.status !== 'processing' && a.status !== 'error' && fs.existsSync(assetFilePath(a)))
+    .map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      width: a.width,
+      height: a.height,
+      duration: a.duration,
+      has_audio: !!a.has_audio,
+      file: assetFilePath(a),
+      picture: a.kind === 'video' ? assetThumbPath(a) : assetFilePath(a),
+      stamp: [a.file, a.size, a.enc || ''],
+    }));
+}
+
+// Lay an article out: the page layer, its timeline, and where its videos go.
+// Shared by the encoder and the admin preview so both tell the same story.
+export async function layoutArticle(article, media, layerFile) {
+  const layer = await renderArticleLayer(article.doc, media, layerFile);
+  if (!layer) return null;
+  const byId = new Map(media.map((m) => [m.id, m]));
+  const videos = layer.videos.map((v) => {
+    const m = byId.get(v.assetId);
+    return {
+      file: m.file, x: v.x, y: v.y, width: v.width, height: v.height, focus: v.focus,
+      duration: m.duration, hasAudio: m.has_audio,
+    };
+  });
+  const timeline = articleTimeline({
+    layerHeight: layer.height,
+    screenHeight: config.channel.height,
+    videos,
+    speed: (article.scroll_speed || DEFAULTS.scrollSpeed) * slideScale(),
+    minSeconds: article.seconds || DEFAULTS.seconds,
+  });
+  return {
+    layer,
+    timeline,
+    videos: videos.map((v, k) => ({ ...v, start: timeline.starts[k] })),
+  };
+}
+
+async function articleClip(article, place, music, signal) {
+  // Videos made under other encode settings are brought up to date first.
+  for (const asset of docAssetIds(article.doc).map((id) => Assets.get(id))) {
+    if (asset?.kind === 'video' && asset.status === 'ready' && asset.enc !== encodeKey()) {
+      await refreshVideoCopy(asset, signal);
+    }
+  }
+  const media = articleMedia(article);
+  const key = hash({
+    v: CLIP_VERSION,
+    doc: article.doc,
+    title: article.title || '',
+    place,
+    seconds: article.seconds || DEFAULTS.seconds,
+    speed: article.scroll_speed || DEFAULTS.scrollSpeed,
+    media: media.map((m) => [m.id, ...m.stamp]),
+    enc: encodeKey(),
+    music: musicMtime(music),
+  });
   const hit = cachedClip(key);
   if (hit) return hit;
+
   const { clip, meta } = clipPaths(key);
   const work = fs.mkdtempSync(path.join(MEDIA_DIRS.clips, '.work-'));
   try {
+    const laid = await layoutArticle(article, media, path.join(work, 'page.png'));
+    if (!laid) return null;
+    const [background, edges] = await Promise.all([
+      renderBackgroundPng(path.join(work, 'bg.png')),
+      renderBackgroundPng(path.join(work, 'edges.png'), { edges: true }),
+    ]);
+    const indicator = await renderIndicatorPng({ ...place, title: article.title }, path.join(work, 'chip.png'));
     const out = path.join(work, 'clip.mp4');
-    const seconds = await make(work, out);
+    await run(FFMPEG, articleClipArgs({
+      background,
+      layer: laid.layer.file,
+      edges,
+      indicator,
+      videos: laid.videos,
+      phases: laid.timeline.phases,
+      seconds: laid.timeline.total,
+      music,
+      out,
+    }), `media article ${article.id}`, signal);
     fs.renameSync(out, clip);
-    fs.writeFileSync(meta, JSON.stringify({ seconds }));
-    return { file: clip, seconds };
+    fs.writeFileSync(meta, JSON.stringify({ seconds: laid.timeline.total }));
+    return { file: clip, seconds: laid.timeline.total };
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
   }
 }
 
-function textClip(item, music, signal) {
-  const seconds = item.seconds || DEFAULTS.seconds;
-  const speed = item.scroll_speed || DEFAULTS.scrollSpeed;
-  const key = hash({
-    k: 'text', md: item.markdown, seconds, speed, enc: encodeKey(), music: musicMtime(music),
-  });
-  return buildClip(key, async (work, out) => {
-    const layer = await renderTextLayer(item.markdown, path.join(work, 'text.png'));
-    const total = textSlideSeconds({
-      seconds, layerHeight: layer.height, screenHeight: config.channel.height, scale: slideScale(), speed,
-    });
-    if (layer.scrolls) {
-      const background = await renderBackgroundPng(path.join(work, 'bg.png'));
-      const edges = await renderBackgroundPng(path.join(work, 'edges.png'), { edges: true });
-      await run(FFMPEG, scrollClipArgs({
-        background, layer: layer.file, edges, seconds: total, speed, scale: slideScale(), music, out,
-      }), `media text clip ${item.id}`, signal);
-    } else {
-      const frame = await composeTextFrame(layer.file, path.join(work, 'frame.png'));
-      await run(FFMPEG, stillClipArgs({ frame, seconds: total, music, out }), `media text clip ${item.id}`, signal);
-    }
-    return total;
-  });
-}
-
-function imageClip(item, music, signal) {
-  const seconds = tileUp(item.seconds || DEFAULTS.seconds);
-  const key = hash({
-    k: 'image', file: item.file, caption: item.caption || '', seconds, enc: encodeKey(), music: musicMtime(music),
-  });
-  return buildClip(key, async (work, out) => {
-    const frame = await renderImageFrame(itemFilePath(item), item.caption || '', path.join(work, 'frame.png'));
-    await run(FFMPEG, stillClipArgs({ frame, seconds, music, out }), `media image clip ${item.id}`, signal);
-    return seconds;
-  });
-}
-
-async function videoClip(item, music, signal) {
-  if (item.status !== 'ready' || !fs.existsSync(itemFilePath(item))) return null;
-  const current = item.enc === encodeKey() ? item : await reencodeVideo(item, music, signal);
-  return current ? { file: itemFilePath(current), seconds: current.seconds } : null;
-}
-
-async function clipFor(item, music, signal) {
-  if (item.type === 'text') return textClip(item, music, signal);
-  if (item.type === 'image') return imageClip(item, music, signal);
-  if (item.type === 'video') return videoClip(item, music, signal);
-  return null;
-}
-
-// Drop cached clips no current slide uses. (Half-built work dirs belong to
+// Drop cached clips no current article uses. (Half-built work dirs belong to
 // the running build; leftovers from a crash go in sweepOrphans at startup.)
 function sweepClips(keep) {
   let entries = [];
@@ -296,8 +332,7 @@ export function buildMediaLoop({ reason = 'unspecified', force = false } = {}) {
   const previous = current;
   previous?.ac.abort();
   const ac = new AbortController();
-  const job = {};
-  job.ac = ac;
+  const job = { ac };
   job.promise = (async () => {
     await previous?.promise.catch(() => {});
     return doBuild({ reason, force, signal: ac.signal });
@@ -311,28 +346,33 @@ export function buildMediaLoop({ reason = 'unspecified', force = false } = {}) {
 async function doBuild({ reason, force, signal }) {
   const startedAt = Date.now();
   ensureMediaDirs();
+  sweepAbandonedArticles({ minAgeMs: UNSAVED_ASSET_TTL_MS });
+  sweepUnusedAssets({ minAgeMs: UNSAVED_ASSET_TTL_MS });
   const finalDir = mediaLoopDir();
   status = { ...status, state: 'building', error: null, started_at: new Date().toISOString() };
   try {
     const music = await ensureMusic();
+    // Only articles with something in them take part — and count in «1/3».
+    const articles = Articles.all().filter((a) => docHasContent(a.doc));
     const clips = [];
-    for (const item of MediaItems.all()) {
+    for (let i = 0; i < articles.length; i += 1) {
       if (signal.aborted) throw new AbortedError();
+      const article = articles[i];
       try {
-        const clip = await clipFor(item, music, signal);
+        const clip = await articleClip(article, { index: i + 1, total: articles.length }, music, signal);
         if (clip) clips.push(clip);
-        if (item.type !== 'video' && item.error) MediaItems.update(item.id, { error: null });
+        if (article.error) Articles.update(article.id, { error: null });
       } catch (e) {
         if (e.aborted || signal.aborted) throw new AbortedError();
-        log.error('media', 'slide could not be rendered', { item_id: item.id, type: item.type, error: e.message });
-        if (item.type !== 'video') MediaItems.update(item.id, { error: String(e.message).slice(0, 200) });
+        log.error('media', 'article could not be rendered', { article_id: article.id, error: e.message });
+        Articles.update(article.id, { error: String(e.message).slice(0, 200) });
       }
     }
     sweepClips(new Set(clips.map((c) => path.basename(c.file, '.mp4'))));
 
     if (!clips.length) {
       fs.rmSync(finalDir, { recursive: true, force: true });
-      status = { state: 'empty', error: null, built_at: new Date().toISOString(), seconds: 0, slides: 0 };
+      status = { state: 'empty', error: null, built_at: new Date().toISOString(), seconds: 0, articles: 0 };
       return null;
     }
 
@@ -343,11 +383,15 @@ async function doBuild({ reason, force, signal }) {
       v: LOOP_VERSION, files, seg: config.channel.hlsTime, live: config.channel.liveLoop,
     });
     if (!force && mediaLoopReady() && readSig(finalDir) === signature) {
-      status = { state: 'idle', error: null, built_at: status.built_at || new Date().toISOString(), seconds, slides: clips.length };
+      status = {
+        state: 'idle', error: null, built_at: status.built_at || new Date().toISOString(), seconds, articles: clips.length,
+      };
       return finalDir;
     }
 
-    log.info('media', 'building media loop', { reason, slides: clips.length, seconds, repeats });
+    log.info('media', 'building media loop', {
+      reason, articles: clips.length, seconds, repeats,
+    });
     const previousPosition = config.channel.liveLoop ? currentLoopPosition(finalDir) : null;
     fs.mkdirSync(config.hlsDir, { recursive: true });
     const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, '.build-media-'));
@@ -370,9 +414,11 @@ async function doBuild({ reason, force, signal }) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       throw e;
     }
-    status = { state: 'idle', error: null, built_at: new Date().toISOString(), seconds, slides: clips.length };
+    status = {
+      state: 'idle', error: null, built_at: new Date().toISOString(), seconds, articles: clips.length,
+    };
     log.info('media', 'media loop ready', {
-      slides: clips.length, seconds: seconds * repeats, duration_ms: elapsedMs(startedAt), disk_bytes: mediaUsage().used,
+      articles: clips.length, seconds: seconds * repeats, duration_ms: elapsedMs(startedAt), disk_bytes: mediaUsage().used,
     });
     return finalDir;
   } catch (e) {

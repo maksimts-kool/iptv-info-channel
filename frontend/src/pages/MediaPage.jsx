@@ -1,24 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Input, Progress, Row, Space, Statistic, Switch, Tag, Tooltip, Typography, Upload,
+  Alert, Button, Card, Col, Input, Progress, Row, Space, Statistic, Switch, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  CheckCircleOutlined, CloudUploadOutlined, ExclamationCircleOutlined, FileTextOutlined, LoadingOutlined,
-  ReloadOutlined, SaveOutlined,
+  CheckCircleOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SaveOutlined,
 } from '@ant-design/icons';
-import { AuthError, getCsrfToken } from '../lib/api.js';
+import { AuthError } from '../lib/api.js';
 import { bytes, count, seconds as secondsPretty } from '../lib/format.js';
-import SlideList from '../media/SlideList.jsx';
-import TextSlideEditor from '../media/TextSlideEditor.jsx';
-import ImageSlideEditor from '../media/ImageSlideEditor.jsx';
+import ArticleList from '../media/ArticleList.jsx';
+import ArticleEditor from '../media/ArticleEditor.jsx';
 
 const POLL_MS = 2_000;
-const ACCEPT = '.jpg,.jpeg,.png,.webp,.mp4,.m4v,.mkv,.mov,.webm,image/jpeg,image/png,image/webp,video/*';
 
-const isVideoFile = (file) => String(file.type || '').startsWith('video/')
-  || /\.(mp4|m4v|mkv|mov|webm)$/i.test(file.name || '');
-
-function StatusTag({ status, hasSlides }) {
+function StatusTag({ status, hasArticles }) {
   if (status.state === 'building' || status.pending) {
     return <Tag icon={<LoadingOutlined />} color="processing">собирается</Tag>;
   }
@@ -30,18 +24,17 @@ function StatusTag({ status, hasSlides }) {
     );
   }
   if (status.ready) return <Tag icon={<CheckCircleOutlined />} color="success">в эфире</Tag>;
-  return <Tag>{hasSlides ? 'ожидает сборки' : 'нет слайдов'}</Tag>;
+  return <Tag>{hasArticles ? 'ожидает сборки' : 'нет статей'}</Tag>;
 }
 
-// The media channel: the second built-in channel of Информация. One loop of
-// text pages, images and videos, the same for every customer (expired ones
-// too). Edits save at once; the server rebuilds the loop in the background,
-// re-encoding only the slides that changed.
+// The media channel: the second built-in channel of Информация. Its content is
+// a set of articles — text with images and videos inside — shown one after
+// another, the same for every customer (expired ones too). Edits save at once;
+// the server rebuilds the loop in the background, re-encoding only what changed.
 export default function MediaPage({ api, message, onAuthError }) {
   const [data, setData] = useState(null);
   const [name, setName] = useState('');
-  const [editing, setEditing] = useState(null); // { kind: 'text'|'image', item }
-  const [uploads, setUploads] = useState([]); // in-flight uploads (progress bars)
+  const [editing, setEditing] = useState(null); // { id, isNew }
 
   const fail = useCallback((e) => {
     if (e instanceof AuthError) onAuthError();
@@ -65,8 +58,7 @@ export default function MediaPage({ api, message, onAuthError }) {
 
   // Poll only while something is happening on the server.
   const busy = !!data && (
-    data.status.state === 'building' || data.status.pending
-    || data.items.some((i) => i.type === 'video' && i.status === 'processing')
+    data.status.state === 'building' || data.status.pending || data.articles.some((a) => a.processing)
   );
   useEffect(() => {
     if (!busy) return undefined;
@@ -80,59 +72,35 @@ export default function MediaPage({ api, message, onAuthError }) {
       if (success) message.success(success);
     } catch (e) {
       fail(e);
-      throw e;
     }
   };
 
+  const createArticle = async () => {
+    try {
+      const created = await api.post('/admin/api/media/articles', {});
+      setEditing({ id: created.id, isNew: true });
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const closeEditor = useCallback(() => setEditing(null), []);
+
   if (!data) return <Card loading />;
 
-  const { channel, items, status, usage } = data;
+  const {
+    channel, articles, status, usage,
+  } = data;
   const usedPercent = Math.min(100, Math.round((usage.used / usage.quota) * 100));
-
-  const saveName = () => mutate(
-    () => api.patch('/admin/api/media/channel', { name }),
-    'Название сохранено',
-  ).catch(() => {});
-
-  const uploadProps = {
-    name: 'file',
-    multiple: true,
-    accept: ACCEPT,
-    action: '/admin/api/media/upload',
-    withCredentials: true,
-    headers: { 'X-CSRF-Token': getCsrfToken() },
-    // Only uploads still in flight are listed; a finished one is a slide below.
-    fileList: uploads,
-    showUploadList: { showRemoveIcon: false },
-    beforeUpload: (file) => {
-      const max = isVideoFile(file) ? usage.max_video : usage.max_image;
-      if (file.size > max) {
-        message.error(`${file.name}: файл больше ${bytes(max)}`);
-        return Upload.LIST_IGNORE;
-      }
-      return true;
-    },
-    onChange: ({ file, fileList }) => {
-      setUploads(fileList.filter((f) => f.status === 'uploading'));
-      if (file.status === 'done') {
-        accept(file.response);
-        message.success(isVideoFile(file)
-          ? `${file.name}: загружено, перекодируется в 720p`
-          : `${file.name}: добавлено`);
-      } else if (file.status === 'error') {
-        if (file.xhr?.status === 401) onAuthError();
-        else message.error(`${file.name}: ${file.response?.error || 'загрузка не удалась'}`);
-      }
-    },
-  };
+  const saveName = () => mutate(() => api.patch('/admin/api/media/channel', { name }), 'Название сохранено');
 
   return (
     <Space direction="vertical" size={24} style={{ width: '100%' }}>
       <Alert
         type="info"
         showIcon
-        message="Медиаканал — второй канал категории «Информация»: ваши страницы с текстом, картинки и видео по кругу."
-        description="Один и тот же для всех клиентов, в том числе с истёкшей подпиской. Появляется в плейлисте, как только в нём есть хотя бы один готовый слайд. Видео перекодируется в 720p, а оригинал удаляется — так экономится место на диске."
+        message="Медиаканал — второй канал категории «Информация»: ваши статьи с текстом, изображениями и видео, одна за другой."
+        description="Один и тот же для всех клиентов, в том числе с истёкшей подпиской. Длинная статья прокручивается, а на видео прокрутка останавливается, пока оно идёт. В углу экрана — «1/3 · заголовок». Видео перекодируется в 720p, а оригинал удаляется — так экономится место."
       />
 
       <Row gutter={[16, 16]}>
@@ -147,11 +115,7 @@ export default function MediaPage({ api, message, onAuthError }) {
                   onPressEnter={saveName}
                   addonBefore="Название"
                 />
-                <Button
-                  icon={<SaveOutlined />}
-                  disabled={!name.trim() || name === channel.name}
-                  onClick={saveName}
-                >
+                <Button icon={<SaveOutlined />} disabled={!name.trim() || name === channel.name} onClick={saveName}>
                   Сохранить
                 </Button>
               </Space.Compact>
@@ -161,17 +125,17 @@ export default function MediaPage({ api, message, onAuthError }) {
                   onChange={(enabled) => mutate(
                     () => api.patch('/admin/api/media/channel', { enabled }),
                     enabled ? 'Канал включён' : 'Канал выключен — он пропадёт из плейлистов',
-                  ).catch(() => {})}
+                  )}
                 />
                 <Typography.Text>{channel.enabled ? 'Показывается клиентам' : 'Выключен'}</Typography.Text>
-                <StatusTag status={status} hasSlides={items.length > 0} />
+                <StatusTag status={status} hasArticles={articles.some((a) => !a.empty)} />
               </Space>
             </Space>
           </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
-            <Statistic title="Слайдов" value={items.length} formatter={count} />
+            <Statistic title="Статей в эфире" value={status.articles || 0} formatter={count} />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Круг: {secondsPretty(status.seconds)}
             </Typography.Text>
@@ -198,71 +162,45 @@ export default function MediaPage({ api, message, onAuthError }) {
       ) : null}
 
       <Card
-        title="Слайды"
+        title="Статьи"
         extra={(
           <Space wrap>
-            <Button icon={<FileTextOutlined />} type="primary" onClick={() => setEditing({ kind: 'text', item: null })}>
-              Текст
-            </Button>
+            <Button icon={<PlusOutlined />} type="primary" onClick={createArticle}>Новая статья</Button>
             <Tooltip title="Пересобрать канал полностью">
               <Button
                 icon={<ReloadOutlined />}
                 aria-label="Пересобрать"
-                onClick={() => mutate(() => api.post('/admin/api/media/rebuild'), 'Пересборка запущена').catch(() => {})}
+                onClick={() => mutate(() => api.post('/admin/api/media/rebuild'), 'Пересборка запущена')}
               />
             </Tooltip>
           </Space>
         )}
       >
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Upload.Dragger {...uploadProps}>
-            <p className="ant-upload-drag-icon"><CloudUploadOutlined /></p>
-            <p className="ant-upload-text">Перетащите сюда изображения или видео, или нажмите для выбора</p>
-            <p className="ant-upload-hint">
-              JPG, PNG, WebP до {bytes(usage.max_image)} · MP4, MKV, MOV, WebM до {bytes(usage.max_video)}
-            </p>
-          </Upload.Dragger>
-
-          <SlideList
-            items={items}
-            onReorder={(next) => {
-              setData((d) => ({ ...d, items: next })); // optimistic
-              mutate(() => api.put('/admin/api/media/order', { ids: next.map((i) => i.id) })).catch(load);
-            }}
-            onEdit={(item) => setEditing({ kind: item.type, item })}
-            onDelete={(item) => mutate(
-              () => api.del(`/admin/api/media/items/${item.id}`),
-              'Слайд удалён',
-            ).catch(() => {})}
-          />
-        </Space>
+        <ArticleList
+          articles={articles}
+          onReorder={(next) => {
+            setData((d) => ({ ...d, articles: next })); // optimistic
+            mutate(() => api.put('/admin/api/media/order', { ids: next.map((a) => a.id) }));
+          }}
+          onEdit={(article) => setEditing({ id: article.id, isNew: false })}
+          onDelete={(article) => mutate(() => api.del(`/admin/api/media/articles/${article.id}`), 'Статья удалена')}
+        />
       </Card>
 
-      <TextSlideEditor
-        open={editing?.kind === 'text'}
-        item={editing?.kind === 'text' ? editing.item : null}
-        defaults={data.defaults}
-        limits={data.limits}
-        api={api}
-        onAuthError={onAuthError}
-        onClose={() => setEditing(null)}
-        onSave={(values) => mutate(
-          () => (editing.item
-            ? api.patch(`/admin/api/media/items/${editing.item.id}`, values)
-            : api.post('/admin/api/media/items', { type: 'text', ...values })),
-          editing.item ? 'Страница сохранена' : 'Страница добавлена',
-        )}
-      />
-      <ImageSlideEditor
-        open={editing?.kind === 'image'}
-        item={editing?.kind === 'image' ? editing.item : null}
-        limits={data.limits}
-        onClose={() => setEditing(null)}
-        onSave={(values) => mutate(
-          () => api.patch(`/admin/api/media/items/${editing.item.id}`, values),
-          'Изображение сохранено',
-        )}
-      />
+      {editing ? (
+        <ArticleEditor
+          key={editing.id}
+          articleId={editing.id}
+          isNew={editing.isNew}
+          api={api}
+          defaults={data.defaults}
+          limits={data.limits}
+          usage={usage}
+          onAuthError={onAuthError}
+          onSaved={load}
+          onClose={closeEditor}
+        />
+      ) : null}
     </Space>
   );
 }

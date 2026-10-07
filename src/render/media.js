@@ -1,8 +1,8 @@
-// Rasterises the media channel's slides to PNG: text pages (Markdown laid out
-// by satori, see render/markdown.js) and images with an optional caption, both
-// on the account card's background so the channel reads as one product.
+// Rasterises the media channel's articles: the tall page (text, pictures and
+// video posters, laid out by render/article.js), the corner chip, and the
+// channel background the page scrolls over.
 //
-// satori turns the flexbox tree into an SVG whose glyphs are already outlined
+// satori turns each flexbox tree into an SVG whose glyphs are already outlined
 // paths, so sharp needs no fonts to rasterise it — only satori itself needs the
 // Inter files (config.media.fontDir; the Docker image ships them).
 import fs from 'node:fs';
@@ -11,7 +11,10 @@ import { createRequire } from 'node:module';
 import sharp from 'sharp';
 import { config } from '../config.js';
 import { buildBackgroundSvg } from './overlay.js';
-import { markdownToTree, SLIDE_WIDTH, THEME } from './markdown.js';
+import {
+  SLIDE_WIDTH, MEDIA_WIDTHS, flowTree, videoTree, indicatorTree,
+} from './article.js';
+import { docSections } from '../media/doc.js';
 
 // satori is loaded on first use, through its CommonJS build: the ESM build of
 // the current release references `__dirname` and throws on import. Lazy also
@@ -63,81 +66,101 @@ export async function renderBackgroundPng(outPath, { edges = false } = {}) {
   return outPath;
 }
 
-// The text page as a transparent PNG, the full width of the channel and as
-// tall as the text needs (never shorter than one screen: short pages are
-// centred by the layout). Taller than one screen means it scrolls.
-export async function renderTextLayer(markdown, outPath) {
-  const { data, info } = await treeToPng(markdownToTree(markdown));
-  await fs.promises.writeFile(outPath, data);
-  return { file: outPath, height: info.height, scrolls: info.height > config.channel.height + 2 };
-}
-
-// One finished screen: background + a text layer (the top of it, for a long
-// page). Used for a page that fits, and for the admin's preview.
-export async function composeTextFrame(textLayerFile, outPath = null) {
-  const { width: W, height: H } = config.channel;
-  // `cover` anchored at the top: an exactly-W-wide layer is not rescaled, just
-  // cut to the first screen.
-  const layer = await sharp(textLayerFile)
-    .resize({ width: W, height: H, fit: 'cover', position: 'top' })
+// A picture as a data URI, no wider than the widest box it can be shown in.
+async function pictureUri(file) {
+  const width = Math.round(MEDIA_WIDTHS.full * slideScale());
+  const data = await sharp(file)
+    .resize({ width, withoutEnlargement: true })
+    .jpeg({ quality: 85 })
     .toBuffer();
-  const frame = sharp(Buffer.from(buildBackgroundSvg())).composite([{ input: layer, left: 0, top: 0 }]).png();
-  if (outPath) {
-    await frame.toFile(outPath);
-    return outPath;
-  }
-  return frame.toBuffer();
+  return `data:image/jpeg;base64,${data.toString('base64')}`;
 }
 
-const CAPTION_HEIGHT = 110; // logical px reserved under the picture
-const IMAGE_MARGIN = 40;
+// Load every ready picture/poster the article uses, for the pure tree builders.
+// `media` is [{ id, kind, width, height, picture: file path }].
+async function pictureContext(media) {
+  const loaded = new Map();
+  for (const m of media) {
+    if (!m.picture || !fs.existsSync(m.picture)) continue;
+    loaded.set(m.id, { src: await pictureUri(m.picture), width: m.width, height: m.height, kind: m.kind });
+  }
+  const pick = (kind) => (id) => {
+    const hit = loaded.get(id);
+    return hit && hit.kind === kind ? hit : null;
+  };
+  return { image: pick('image'), poster: pick('video') };
+}
 
-// An image fitted inside the frame (never cropped, never upscaled past 2x) on
-// the channel background, with an optional caption of up to two lines below.
-export async function renderImageFrame(imageFile, caption, outPath = null) {
+// The whole article as one transparent PNG the width of the channel, as tall
+// as it needs (a short article is centred within one screen), plus where every
+// playable video sits on it, in output pixels. null = nothing to show.
+export async function renderArticleLayer(doc, media, outPath) {
+  const ctx = await pictureContext(media);
+  const sections = docSections(doc);
   const s = slideScale();
+  const pieces = [];
+  for (let i = 0; i < sections.length; i += 1) {
+    const flags = { first: i === 0, last: i === sections.length - 1 };
+    if (sections[i].kind === 'video') {
+      const video = videoTree(sections[i].node, ctx, flags);
+      if (!video) continue; // not processed yet: left out until it is
+      const { data, info } = await treeToPng(video.tree);
+      pieces.push({ data, height: info.height, video: { assetId: sections[i].node.attrs.assetId, box: video.box } });
+    } else {
+      const { data, info } = await treeToPng(flowTree(sections[i].nodes, ctx, flags));
+      pieces.push({ data, height: info.height });
+    }
+  }
+  if (!pieces.length) return null;
+
   const { width: W, height: H } = config.channel;
-  const capH = caption ? Math.round(CAPTION_HEIGHT * s) : 0;
-  const margin = Math.round(IMAGE_MARGIN * s);
-  const boxW = W - 2 * margin;
-  const boxH = H - 2 * margin - capH;
-  const picture = await sharp(imageFile)
-    .rotate() // honour EXIF orientation from phone photos
-    .resize({ width: boxW, height: boxH, fit: 'inside' })
+  const contentHeight = pieces.reduce((sum, p) => sum + p.height, 0);
+  const layerHeight = Math.max(H, contentHeight);
+  let y = Math.round((layerHeight - contentHeight) / 2);
+  const layers = [];
+  const videos = [];
+  for (const piece of pieces) {
+    layers.push({ input: piece.data, left: 0, top: y });
+    if (piece.video) {
+      const { box } = piece.video;
+      const even = (v) => Math.max(2, Math.round(v * s / 2) * 2);
+      videos.push({
+        assetId: piece.video.assetId,
+        x: Math.round(box.x * s),
+        y: y + Math.round(box.y * s),
+        width: even(box.width),
+        height: even(box.height),
+        focus: Math.round(box.focus * s),
+      });
+    }
+    y += piece.height;
+  }
+  await sharp({
+    create: {
+      width: W, height: layerHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  }).composite(layers).png().toFile(outPath);
+  return { file: outPath, height: layerHeight, videos };
+}
+
+// The «1/3 · Заголовок» corner chip as a full transparent frame, or null.
+export async function renderIndicatorPng(info, outPath) {
+  const tree = indicatorTree(info);
+  if (!tree) return null;
+  const { data } = await treeToPng(tree);
+  await sharp(data)
+    .resize({ width: config.channel.width, height: config.channel.height, fit: 'fill' })
     .png()
-    .toBuffer({ resolveWithObject: true });
-  const layers = [{
-    input: picture.data,
-    left: Math.round((W - picture.info.width) / 2),
-    top: Math.round(margin + (boxH - picture.info.height) / 2),
-  }];
-  if (caption) {
-    const tree = {
-      type: 'div',
-      props: {
-        style: {
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          textAlign: 'center',
-          width: SLIDE_WIDTH,
-          height: CAPTION_HEIGHT,
-          padding: '0 80px',
-          color: THEME.text,
-          fontFamily: 'Inter',
-          fontSize: 34,
-          lineHeight: 1.3,
-        },
-        children: caption,
-      },
-    };
-    const { data } = await treeToPng(tree);
-    layers.push({ input: data, left: 0, top: H - margin - capH });
-  }
-  const frame = sharp(Buffer.from(buildBackgroundSvg())).composite(layers).png();
-  if (outPath) {
-    await frame.toFile(outPath);
-    return outPath;
-  }
-  return frame.toBuffer();
+    .toFile(outPath);
+  return outPath;
+}
+
+// What the admin's preview shows: the whole page on the channel background
+// colour, as a JPEG (tall when the article scrolls).
+export async function articlePreviewJpeg(layerFile, layerHeight) {
+  return sharp({
+    create: {
+      width: config.channel.width, height: layerHeight, channels: 3, background: '#0e1630',
+    },
+  }).composite([{ input: layerFile }]).jpeg({ quality: 80 }).toBuffer();
 }

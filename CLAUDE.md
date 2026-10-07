@@ -14,8 +14,9 @@ Every customer playlist also carries a built-in **Информация** categor
 that customer's personal looping **HLS info channel** (plan, price, expiry, days
 left, colour-coded status over background music). When a subscription expires,
 Информация is the *only* thing left in their playlist. Next to it sits a second
-built-in channel, the **media channel** («Медиа»): one admin-curated loop of
-text pages, images and videos shared by every customer (see Architecture 11). The info channel
+built-in channel, the **media channel** («Медиа»): admin-written articles
+(rich text with images and videos inside), shown one after another, shared by
+every customer (see Architecture 11). The info channel
 was the original product and is now one feature inside the playlist server —
 weight new work accordingly.
 
@@ -47,15 +48,16 @@ src/
   playlist/ m3u.js model.js catalog.js hls.js devices.js # provider m3u + the channel catalog
                        #   hls.js     rewrite a provider HLS manifest + mid-view splice (gateway)
                        #   devices.js simultaneous-device tracker (gateway)
-  render/  overlay.js status.js markdown.js media.js # SVG frames + their data models:
-                       #   markdown.js Markdown -> satori layout tree (pure)
-                       #   media.js    media-channel slides -> PNG (satori + sharp)
+  render/  overlay.js status.js article.js media.js # SVG frames + their data models:
+                       #   article.js article document -> satori layout trees (pure)
+                       #   media.js   article page / corner chip -> PNG (satori + sharp)
   encode/  channel.js liveloop.js ffmpeg.js media.js # ffmpeg encode + live HLS window:
                        #   ffmpeg.js  spawn helpers shared by both channels
                        #   media.js   media-channel clip/loop arg builders (golden-pinned)
-  media/   store.js build.js                      # the media channel:
-                       #   store.js   slides (Settings `media_channel`), files, disk budget
-                       #   build.js   video queue, clip cache, debounced loop build
+  media/   doc.js store.js build.js               # the media channel:
+                       #   doc.js     article schema: sanitize, assets, split at videos (pure)
+                       #   store.js   articles + assets (Settings `media_channel`), files, disk budget
+                       #   build.js   video queue, per-article clip cache, debounced loop build
   http/    stream.js subscribe.js admin.js catalog.js media.js auth.js # all HTTP surfaces
   epg/     epg.js epgfoss.js xxhash32.js          # XMLTV + OTT-play FOSS guides
   news/    notices.js providernews.js             # provider service notices on the status slide:
@@ -78,7 +80,8 @@ frontend/              # React + Vite + Ant Design admin app (own package.json)
   src/playlist/        # SourcesPanel + CatalogPanel (categories with channels nested)
   src/clients/         # the per-customer drawer and its tabs
   src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify/Gateway cards
-  src/media/           # Медиаканал: SlideList (dnd-kit sortable), Text/Image slide editors
+  src/media/           # Медиаканал: ArticleList (dnd-kit), ArticleEditor (TipTap) + toolbar,
+                       #   image/video nodes (mediaNodes.js + MediaNodeView), upload helper
 ```
 
 ## Commands
@@ -633,40 +636,51 @@ Request/data flow, entry point [src/server.js](src/server.js):
    the account channel it can be switched off (`applyChannelFields` lets
    `enabled` through for it alone, and per-customer pins apply), but it cannot
    leave Информация, so an expired customer keeps it. Its name and switch live
-   on that catalog row — the admin page edits the row, not a copy. The slides
-   live in Settings `media_channel` (`media/store.js`; left out of
-   `publicSettings`); files under `DATA_DIR/media/`; the loop in
-   `DATA_DIR/hls/_media/`, served at `/m/:token/` through the same
-   `serveLoopFile`/liveloop path as the account channel. The `.m3u` (and the
-   admin's visible count) lists it **only once that loop exists** — an empty
-   channel is a black screen.
+   on that catalog row — the admin page edits the row, not a copy. The `.m3u`
+   (and the admin's visible count) lists it **only once its loop exists** — an
+   empty channel is a black screen. Served at `/m/:token/` through the same
+   `serveLoopFile`/liveloop path as the account channel.
 
-   Encoding is two-step (`encode/media.js`, comment at the top): every slide is
-   its own **clip**, cached by content hash in `media/clips/`, then the **loop**
-   joins them with the concat demuxer — video stream-copied, audio re-encoded
-   with `aresample=async` (copied AAC overlaps by a few ms at every join, since
-   a copy ignores the mp4 edit list). Two invariants make the copy valid and
-   keep liveloop's one-discontinuity-per-wrap model: **identical encode params
-   on every clip** (`clipEncodeArgs`) and **every clip a whole number of
-   segments** (`tileUp`) with keyframes on the boundaries. A loop shorter than
-   one live window is repeated (`loopRepeats`). The builders are pinned by
+   **Content = articles.** An article is a TipTap/ProseMirror JSON document
+   (the admin's editor, `frontend/src/media/`) with two custom block nodes,
+   `mediaImage` / `mediaVideo` `{ assetId, size: full|half|small, caption }`.
+   Media is referenced by **asset id, never URL**. `media/doc.js` `sanitizeDoc`
+   whitelists exactly the nodes/marks the TV renderer draws (the Markdown set:
+   headings 1–3, bold/italic/strike/code, lists, quote, code block, rule,
+   tables) — keep the editor's extensions and that whitelist in step.
+   Articles + assets live in Settings `media_channel` (left out of
+   `publicSettings`); files under `DATA_DIR/media/`. **An asset's file is
+   deleted when no article uses it any more**: on save (`Articles.update`),
+   with its article (`Articles.remove`, sparing ones pasted into another
+   article), or by the sweeps (unsaved uploads and abandoned empty articles
+   after 6 h; everything unreferenced at startup).
+
+   **On TV** an article is one clip (`encode/media.js`, comment at the top).
+   `render/article.js` lays the page out with satori, **split at each top-level
+   video** (`docSections`) because satori reports no positions — rendering the
+   pieces separately and stacking them is how the encoder knows exactly where
+   each video box sits. `articleTimeline` (pure) then plans: hold, scroll until
+   the video (with its caption, `focus`) is centred, **stop while it plays**,
+   scroll on, hold. The video is overlaid at `y - scroll(t)` so it moves with
+   the page (first frame before, last frame after); music ducks under a video
+   with sound. The «1/3 · title» chip counts only non-empty articles, so a
+   reorder re-encodes every clip (the number is baked in). Videos are
+   re-encoded once at upload into a 720p copy (queue) and the upload deleted;
+   a later resolution change re-encodes from that copy (`encodeKey`).
+
+   The **loop** joins the article clips with the concat demuxer — video stream
+   copy, audio re-encoded with `aresample=async` (copied AAC overlaps by a few
+   ms at every join, since a copy ignores the mp4 edit list). Two invariants
+   make the copy valid and keep liveloop's one-discontinuity-per-wrap model:
+   **identical encode params on every clip** (`clipEncodeArgs`) and **every
+   clip a whole number of segments** (`tileUp`) with keyframes on the
+   boundaries; a loop shorter than one live window is repeated
+   (`loopRepeats`). Builders are pinned by
    [test/encode/media-args.test.js](test/encode/media-args.test.js) against
    their own golden — same rule as channel-args: never rewrite it silently.
-
-   Text pages: `marked` tokenises, `render/markdown.js` maps tokens to a satori
-   flexbox tree (satori has no inline formatting context, so a paragraph is a
-   wrapping row of one span per word), `render/media.js` rasterises with the
-   Inter .otf files (`MEDIA_FONT_DIR`). **satori is loaded lazily through its
-   CommonJS build** — its ESM build references `__dirname` and throws on
-   import — which also keeps it off the host-run test path. A page taller than
-   the screen scrolls (`scrollClipArgs`: crop over the static background, the
-   background's faded edges on top). Videos are re-encoded ONCE at upload into
-   their clip form, in a one-at-a-time queue, and the upload is deleted; a later
-   change of resolution/segment length re-encodes from that copy
-   (`encodeKey`). Deleting a slide deletes its files; `sweepOrphans` at startup
-   clears `incoming/` and unreferenced files, and fails videos left
-   `processing`. Uploads (multer) are capped per file and refused up front when
-   the estimated result would cross `MEDIA_QUOTA_MB`. Bump `CLIP_VERSION` /
+   **satori is loaded lazily through its CommonJS build** — its ESM build
+   references `__dirname` and throws on import — which also keeps it off the
+   host-run test path (fonts: `MEDIA_FONT_DIR`). Bump `CLIP_VERSION` /
    `LOOP_VERSION` in `media/build.js` when the look or the loop recipe changes.
 
 ## Config

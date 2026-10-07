@@ -796,69 +796,84 @@ test('switching the media channel off hides it and sends open players to the car
   assert.equal((await req('PATCH', '/admin/api/media/channel', { name: '  ' })).status, 400);
 });
 
-test('the admin adds, edits, reorders and deletes media slides', async () => {
-  const added = await req('POST', '/admin/api/media/items', { type: 'text', markdown: '# Привет', seconds: 20 });
-  assert.equal(added.status, 200);
-  const text = added.body.items.at(-1);
-  assert.equal(text.type, 'text');
-  assert.equal(text.seconds, 20);
-  assert.equal(text.scroll_speed, 40);
+test('the admin writes articles with images in them; dropped files leave the disk', async () => {
+  const created = await req('POST', '/admin/api/media/articles', { title: 'Инструкция' });
+  assert.equal(created.status, 201);
+  const article = created.body;
+  assert.equal(article.empty, true, 'a new article is empty until something is written');
+  assert.equal(article.doc.type, 'doc');
 
-  assert.equal((await req('POST', '/admin/api/media/items', { type: 'text', markdown: '' })).status, 400);
-  assert.equal((await req('POST', '/admin/api/media/items', { type: 'video' })).status, 400);
-  assert.equal((await req('PATCH', `/admin/api/media/items/${text.id}`, { seconds: 0 })).status, 400);
-  const edited = await req('PATCH', `/admin/api/media/items/${text.id}`, { markdown: '# Пока', scroll_speed: 80 });
-  assert.equal(edited.body.items.find((i) => i.id === text.id).markdown, '# Пока');
-
-  // A real multipart upload of a small PNG.
+  // Upload a real image into it (multipart, like the editor's toolbar does).
   const sharp = (await import('sharp')).default;
   const png = await sharp({
     create: { width: 64, height: 48, channels: 3, background: '#336699' },
   }).png().toBuffer();
-  const form = new FormData();
-  form.append('file', new Blob([png], { type: 'image/png' }), 'картинка.png');
-  form.append('caption', 'Подпись');
-  const uploaded = await fetch(`${base}/admin/api/media/upload`, {
-    method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: form,
-  });
-  assert.equal(uploaded.status, 200);
-  const image = (await uploaded.json()).items.at(-1);
-  assert.equal(image.type, 'image');
-  assert.equal(image.caption, 'Подпись');
+  const upload = async (body, articleId = article.id, headers = { cookie, 'x-csrf-token': csrf }) => fetch(
+    `${base}/admin/api/media/articles/${articleId}/assets`, { method: 'POST', headers, body },
+  );
+  const form = (blob, name) => { const f = new FormData(); f.append('file', blob, name); return f; };
+  const uploaded = await upload(form(new Blob([png], { type: 'image/png' }), 'картинка.png'));
+  assert.equal(uploaded.status, 201);
+  const image = await uploaded.json();
+  assert.equal(image.kind, 'image');
   assert.equal(image.original_name, 'картинка.png');
+  assert.deepEqual([image.width, image.height], [64, 48]);
   const filesDir = path.join(DATA_DIR, 'media', 'files');
   assert.equal(fs.readdirSync(filesDir).length, 1);
   assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'media', 'incoming')), [], 'the raw upload is gone');
-  assert.equal((await req('GET', `/admin/api/media/items/${image.id}/thumb`, null, { raw: true })).status, 200);
+  assert.equal((await req('GET', `/admin/api/media/assets/${image.id}/picture`, null, { raw: true })).status, 200);
 
-  // Not an accepted type, and not really an image.
-  const pdf = new FormData();
-  pdf.append('file', new Blob(['%PDF'], { type: 'application/pdf' }), 'doc.pdf');
-  const refused = await fetch(`${base}/admin/api/media/upload`, {
-    method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: pdf,
-  });
-  assert.equal(refused.status, 415);
-  const fake = new FormData();
-  fake.append('file', new Blob(['not an image'], { type: 'image/png' }), 'fake.png');
-  const broken = await fetch(`${base}/admin/api/media/upload`, {
-    method: 'POST', headers: { cookie, 'x-csrf-token': csrf }, body: fake,
-  });
-  assert.equal(broken.status, 400);
+  // Refused: not an accepted type, not really an image, no CSRF header, no such article.
+  assert.equal((await upload(form(new Blob(['%PDF'], { type: 'application/pdf' }), 'doc.pdf'))).status, 415);
+  assert.equal((await upload(form(new Blob(['not an image'], { type: 'image/png' }), 'fake.png'))).status, 400);
+  assert.equal((await upload(form(new Blob([png], { type: 'image/png' }), 'a.png'), article.id, { cookie })).status, 403);
+  assert.equal((await upload(form(new Blob([png], { type: 'image/png' }), 'a.png'), 'nope0000')).status, 404);
   assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'media', 'incoming')), []);
 
-  // An upload without the CSRF header is refused like every other mutation.
-  const noCsrf = await fetch(`${base}/admin/api/media/upload`, { method: 'POST', headers: { cookie }, body: form });
-  assert.equal(noCsrf.status, 403);
+  // Save the document with the image in it.
+  const doc = {
+    type: 'doc',
+    content: [
+      { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Как настроить' }] },
+      { type: 'mediaImage', attrs: { assetId: image.id, size: 'half', caption: 'Пульт' } },
+      { type: 'script', content: [{ type: 'text', text: 'alert(1)' }] },
+    ],
+  };
+  const saved = await req('PATCH', `/admin/api/media/articles/${article.id}`, { doc, seconds: 20 });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.images, 1);
+  assert.equal(saved.body.summary, 'Как настроить');
+  assert.equal(saved.body.cover, image.id);
+  assert.ok(saved.body.assets[image.id]);
+  assert.ok(!JSON.stringify(saved.body.doc).includes('"script"'), 'unknown nodes never reach the store');
+  assert.equal((await req('PATCH', `/admin/api/media/articles/${article.id}`, {
+    doc: { type: 'doc', content: [{ type: 'mediaImage', attrs: { assetId: 'gone00000000' } }] },
+  })).status, 400, 'a document cannot point at a file that does not exist');
 
-  const order = await req('PUT', '/admin/api/media/order', { ids: [image.id, text.id] });
-  assert.deepEqual(order.body.items.map((i) => i.id), [image.id, text.id]);
-  assert.equal((await req('PUT', '/admin/api/media/order', { ids: [image.id] })).status, 400);
+  const list = await req('GET', '/admin/api/media');
+  assert.deepEqual(list.body.articles.map((a) => a.title), ['Инструкция']);
+  assert.ok(!('doc' in list.body.articles[0]), 'the list carries summaries, not whole documents');
 
-  // Deleting a slide deletes its file from disk.
-  const removed = await req('DELETE', `/admin/api/media/items/${image.id}`);
-  assert.deepEqual(removed.body.items.map((i) => i.id), [text.id]);
+  // A second article, reorder, then take the image out of the first: it leaves the disk.
+  const second = await req('POST', '/admin/api/media/articles', { title: 'Акция' });
+  const order = await req('PUT', '/admin/api/media/order', { ids: [second.body.id, article.id] });
+  assert.deepEqual(order.body.articles.map((a) => a.title), ['Акция', 'Инструкция']);
+  assert.equal((await req('PUT', '/admin/api/media/order', { ids: [article.id] })).status, 400);
+
+  await req('PATCH', `/admin/api/media/articles/${article.id}`, { doc: { type: 'doc', content: doc.content.slice(0, 1) } });
+  assert.deepEqual(fs.readdirSync(filesDir), [], 'removed from the article = removed from disk');
+  assert.equal((await req('GET', `/admin/api/media/assets/${image.id}`)).status, 404);
+
+  // Deleting an article deletes the files uploaded into it.
+  const again = await (await upload(form(new Blob([png], { type: 'image/png' }), 'b.png'))).json();
+  await req('PATCH', `/admin/api/media/articles/${article.id}`, {
+    doc: { type: 'doc', content: [{ type: 'mediaImage', attrs: { assetId: again.id, size: 'full' } }] },
+  });
+  assert.equal(fs.readdirSync(filesDir).length, 1);
+  const removed = await req('DELETE', `/admin/api/media/articles/${article.id}`);
+  assert.deepEqual(removed.body.articles.map((a) => a.title), ['Акция']);
   assert.deepEqual(fs.readdirSync(filesDir), []);
-  await req('DELETE', `/admin/api/media/items/${text.id}`);
-  assert.equal((await req('DELETE', `/admin/api/media/items/${text.id}`)).status, 404);
+  assert.equal((await req('DELETE', `/admin/api/media/articles/${article.id}`)).status, 404);
+  await req('DELETE', `/admin/api/media/articles/${second.body.id}`);
   await req('DELETE', `/admin/api/users/${ids.mediaUser}`);
 });

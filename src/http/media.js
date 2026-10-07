@@ -3,28 +3,29 @@
 // the auth + CSRF middleware. Multipart uploads are parsed here by multer
 // (express.json() upstream ignores them).
 //
-// Every mutation schedules a debounced loop rebuild (media/build.js); nothing
-// here waits for an encode, so the admin stays responsive while a video is
-// being processed — the page polls GET /media for progress instead.
+// Every content mutation schedules a debounced loop rebuild (media/build.js);
+// nothing here waits for an encode, so the admin stays responsive while a
+// video is processed — the editor polls the asset instead.
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
-import sharp from 'sharp';
 import { config } from '../config.js';
 import { log } from '../core/logger.js';
 import {
   Channels, INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME,
 } from '../playlist/catalog.js';
 import {
-  MediaItems, MEDIA_DIRS, DEFAULTS, LIMITS, mediaUsage, uploadKind, validateItemFields, validateOrder,
-  itemFilePath, itemThumbPath, ensureMediaDirs, newMediaId,
+  Articles, Assets, MEDIA_DIRS, DEFAULTS, LIMITS, mediaUsage, uploadKind, validateArticleFields, validateOrder,
+  assetFilePath, assetThumbPath, ensureMediaDirs, newMediaId,
 } from '../media/store.js';
+import { docAssetIds, docHasContent, docSummary } from '../media/doc.js';
 import {
   scheduleMediaBuild, buildMediaLoop, mediaStatus, queueVideo, cancelVideo, storeImage,
+  articleMedia, layoutArticle,
 } from '../media/build.js';
-import { probeMedia, textSlideSeconds } from '../encode/media.js';
-import { renderTextLayer, composeTextFrame, slideScale } from '../render/media.js';
+import { probeMedia } from '../encode/media.js';
+import { articlePreviewJpeg } from '../render/media.js';
 
 const router = express.Router();
 
@@ -32,64 +33,71 @@ const router = express.Router();
 // View models (pure)
 // ---------------------------------------------------------------------------
 
-export function mediaItemJson(item) {
-  const base = {
-    id: item.id,
-    type: item.type,
-    title: item.title || '',
-    error: item.error || null,
-    created_at: item.created_at,
-  };
-  if (item.type === 'text') {
-    return {
-      ...base,
-      markdown: item.markdown,
-      seconds: item.seconds || DEFAULTS.seconds,
-      scroll_speed: item.scroll_speed || DEFAULTS.scrollSpeed,
-    };
-  }
-  if (item.type === 'image') {
-    return {
-      ...base,
-      caption: item.caption || '',
-      seconds: item.seconds || DEFAULTS.seconds,
-      original_name: item.original_name || '',
-      size: item.size || 0,
-    };
-  }
+export function assetJson(asset) {
   return {
-    ...base,
-    status: item.status || 'ready',
-    original_name: item.original_name || '',
-    duration: item.duration || 0,
-    seconds: item.seconds || 0,
-    size: item.size || 0,
-    has_thumb: !!item.thumb,
+    id: asset.id,
+    kind: asset.kind,
+    status: asset.status || 'ready',
+    error: asset.error || null,
+    width: asset.width || 0,
+    height: asset.height || 0,
+    duration: asset.duration || 0,
+    has_audio: asset.kind === 'video' ? !!asset.has_audio : undefined,
+    size: asset.size || 0,
+    original_name: asset.original_name || '',
   };
 }
 
-// The estimated disk cost of keeping a video: its 720p clip plus the copy of
-// it inside the finished loop. Used to refuse an upload BEFORE spending an
-// encode on something that would not fit.
+// An article for the list: what is in it, not the whole document.
+export function articleSummaryJson(article, assetsById = new Map()) {
+  const assets = docAssetIds(article.doc).map((id) => assetsById.get(id)).filter(Boolean);
+  const cover = assets.find((a) => a.kind === 'image' || (a.kind === 'video' && a.thumb));
+  return {
+    id: article.id,
+    title: article.title || '',
+    summary: docSummary(article.doc),
+    empty: !docHasContent(article.doc),
+    seconds: article.seconds || DEFAULTS.seconds,
+    scroll_speed: article.scroll_speed || DEFAULTS.scrollSpeed,
+    images: assets.filter((a) => a.kind === 'image').length,
+    videos: assets.filter((a) => a.kind === 'video').length,
+    processing: assets.filter((a) => a.status === 'processing').length,
+    cover: cover ? cover.id : null,
+    error: article.error || null,
+    updated_at: article.updated_at,
+  };
+}
+
+// The whole article, for the editor: its document plus the assets it uses.
+export function articleJson(article, assetsById = new Map()) {
+  const assets = {};
+  for (const id of docAssetIds(article.doc)) {
+    if (assetsById.has(id)) assets[id] = assetJson(assetsById.get(id));
+  }
+  return { ...articleSummaryJson(article, assetsById), doc: article.doc, assets };
+}
+
+// The estimated disk cost of keeping a video: its 720p copy, the article clip
+// it is composited into and that clip's copy in the finished loop. Used to
+// refuse an upload BEFORE spending an encode on something that would not fit.
 export function videoCostEstimate(durationSeconds, maxrate = config.media.maxrate) {
   const videoBits = Number.parseFloat(maxrate) * (/m$/i.test(maxrate) ? 1e6 : 1e3);
   const bytesPerSecond = (videoBits + 128_000) / 8;
-  return Math.ceil(durationSeconds * bytesPerSecond * 2);
+  return Math.ceil(durationSeconds * bytesPerSecond * 3);
 }
 
-function mediaChannel() {
-  return Channels.get(INFO_MEDIA_CHANNEL_ID);
-}
+const assetMap = () => new Map(Assets.all().map((a) => [a.id, a]));
 
 function mediaView() {
-  const channel = mediaChannel();
+  const channel = Channels.get(INFO_MEDIA_CHANNEL_ID);
+  const assets = assetMap();
   return {
     channel: {
       id: INFO_MEDIA_CHANNEL_ID,
       name: channel?.name || INFO_MEDIA_DEFAULT_NAME,
       enabled: channel?.enabled !== false,
     },
-    items: MediaItems.all().map(mediaItemJson),
+    articles: Articles.all().map((a) => articleSummaryJson(a, assets)),
     status: mediaStatus(),
     usage: mediaUsage(),
     limits: LIMITS,
@@ -97,8 +105,14 @@ function mediaView() {
   };
 }
 
+function requireArticle(req, res) {
+  const article = Articles.get(req.params.id);
+  if (!article) res.status(404).json({ error: 'article not found' });
+  return article;
+}
+
 // ---------------------------------------------------------------------------
-// Routes
+// Channel + articles
 // ---------------------------------------------------------------------------
 
 router.get('/media', (req, res) => res.json(mediaView()));
@@ -121,91 +135,82 @@ router.patch('/media/channel', (req, res) => {
   return res.json(mediaView());
 });
 
-router.post('/media/items', (req, res) => {
-  const body = req.body || {};
-  if (body.type !== 'text') return res.status(400).json({ error: 'only text slides are created here; upload images and videos' });
-  const { value, error } = validateItemFields('text', body);
+// A new (empty) article: created up front so uploads in the editor have an
+// article to belong to. An empty article never reaches the channel.
+router.post('/media/articles', (req, res) => {
+  const { value, error } = validateArticleFields(req.body || {});
   if (error) return res.status(400).json({ error });
-  const item = MediaItems.create({
-    type: 'text', seconds: DEFAULTS.seconds, scroll_speed: DEFAULTS.scrollSpeed, ...value,
-  });
-  log.info('admin', 'media text slide added', { item_id: item.id });
-  scheduleMediaBuild('text slide added');
-  return res.json(mediaView());
+  const article = Articles.create(value);
+  log.info('admin', 'media article created', { article_id: article.id });
+  if (docHasContent(article.doc)) scheduleMediaBuild('article added');
+  return res.status(201).json(articleJson(article, assetMap()));
 });
 
-router.patch('/media/items/:id', (req, res) => {
-  const item = MediaItems.get(req.params.id);
-  if (!item) return res.status(404).json({ error: 'slide not found' });
-  const { value, error } = validateItemFields(item.type, req.body || {}, { partial: true });
-  if (error) return res.status(400).json({ error });
-  MediaItems.update(item.id, value);
-  scheduleMediaBuild('slide edited');
-  return res.json(mediaView());
+router.get('/media/articles/:id', (req, res) => {
+  const article = requireArticle(req, res);
+  if (!article) return undefined;
+  return res.json(articleJson(article, assetMap()));
 });
 
-router.delete('/media/items/:id', (req, res) => {
-  const item = MediaItems.get(req.params.id);
-  if (!item) return res.status(404).json({ error: 'slide not found' });
-  if (item.type === 'video') cancelVideo(item.id);
-  MediaItems.remove(item.id); // deletes its files from disk too
-  log.info('admin', 'media slide deleted', { item_id: item.id, type: item.type });
-  scheduleMediaBuild('slide deleted');
+router.patch('/media/articles/:id', (req, res) => {
+  const article = requireArticle(req, res);
+  if (!article) return undefined;
+  const { value, error } = validateArticleFields(req.body || {}, { partial: true });
+  if (error) return res.status(400).json({ error });
+  if (value.doc) {
+    const known = assetMap();
+    const unknown = docAssetIds(value.doc).filter((id) => !known.has(id));
+    if (unknown.length) return res.status(400).json({ error: 'the article refers to a file that no longer exists' });
+  }
+  const saved = Articles.update(article.id, value); // also deletes assets it dropped
+  scheduleMediaBuild('article edited');
+  return res.json(articleJson(saved, assetMap()));
+});
+
+router.delete('/media/articles/:id', (req, res) => {
+  const article = requireArticle(req, res);
+  if (!article) return undefined;
+  for (const asset of Assets.all()) if (asset.article_id === article.id) cancelVideo(asset.id);
+  const { assets } = Articles.remove(article.id); // deletes its files too
+  log.info('admin', 'media article deleted', { article_id: article.id, files: assets.length });
+  scheduleMediaBuild('article deleted');
   return res.json(mediaView());
 });
 
 router.put('/media/order', (req, res) => {
-  const { value, error } = validateOrder(req.body?.ids, MediaItems.all().map((i) => i.id));
+  const { value, error } = validateOrder(req.body?.ids, Articles.all().map((a) => a.id));
   if (error) return res.status(400).json({ error });
-  MediaItems.reorder(value);
-  scheduleMediaBuild('slides reordered');
+  Articles.reorder(value);
+  scheduleMediaBuild('articles reordered');
   return res.json(mediaView());
 });
 
-router.post('/media/rebuild', async (req, res) => {
+router.post('/media/rebuild', (req, res) => {
   buildMediaLoop({ reason: 'admin request', force: true })
     .catch((e) => log.warn('media', 'requested rebuild did not finish', { error: e.message }));
   return res.json(mediaView());
 });
 
-// A slide's picture for the admin list: the stored image, or a video's still.
-router.get('/media/items/:id/thumb', (req, res) => {
-  const item = MediaItems.get(req.params.id);
-  const file = item?.type === 'image' ? itemFilePath(item) : itemThumbPath(item);
-  if (!file || !fs.existsSync(file)) return res.status(404).json({ error: 'no picture' });
-  res.set('Cache-Control', 'private, max-age=300');
-  return res.sendFile(file);
-});
-
-// What a text page will look like on TV, from the same renderer the encode
-// uses: one screen for a page that fits, the whole page for one that scrolls.
+// What an article will look like on TV, from the same layout code the encoder
+// uses: the whole page (tall when it scrolls) with video posters in place, and
+// how long it will be on screen. Works on the unsaved document in the editor.
 router.post('/media/preview', async (req, res) => {
-  const { value, error } = validateItemFields('text', req.body || {});
+  const { value, error } = validateArticleFields(req.body || {});
   if (error) return res.status(400).json({ error });
+  const article = { ...value, seconds: value.seconds || DEFAULTS.seconds, scroll_speed: value.scroll_speed || DEFAULTS.scrollSpeed };
   ensureMediaDirs();
   const layerFile = path.join(MEDIA_DIRS.incoming, `preview-${newMediaId()}.png`);
   try {
-    const layer = await renderTextLayer(value.markdown, layerFile);
-    const image = layer.scrolls
-      ? await sharp({
-        create: {
-          width: config.channel.width, height: layer.height, channels: 3, background: '#0e1630',
-        },
-      }).composite([{ input: layerFile }]).jpeg({ quality: 80 }).toBuffer()
-      : await sharp(await composeTextFrame(layerFile)).jpeg({ quality: 80 }).toBuffer();
-    const seconds = textSlideSeconds({
-      seconds: value.seconds || DEFAULTS.seconds,
-      layerHeight: layer.height,
-      screenHeight: config.channel.height,
-      scale: slideScale(),
-      speed: value.scroll_speed || DEFAULTS.scrollSpeed,
-    });
+    const laid = await layoutArticle(article, articleMedia(article), layerFile);
+    if (!laid) return res.json({ image: null, seconds: 0, scrolls: false });
+    const image = await articlePreviewJpeg(layerFile, laid.layer.height);
     return res.json({
       image: `data:image/jpeg;base64,${image.toString('base64')}`,
-      scrolls: layer.scrolls,
-      seconds,
+      scrolls: laid.timeline.maxScroll > 0,
+      seconds: laid.timeline.total,
+      videos: laid.videos.length,
       width: config.channel.width,
-      height: layer.height,
+      height: laid.layer.height,
     });
   } catch (e) {
     log.error('media', 'preview failed', { error: e.message });
@@ -216,8 +221,23 @@ router.post('/media/preview', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Upload
+// Assets (images and videos inside articles)
 // ---------------------------------------------------------------------------
+
+router.get('/media/assets/:id', (req, res) => {
+  const asset = Assets.get(req.params.id);
+  if (!asset) return res.status(404).json({ error: 'file not found' });
+  return res.json(assetJson(asset));
+});
+
+// The picture for the editor and the list: the image itself, or a video's poster.
+router.get('/media/assets/:id/picture', (req, res) => {
+  const asset = Assets.get(req.params.id);
+  const file = asset?.kind === 'image' ? assetFilePath(asset) : assetThumbPath(asset);
+  if (!file || !fs.existsSync(file)) return res.status(404).json({ error: 'no picture' });
+  res.set('Cache-Control', 'private, max-age=300');
+  return res.sendFile(file);
+});
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -239,7 +259,7 @@ const upload = multer({
     }
     const usage = mediaUsage();
     if (usage.used >= usage.quota) {
-      return cb(Object.assign(new Error('the media storage limit is reached; delete a slide first'), { status: 507 }));
+      return cb(Object.assign(new Error('the media storage limit is reached; delete something first'), { status: 507 }));
     }
     return cb(null, true);
   },
@@ -256,23 +276,26 @@ function receiveFile(req, res, next) {
   });
 }
 
-router.post('/media/upload', receiveFile, async (req, res) => {
+// Upload an image or a video into an article. The editor inserts it into the
+// document straight away; it becomes part of the channel when the article is
+// saved (an upload never saved into an article is swept later).
+router.post('/media/articles/:id/assets', receiveFile, async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'no file' });
   const raw = file.path;
-  const kind = uploadKind(file.mimetype, file.originalname);
   const fail = (status, error) => {
     fs.rmSync(raw, { force: true });
     return res.status(status).json({ error });
   };
+  const article = Articles.get(req.params.id);
+  if (!article) return fail(404, 'article not found');
+  const kind = uploadKind(file.mimetype, file.originalname);
+  const id = newMediaId();
 
   if (kind === 'image') {
     if (file.size > config.media.maxImageMb * 1024 * 1024) {
       return fail(413, `image is larger than ${config.media.maxImageMb} MB`);
     }
-    const { value: fields, error } = validateItemFields('image', req.body || {}, { partial: true });
-    if (error) return fail(400, error);
-    const id = newMediaId();
     let stored;
     try {
       stored = await storeImage(id, raw);
@@ -281,13 +304,11 @@ router.post('/media/upload', receiveFile, async (req, res) => {
     } finally {
       fs.rmSync(raw, { force: true });
     }
-    MediaItems.create({
-      id, type: 'image', seconds: DEFAULTS.seconds, caption: '', ...fields,
-      ...stored, original_name: file.originalname,
+    const asset = Assets.create({
+      id, article_id: article.id, kind: 'image', status: 'ready', original_name: file.originalname, ...stored,
     });
-    log.info('admin', 'media image uploaded', { item_id: id, bytes: stored.size });
-    scheduleMediaBuild('image added');
-    return res.json(mediaView());
+    log.info('admin', 'media image uploaded', { asset_id: id, article_id: article.id, bytes: stored.size });
+    return res.status(201).json(assetJson(asset));
   }
 
   // Video: probe now, so a broken file or one that can't fit is refused at
@@ -301,20 +322,23 @@ router.post('/media/upload', receiveFile, async (req, res) => {
   if (!info.hasVideo || !(info.duration > 0)) return fail(400, 'the file has no video track');
   const usage = mediaUsage(); // includes the raw upload itself
   if (usage.used - file.size + videoCostEstimate(info.duration) > usage.quota) {
-    return fail(507, 'not enough media storage for this video; delete a slide or upload a shorter one');
+    return fail(507, 'not enough media storage for this video; delete something or upload a shorter one');
   }
-  const item = MediaItems.create({
-    id: newMediaId(),
-    type: 'video',
+  const asset = Assets.create({
+    id,
+    article_id: article.id,
+    kind: 'video',
     status: 'processing',
     original_name: file.originalname,
-    duration: Math.round(info.duration * 10) / 10,
+    width: info.width,
+    height: info.height,
+    duration: Math.round(info.duration * 1000) / 1000,
   });
   log.info('admin', 'media video uploaded; processing', {
-    item_id: item.id, duration_s: info.duration, bytes: file.size,
+    asset_id: id, article_id: article.id, duration_s: info.duration, bytes: file.size,
   });
-  queueVideo(item.id, raw); // deletes `raw` when done
-  return res.json(mediaView());
+  queueVideo(id, raw, info); // deletes `raw` when done
+  return res.status(201).json(assetJson(asset));
 });
 
 export default router;

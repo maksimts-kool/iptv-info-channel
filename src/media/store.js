@@ -1,14 +1,19 @@
-// The media channel's content: an ordered list of slides (text page, image,
-// video) kept in Settings `media_channel`, plus the files on disk behind them.
+// The media channel's content: ARTICLES (rich documents, media/doc.js) shown
+// in order, and the ASSETS (uploaded images and videos) they embed. Both live
+// in Settings `media_channel`; the files behind the assets on disk.
 //
 // The channel's NAME and on/off switch are not stored here: they live on its
 // built-in catalog row (playlist/model.js INFO_MEDIA_CHANNEL_ID), so the
-// catalog screens, the per-customer pins and this page all edit one value.
+// catalog screens, the per-customer pins and the admin page edit one value.
+//
+// An asset belongs to the article it was uploaded into. It is deleted — row and
+// files — when that article is deleted, when a save drops it from the article,
+// or (never saved into one: an editor closed without saving) by the sweep.
 //
 // Disk layout under DATA_DIR/media:
-//   files/     uploaded images (downscaled) and the 720p video copies
-//   thumbs/    a still per video for the admin list
-//   clips/     encoded per-slide clips, cached by content hash (encode/media.js)
+//   files/     stored images (downscaled) and the 720p video copies
+//   thumbs/    a poster per video
+//   clips/     encoded per-article clips, cached by content hash
 //   incoming/  uploads still streaming in; emptied at startup
 // and the finished loop in DATA_DIR/hls/_media (served at /m/:token/).
 import fs from 'node:fs';
@@ -16,9 +21,13 @@ import path from 'node:path';
 import { customAlphabet } from 'nanoid';
 import { config } from '../config.js';
 import { Settings } from '../data/store.js';
+import {
+  sanitizeDoc, docAssetIds, docHasContent, emptyDoc,
+} from './doc.js';
 
 const KEY = 'media_channel';
 const makeId = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz', 12);
+export const newMediaId = makeId;
 
 export const MEDIA_DIRS = {
   files: path.join(config.mediaDir, 'files'),
@@ -40,8 +49,7 @@ export function ensureMediaDirs() {
 // ---------------------------------------------------------------------------
 
 export const LIMITS = {
-  markdownChars: 20_000,
-  captionChars: 140,
+  titleChars: 120,
   minSeconds: 3,
   maxSeconds: 600,
   minSpeed: 10,
@@ -58,7 +66,7 @@ export const VIDEO_TYPES = ['video/mp4', 'video/x-matroska', 'video/quicktime', 
 const IMAGE_EXT = /\.(jpe?g|png|webp)$/i;
 const VIDEO_EXT = /\.(mp4|m4v|mkv|mov|webm)$/i;
 
-// Which kind of slide an upload is, from its MIME type or (browsers send an
+// Which kind of asset an upload is, from its MIME type or (browsers send an
 // empty or generic type for .mkv) its extension. null = not accepted.
 export function uploadKind(mimetype, filename) {
   const type = String(mimetype || '').toLowerCase();
@@ -73,49 +81,41 @@ function intIn(value, min, max, label) {
   return { value: n };
 }
 
-// Fields an admin may set on a slide, by type -> { value } | { error }.
-// `partial` is a PATCH: absent fields are left alone.
-export function validateItemFields(type, body = {}, { partial = false } = {}) {
+// Article fields an admin may set -> { value } | { error }. `partial` is a
+// PATCH: absent fields are left alone.
+export function validateArticleFields(body = {}, { partial = false } = {}) {
   const out = {};
   const has = (k) => body[k] !== undefined;
-
-  if (type === 'text' && (!partial || has('markdown'))) {
-    const markdown = String(body.markdown ?? '');
-    if (!markdown.trim()) return { error: 'text is empty' };
-    if (markdown.length > LIMITS.markdownChars) {
-      return { error: `text must be ${LIMITS.markdownChars} characters or less` };
+  if (!partial || has('title')) {
+    out.title = String(body.title ?? '').replace(/\s+/g, ' ').trim().slice(0, LIMITS.titleChars);
+  }
+  if (!partial || has('doc')) {
+    if (!has('doc')) out.doc = emptyDoc();
+    else {
+      const { value, error } = sanitizeDoc(body.doc);
+      if (error) return { error };
+      out.doc = value;
     }
-    out.markdown = markdown;
   }
-  if (type === 'text' && has('scroll_speed')) {
-    const r = intIn(body.scroll_speed, LIMITS.minSpeed, LIMITS.maxSpeed, 'scroll speed');
-    if (r.error) return r;
-    out.scroll_speed = r.value;
-  }
-  if ((type === 'text' || type === 'image') && has('seconds')) {
+  if (has('seconds')) {
     const r = intIn(body.seconds, LIMITS.minSeconds, LIMITS.maxSeconds, 'seconds');
     if (r.error) return r;
     out.seconds = r.value;
   }
-  if (type === 'image' && has('caption')) {
-    const caption = String(body.caption ?? '').replace(/\s+/g, ' ').trim();
-    if (caption.length > LIMITS.captionChars) {
-      return { error: `caption must be ${LIMITS.captionChars} characters or less` };
-    }
-    out.caption = caption;
-  }
-  if (has('title')) {
-    out.title = String(body.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (has('scroll_speed')) {
+    const r = intIn(body.scroll_speed, LIMITS.minSpeed, LIMITS.maxSpeed, 'scroll speed');
+    if (r.error) return r;
+    out.scroll_speed = r.value;
   }
   return { value: out };
 }
 
-// A reorder must name exactly the existing slides, each once.
+// A reorder must name exactly the existing articles, each once.
 export function validateOrder(ids, existingIds) {
   if (!Array.isArray(ids)) return { error: 'ids must be an array' };
   const wanted = new Set(existingIds);
   if (ids.length !== wanted.size || new Set(ids).size !== ids.length || ids.some((id) => !wanted.has(id))) {
-    return { error: 'the order must list every slide exactly once' };
+    return { error: 'the order must list every article exactly once' };
   }
   return { value: ids };
 }
@@ -125,63 +125,158 @@ export function validateOrder(ids, existingIds) {
 // ---------------------------------------------------------------------------
 
 function read() {
-  const stored = Settings.all()[KEY];
-  return { items: Array.isArray(stored?.items) ? stored.items : [] };
+  const stored = Settings.all()[KEY] || {};
+  return {
+    articles: Array.isArray(stored.articles) ? stored.articles : [],
+    assets: Array.isArray(stored.assets) ? stored.assets : [],
+  };
 }
 
-function write(items) {
-  Settings.set(KEY, { ...(Settings.all()[KEY] || {}), items });
+function write(patch) {
+  const current = Settings.all()[KEY] || {};
+  // `items` was the first draft of this feature (single-media slides); it
+  // never shipped, and is dropped on the first write.
+  const { items: _draft, ...rest } = current;
+  Settings.set(KEY, { ...rest, ...patch });
 }
 
-export const MediaItems = {
-  all: () => read().items.map((item) => ({ ...item })),
+function updateIn(list, id, fields) {
+  let updated = null;
+  const next = list.map((row) => {
+    if (row.id !== id) return row;
+    updated = { ...row, ...fields };
+    return updated;
+  });
+  return { next, updated };
+}
+
+export const Assets = {
+  all: () => read().assets.map((a) => ({ ...a })),
   get: (id) => {
-    const item = read().items.find((i) => i.id === id);
-    return item ? { ...item } : null;
+    const asset = read().assets.find((a) => a.id === id);
+    return asset ? { ...asset } : null;
   },
   create: (fields) => {
-    const item = { id: makeId(), created_at: new Date().toISOString(), ...fields };
-    write([...read().items, item]);
-    return { ...item };
+    const asset = { id: makeId(), created_at: new Date().toISOString(), ...fields };
+    write({ assets: [...read().assets, asset] });
+    return { ...asset };
   },
   update: (id, fields) => {
-    let updated = null;
-    const items = read().items.map((item) => {
-      if (item.id !== id) return item;
-      updated = { ...item, ...fields };
-      return updated;
-    });
-    if (updated) write(items);
+    const { next, updated } = updateIn(read().assets, id, fields);
+    if (updated) write({ assets: next });
     return updated ? { ...updated } : null;
   },
-  reorder: (ids) => {
-    const byId = new Map(read().items.map((item) => [item.id, item]));
-    write(ids.map((id) => byId.get(id)).filter(Boolean));
-  },
-  // Removes the row and every file that belonged to it. Cached clips are not
-  // per-item (they are keyed by content) and go in the next build's sweep.
+  // Row + files.
   remove: (id) => {
-    const items = read().items;
-    const item = items.find((i) => i.id === id);
-    if (!item) return null;
-    write(items.filter((i) => i.id !== id));
-    removeItemFiles(item);
-    return item;
+    const assets = read().assets;
+    const asset = assets.find((a) => a.id === id);
+    if (!asset) return null;
+    write({ assets: assets.filter((a) => a.id !== id) });
+    removeAssetFiles(asset);
+    return asset;
   },
 };
 
-export function itemFilePath(item) {
-  return item?.file ? path.join(MEDIA_DIRS.files, path.basename(item.file)) : null;
+export const Articles = {
+  all: () => read().articles.map((a) => ({ ...a })),
+  get: (id) => {
+    const article = read().articles.find((a) => a.id === id);
+    return article ? { ...article } : null;
+  },
+  create: (fields = {}) => {
+    const now = new Date().toISOString();
+    const article = {
+      id: makeId(),
+      title: '',
+      doc: emptyDoc(),
+      seconds: DEFAULTS.seconds,
+      scroll_speed: DEFAULTS.scrollSpeed,
+      created_at: now,
+      updated_at: now,
+      ...fields,
+    };
+    write({ articles: [...read().articles, article] });
+    return { ...article };
+  },
+  // Saving a new document also deletes this article's assets it no longer
+  // uses — "removed from the article = removed from disk".
+  update: (id, fields) => {
+    const { next, updated } = updateIn(read().articles, id, { ...fields, updated_at: new Date().toISOString() });
+    if (!updated) return null;
+    write({ articles: next });
+    if (fields.doc) {
+      // Any article counts: an image copy-pasted into another article stays.
+      const used = new Set(next.flatMap((a) => docAssetIds(a.doc)));
+      for (const asset of read().assets) {
+        if (asset.article_id === id && !used.has(asset.id)) Assets.remove(asset.id);
+      }
+    }
+    return { ...updated };
+  },
+  reorder: (ids) => {
+    const byId = new Map(read().articles.map((a) => [a.id, a]));
+    write({ articles: ids.map((id) => byId.get(id)).filter(Boolean) });
+  },
+  // Row + every asset uploaded into it (and their files).
+  remove: (id) => {
+    const { articles, assets } = read();
+    const article = articles.find((a) => a.id === id);
+    if (!article) return null;
+    const rest = articles.filter((a) => a.id !== id);
+    const stillUsed = new Set(rest.flatMap((a) => docAssetIds(a.doc)));
+    const owners = new Set(rest.map((a) => a.id));
+    // Its own uploads — and any whose owner is already gone (shared from an
+    // article deleted earlier) — unless an article still shows them.
+    const mine = assets.filter((a) => (a.article_id === id || !owners.has(a.article_id)) && !stillUsed.has(a.id));
+    const gone = new Set(mine.map((a) => a.id));
+    write({ articles: rest, assets: assets.filter((a) => !gone.has(a.id)) });
+    mine.forEach(removeAssetFiles);
+    return { article, assets: mine };
+  },
+};
+
+export function assetFilePath(asset) {
+  return asset?.file ? path.join(MEDIA_DIRS.files, path.basename(asset.file)) : null;
 }
 
-export function itemThumbPath(item) {
-  return item?.thumb ? path.join(MEDIA_DIRS.thumbs, path.basename(item.thumb)) : null;
+export function assetThumbPath(asset) {
+  return asset?.thumb ? path.join(MEDIA_DIRS.thumbs, path.basename(asset.thumb)) : null;
 }
 
-export function removeItemFiles(item) {
-  for (const file of [itemFilePath(item), itemThumbPath(item)]) {
+export function removeAssetFiles(asset) {
+  for (const file of [assetFilePath(asset), assetThumbPath(asset)]) {
     if (file) fs.rmSync(file, { force: true });
   }
+}
+
+// Articles opened with "Новая статья" and abandoned (the tab was closed before
+// the editor could clean up): still empty and untitled after `minAgeMs`.
+export function sweepAbandonedArticles({ minAgeMs = 0, now = Date.now() } = {}) {
+  let removed = 0;
+  for (const article of read().articles) {
+    if (article.title || docHasContent(article.doc)) continue;
+    if (now - Date.parse(article.updated_at || article.created_at || 0) < minAgeMs) continue;
+    Articles.remove(article.id);
+    removed += 1;
+  }
+  return removed;
+}
+
+// Assets no saved article uses: uploaded into an editor that was then closed
+// without saving, or whose article is gone. `minAgeMs` spares fresh uploads an
+// editor that is still open is about to save.
+export function sweepUnusedAssets({ minAgeMs = 0, now = Date.now() } = {}) {
+  const { articles, assets } = read();
+  const used = new Set(articles.flatMap((a) => docAssetIds(a.doc)));
+  let removed = 0;
+  for (const asset of assets) {
+    if (used.has(asset.id)) continue;
+    if (now - Date.parse(asset.created_at || 0) < minAgeMs) continue;
+    if (asset.status === 'processing' && minAgeMs) continue;
+    Assets.remove(asset.id);
+    removed += 1;
+  }
+  return removed;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,26 +307,24 @@ export function mediaUsage() {
   };
 }
 
-// Startup housekeeping: drop half-received uploads and any file in files/ or
-// thumbs/ that no slide references (a crash between upload and save, or a
-// delete that died midway). A video still marked "processing" lost its source
-// with incoming/, so it is marked failed rather than left spinning forever.
+// Startup housekeeping: drop half-received uploads, half-built clips, assets
+// no article uses and any file nothing references (a crash between upload and
+// save, or a delete that died midway). A video still marked "processing" lost
+// its source with incoming/, so it is marked failed rather than left spinning.
 export function sweepOrphans() {
   ensureMediaDirs();
   fs.rmSync(MEDIA_DIRS.incoming, { recursive: true, force: true });
   fs.mkdirSync(MEDIA_DIRS.incoming, { recursive: true });
-
-  const items = MediaItems.all();
-  for (const item of items) {
-    if (item.type === 'video' && item.status === 'processing') {
-      MediaItems.update(item.id, { status: 'error', error: 'обработка прервана перезапуском сервера' });
-    }
-  }
   for (const name of fs.readdirSync(MEDIA_DIRS.clips)) {
     if (name.startsWith('.work-')) fs.rmSync(path.join(MEDIA_DIRS.clips, name), { recursive: true, force: true });
   }
-  const keep = new Set(items.flatMap((i) => [i.file, i.thumb]).filter(Boolean).map((f) => path.basename(f)));
-  let removed = 0;
+  for (const asset of Assets.all()) {
+    if (asset.status === 'processing') {
+      Assets.update(asset.id, { status: 'error', error: 'обработка прервана перезапуском сервера' });
+    }
+  }
+  let removed = sweepUnusedAssets();
+  const keep = new Set(Assets.all().flatMap((a) => [a.file, a.thumb]).filter(Boolean).map((f) => path.basename(f)));
   for (const dir of [MEDIA_DIRS.files, MEDIA_DIRS.thumbs]) {
     for (const name of fs.readdirSync(dir)) {
       if (keep.has(name)) continue;
@@ -241,5 +334,3 @@ export function sweepOrphans() {
   }
   return removed;
 }
-
-export const newMediaId = makeId;

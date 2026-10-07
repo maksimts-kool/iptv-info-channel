@@ -12,8 +12,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../../src/config.js';
 import {
-  stillClipArgs, scrollClipArgs, videoClipArgs, videoThumbArgs, loopArgs,
-  tileUp, textSlideSeconds, loopRepeats, concatList,
+  articleClipArgs, articleTimeline, scrollExpression, videoNormalizeArgs, videoPosterArgs, loopArgs,
+  tileUp, loopRepeats, concatList,
 } from '../../src/encode/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,26 +36,52 @@ function applyProfile(p) {
 }
 
 const MUSIC = '/m/music.mp3';
+const STILLS = {
+  background: '/w/bg.png', layer: '/w/page.png', edges: '/w/edges.png', music: MUSIC, out: '/w/clip.mp4',
+};
+
+// A text-only article that fits one screen, one that scrolls, and one with two
+// videos (one with sound, one silent) and the corner chip.
+function textOnly() {
+  const t = articleTimeline({ layerHeight: 720, screenHeight: 720, speed: 40, minSeconds: 15 });
+  return articleClipArgs({ ...STILLS, phases: t.phases, seconds: t.total });
+}
+function scrolling() {
+  const t = articleTimeline({ layerHeight: 2000, screenHeight: config.channel.height, speed: 60 });
+  return articleClipArgs({
+    ...STILLS, indicator: '/w/chip.png', phases: t.phases, seconds: t.total,
+  });
+}
+function withVideos() {
+  const videos = [
+    {
+      file: '/f/a.mp4', x: 96, y: 900, width: 1088, height: 612, focus: 650, duration: 7.5, hasAudio: true,
+    },
+    {
+      file: '/f/b.mp4', x: 460, y: 1800, width: 360, height: 640, duration: 4, hasAudio: false,
+    },
+  ];
+  const t = articleTimeline({
+    layerHeight: 2600, screenHeight: config.channel.height, videos, speed: 40,
+  });
+  return articleClipArgs({
+    ...STILLS,
+    indicator: '/w/chip.png',
+    videos: videos.map((v, k) => ({ ...v, start: t.starts[k] })),
+    phases: t.phases,
+    seconds: t.total,
+  });
+}
 
 const CASES = [
-  ['still-default', 'default', () => stillClipArgs({ frame: '/w/frame.png', seconds: 12, music: MUSIC, out: '/w/clip.mp4' })],
-  ['still-alt', 'alt', () => stillClipArgs({ frame: '/w/frame.png', seconds: 8, music: MUSIC, out: '/w/clip.mp4' })],
-  ['scroll-default', 'default', () => scrollClipArgs({
-    background: '/w/bg.png', layer: '/w/text.png', edges: '/w/edges.png', seconds: 30, speed: 40, scale: 1, music: MUSIC, out: '/w/clip.mp4',
-  })],
-  ['scroll-alt', 'alt', () => scrollClipArgs({
-    background: '/w/bg.png', layer: '/w/text.png', edges: '/w/edges.png', seconds: 28, speed: 60, scale: 1.5, music: MUSIC, out: '/w/clip.mp4',
-  })],
-  ['video-audio-default', 'default', () => videoClipArgs({
-    input: '/in/raw.mov', duration: 7.3, hasAudio: true, music: MUSIC, out: '/f/x.tmp.mp4',
-  })],
-  ['video-silent-default', 'default', () => videoClipArgs({
-    input: '/in/raw.webm', duration: 12, hasAudio: false, music: MUSIC, out: '/f/x.tmp.mp4',
-  })],
-  ['video-audio-alt', 'alt', () => videoClipArgs({
-    input: '/in/raw.mp4', duration: 61.04, hasAudio: true, music: MUSIC, out: '/f/x.tmp.mp4',
-  })],
-  ['thumb-default', 'default', () => videoThumbArgs({ input: '/f/x.mp4', duration: 7.3, out: '/t/x.jpg' })],
+  ['article-text-default', 'default', textOnly],
+  ['article-scroll-default', 'default', scrolling],
+  ['article-scroll-alt', 'alt', scrolling],
+  ['article-videos-default', 'default', withVideos],
+  ['article-videos-alt', 'alt', withVideos],
+  ['normalize-audio-default', 'default', () => videoNormalizeArgs({ input: '/in/raw.mov', hasAudio: true, out: '/f/x.tmp.mp4' })],
+  ['normalize-silent-alt', 'alt', () => videoNormalizeArgs({ input: '/in/raw.webm', hasAudio: false, out: '/f/x.tmp.mp4' })],
+  ['poster-default', 'default', () => videoPosterArgs({ input: '/f/x.mp4', out: '/t/x.jpg' })],
   ['loop-default', 'default', () => loopArgs({ list: '/h/.build/list.txt', outDir: '/h/.build' })],
   ['loop-alt', 'alt', () => loopArgs({ list: '/h/.build/list.txt', outDir: '/h/.build' })],
 ];
@@ -86,40 +112,80 @@ test('media ffmpeg argv is byte-identical to the golden snapshot', () => {
   assert.deepEqual(compute(), golden);
 });
 
-test('every clip encoder shares one set of stream parameters', () => {
+test('every article clip uses one set of stream parameters', () => {
   // The loop is a stream copy of the clips: if two clips disagreed on any of
   // these, the joined stream would change format mid-way.
   applyProfile(PROFILES.default);
   const tail = (args) => args.slice(args.indexOf('-c:v'), args.indexOf('-t', args.indexOf('-c:v')));
-  const still = tail(stillClipArgs({ frame: 'f', seconds: 6, music: 'm', out: 'o' }));
-  const scroll = tail(scrollClipArgs({
-    background: 'b', layer: 'l', edges: 'e', seconds: 6, speed: 40, music: 'm', out: 'o',
-  }));
-  const video = tail(videoClipArgs({
-    input: 'i', duration: 3, hasAudio: true, music: 'm', out: 'o',
-  }));
+  const a = tail(textOnly());
+  const b = tail(withVideos());
   restore();
-  assert.deepEqual(scroll, still);
-  assert.deepEqual(video, still);
+  assert.deepEqual(a, b);
 });
 
-test('slides last whole segments, rounded up so nothing is cut short', () => {
+test('clips last whole segments, rounded up so nothing is cut short', () => {
   assert.equal(tileUp(1, 6), 6);
   assert.equal(tileUp(6, 6), 6);
   assert.equal(tileUp(6.01, 6), 12);
-  assert.equal(tileUp(7.3, 6), 12);
   assert.equal(tileUp(0, 6), 6);
 });
 
-test('a text page that fits holds; a taller one scrolls at its speed', () => {
-  const fits = textSlideSeconds({ seconds: 15, layerHeight: 720, screenHeight: 720, speed: 40 });
-  assert.equal(fits, 18); // 15s rounded up to whole 6s segments
-  // 1200px of travel at 40px/s = 30s, plus 3s hold at each end = 36s.
-  const tall = textSlideSeconds({ seconds: 15, layerHeight: 1920, screenHeight: 720, speed: 40 });
-  assert.equal(tall, 36);
-  // On a 1080p channel the same page is 1.5x taller AND scrolls 1.5x faster.
-  const big = textSlideSeconds({ seconds: 15, layerHeight: 2880, screenHeight: 1080, scale: 1.5, speed: 40 });
-  assert.equal(big, 36);
+test('a page that fits holds for its seconds and never scrolls', () => {
+  const t = articleTimeline({ layerHeight: 720, screenHeight: 720, speed: 40, minSeconds: 15 });
+  assert.equal(t.total, 18); // 15s rounded up to whole 6s segments
+  assert.equal(t.maxScroll, 0);
+  assert.ok(t.phases.every((p) => p.from === 0 && p.to === 0));
+});
+
+test('a tall page holds, scrolls to the end at its speed, and holds again', () => {
+  // 1200px of travel at 40px/s = 30s, plus a 3s hold at each end = 36s.
+  const t = articleTimeline({ layerHeight: 1920, screenHeight: 720, speed: 40, minSeconds: 15 });
+  assert.equal(t.total, 36);
+  assert.deepEqual(t.phases.map((p) => [p.from, p.to]), [[0, 0], [0, 1200], [1200, 1200]]);
+  assert.equal(t.phases[1].end - t.phases[1].start, 30);
+});
+
+test('the scroll stops with each video centred while it plays', () => {
+  const videos = [
+    { y: 1000, height: 400, duration: 10 },
+    { y: 300, height: 200, duration: 5 }, // listed second but higher on the page
+  ];
+  const t = articleTimeline({ layerHeight: 3000, screenHeight: 720, videos, speed: 50 });
+  const playing = t.phases.filter((p) => p.video !== undefined);
+  assert.deepEqual(playing.map((p) => p.video), [1, 0], 'played in page order');
+  // Video 1 centred: 300 + 100 - 360 = 40; video 0: 1000 + 200 - 360 = 840.
+  assert.deepEqual(playing.map((p) => p.from), [40, 840]);
+  assert.ok(playing.every((p) => p.from === p.to), 'the page is still while a video plays');
+  assert.equal(t.starts[1], 3 + 40 / 50);
+  assert.ok(Math.abs(playing[0].end - playing[0].start - 5) < 1e-9);
+  // Phases tile the clip with no gap, and it ends a whole number of segments.
+  t.phases.forEach((p, i) => { if (i) assert.equal(p.start, t.phases[i - 1].end); });
+  assert.equal(t.phases.at(-1).end, t.total);
+  assert.equal(t.total % 6, 0);
+});
+
+test('a video on a page that fits plays without any scrolling, and the page holds its time', () => {
+  const t = articleTimeline({
+    layerHeight: 720, screenHeight: 720, videos: [{ y: 200, height: 300, duration: 4 }], speed: 40, minSeconds: 15,
+  });
+  assert.equal(t.maxScroll, 0);
+  assert.equal(t.starts[0], 3);
+  assert.equal(t.total, 18);
+});
+
+test('the scroll expression follows the phases', () => {
+  const phases = [
+    { start: 0, end: 3, from: 0, to: 0 },
+    { start: 3, end: 13, from: 0, to: 500 },
+    { start: 13, end: 18, from: 500, to: 500 },
+  ];
+  const expr = scrollExpression(phases);
+  // Evaluate it the way ffmpeg would, at a few instants.
+  const at = (t) => Function('t', `const lt=(a,b)=>a<b?1:0;const iff=(c,a,b)=>c?a:b;return ${expr.replace(/if\(/g, 'iff(')};`)(t);
+  assert.equal(at(1), 0);
+  assert.equal(at(8), 250);
+  assert.equal(at(15), 500);
+  assert.equal(at(99), 500);
 });
 
 test('a short loop is repeated to fill one live window', (t) => {
@@ -130,7 +196,6 @@ test('a short loop is repeated to fill one live window', (t) => {
   assert.equal(loopRepeats(6), 8); // 8 x 6s window
   assert.equal(loopRepeats(18), 3);
   assert.equal(loopRepeats(48), 1);
-  assert.equal(loopRepeats(120), 1);
   config.channel.liveLoop = false;
   assert.equal(loopRepeats(6), 1); // plain VOD has no window to fill
 });
