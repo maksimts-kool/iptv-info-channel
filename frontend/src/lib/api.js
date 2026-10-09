@@ -10,6 +10,11 @@ export function setCsrfToken(token) {
   csrf = token || '';
 }
 
+// For requests not made through `api` (AntD's Upload posts multipart itself).
+export function getCsrfToken() {
+  return csrf;
+}
+
 async function request(method, url, body) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';

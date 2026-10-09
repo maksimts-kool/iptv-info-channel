@@ -36,7 +36,7 @@ export default function PlaylistPage({
   }, [loadCatalog, reload]);
 
   const shared = {
-    api, message, onAuthError, catalog, refresh, error,
+    api, message, onAuthError, catalog, refresh, error, go,
   };
 
   return (

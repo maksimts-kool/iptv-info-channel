@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { config } from '../../src/config.js';
 import {
   validateSubscription, buildProviderRequest, sendEmail, templates, expiryDue,
-  subscribeUrlFor, capNames, contentChangeSummary,
+  subscribeUrlFor, capNames, contentChangeSummary, validateNewsletter, newsletterRecipients,
 } from '../../src/notify/notify.js';
 import { buildBrandSlide1Svg } from '../../src/render/overlay.js';
 
@@ -13,7 +13,7 @@ test('validateSubscription accepts a valid email and normalizes it', () => {
   assert.equal(value.email, 'user@example.com');
   // Renewal is mandatory and always forced on regardless of input.
   assert.deepEqual(value.options, {
-    server: true, expiry: false, content: false, renewal: true,
+    server: true, expiry: false, content: false, news: false, renewal: true,
   });
 });
 
@@ -132,4 +132,45 @@ test('buildBrandSlide1Svg adds a QR panel only when a subscribe URL is given', (
   const withQr = buildBrandSlide1Svg({ brand_name: 'Acme' }, 'http://host/sub/abc123');
   assert.ok(withQr.includes('<rect'), 'QR modules render as rects');
   assert.ok(withQr.includes('Подписка на уведомления'));
+});
+
+test('a newsletter needs a subject and a body; the audience is optional', () => {
+  assert.match(validateNewsletter({ body: 'x' }).error, /тему/);
+  assert.match(validateNewsletter({ subject: 'Тема' }).error, /текст/);
+  assert.match(validateNewsletter({ subject: 'x'.repeat(151), body: 'x' }).error, /150/);
+  const { value } = validateNewsletter({
+    subject: '  Плановые   работы ', body: 'Строка\r\nвторая\r\n\r\nНовый абзац', important: 'yes',
+  });
+  assert.equal(value.subject, 'Плановые работы');
+  assert.equal(value.body, 'Строка\nвторая\n\nНовый абзац');
+  assert.equal(value.important, false, 'only a real true marks it important');
+  assert.equal(value.audience, null, 'no audience = everyone opted in');
+  const aimed = validateNewsletter({ subject: 'a', body: 'b', audience: { users: ['3', 3, 'x'], plans: ['pro'] } });
+  assert.deepEqual(aimed.value.audience, { users: [3], plans: ['pro'] });
+});
+
+test('a newsletter reaches verified, opted-in subscribers in the audience only', () => {
+  const users = [
+    { id: 1, plan_id: 'pro' }, { id: 2, plan_id: 'std' }, { id: 3, plan_id: 'std' }, { id: 4, plan_id: 'std' },
+  ];
+  const sub = (user_id, extra = {}) => ({
+    user_id, email: `u${user_id}@x.io`, verified: true, options: { news: true }, ...extra,
+  });
+  const subscribers = [
+    sub(1), sub(2), sub(3, { verified: false }), sub(4, { options: { news: false } }), sub(99),
+  ];
+  const ids = (audience) => newsletterRecipients(audience, users, subscribers).map((r) => r.user.id);
+  assert.deepEqual(ids(null), [1, 2], 'unverified, opted-out and deleted customers are skipped');
+  assert.deepEqual(ids({ users: [], plans: ['pro'] }), [1]);
+  assert.deepEqual(ids({ users: [2, 3], plans: [] }), [2]);
+  assert.deepEqual(ids({ users: [], plans: [] }), [], 'an empty group is nobody, not everybody');
+});
+
+test('the newsletter email escapes the text and keeps its paragraphs', () => {
+  const mail = templates.newsletter('Бренд', { subject: 'Новости <b>', body: 'Первый\nабзац\n\n<script>x</script>', important: true });
+  assert.match(mail.subject, /^Бренд: Важно — Новости <b>$/);
+  assert.ok(!mail.html.includes('<script>'));
+  assert.ok(mail.html.includes('Первый<br>абзац'));
+  assert.ok(mail.html.includes('&lt;script&gt;'));
+  assert.match(mail.text, /^ВАЖНО\. Новости <b>/);
 });

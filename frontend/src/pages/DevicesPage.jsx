@@ -7,6 +7,7 @@ import {
   ClearOutlined, DesktopOutlined, ReloadOutlined, TeamOutlined, UserOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
+import ClientDevicesCard from '../clients/ClientDevicesCard.jsx';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
 
@@ -34,6 +35,12 @@ const plainIp = (ip) => (ip || '').replace(/^::ffff:/i, '');
 
 const openClient = (id) => { window.location.hash = `#/clients/${id}`; };
 
+// #/devices/12: opened from that customer's card — show them first.
+function focusFromHash() {
+  const m = window.location.hash.match(/^#\/?devices\/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
 export default function DevicesPage({
   api, state, reload, withRegen, message, onAuthError,
 }) {
@@ -42,6 +49,18 @@ export default function DevicesPage({
   const [auto, setAuto] = useState(true);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [enabling, setEnabling] = useState(false);
+  const [focusId, setFocusId] = useState(focusFromHash);
+
+  useEffect(() => {
+    const onHash = () => setFocusId(focusFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  const unfocus = () => {
+    setFocusId(null);
+    window.history.replaceState(null, '', '#/devices');
+  };
 
   const fail = useCallback((e) => {
     if (e instanceof AuthError) onAuthError();
@@ -109,6 +128,7 @@ export default function DevicesPage({
   const plans = state?.plans || [];
   const users = state?.users || [];
   const personal = users.filter((u) => u.max_devices !== null && u.max_devices !== undefined);
+  const focused = users.find((u) => u.id === focusId) || null;
 
   const deviceColumns = [
     {
@@ -217,6 +237,19 @@ export default function DevicesPage({
         />
       ) : null}
 
+      {focused ? (
+        <ClientDevicesCard
+          key={focused.id}
+          user={focused}
+          api={api}
+          message={message}
+          onAuthError={onAuthError}
+          onClose={unfocus}
+          onOpenClient={() => openClient(focused.id)}
+          onReset={() => resetSlots({ user_id: focused.id, username: focused.username })}
+        />
+      ) : null}
+
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
           <Card size="small">
@@ -286,7 +319,10 @@ export default function DevicesPage({
             pagination={clients.length > 20 ? { pageSize: 20 } : false}
             dataSource={clients}
             columns={clientColumns}
-            rowClassName={(c) => (c.devices.some((d) => !d.allowed) ? 'row-over-limit' : '')}
+            rowClassName={(c) => [
+              c.devices.some((d) => !d.allowed) ? 'row-over-limit' : '',
+              c.user_id === focusId ? 'row-focused' : '',
+            ].join(' ')}
             expandable={{
               expandedRowRender: (c) => (
                 <ResponsiveTable

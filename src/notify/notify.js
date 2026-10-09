@@ -1,7 +1,8 @@
 // Email notification system. The channel's intro slide shows a per-user QR code
 // linking to /sub/:token, where a customer subscribes with their email. From
 // then on they get mail on: server-status changes (opt-in), an expiring
-// subscription (opt-in, once per expiry date), and renewals (mandatory).
+// subscription (opt-in, once per expiry date), renewals (mandatory), and the
+// admin's own newsletter — news and important announcements (opt-in, `news`).
 //
 // Mail goes over a third-party HTTP email API (HTTPS:443) — Brevo by default,
 // Resend optional — because DigitalOcean blocks outbound SMTP ports. Everything
@@ -15,6 +16,7 @@ import {
   accountStatus, daysLeft, formatDate, pluralDays, xmlEscape,
 } from '../core/util.js';
 import { log } from '../core/logger.js';
+import { audienceMatches, cleanAudience } from '../core/audience.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -44,7 +46,11 @@ export function validateSubscription(body = {}) {
     value: {
       email,
       options: {
-        server: !!opt.server, expiry: !!opt.expiry, content: !!opt.content, renewal: true,
+        server: !!opt.server,
+        expiry: !!opt.expiry,
+        content: !!opt.content,
+        news: !!opt.news,
+        renewal: true,
       },
     },
   };
@@ -174,6 +180,7 @@ export const templates = {
       'Продление подписки',
       options.expiry ? 'Скоро истекает' : null,
       options.content ? 'Изменения в списке каналов' : null,
+      options.news ? 'Новости и важные объявления' : null,
       options.server ? 'Статус сервера' : null,
     ].filter(Boolean);
     return {
@@ -251,6 +258,22 @@ export const templates = {
         callout(`<b>${xmlEscape(incident.title)}</b>${incident.note ? `<br><span style="color:${COLORS.text};font-size:14px">${xmlEscape(incident.note)}</span>` : ''}`, accent),
         { accent }),
       text: `${heading}: ${incident.title}${incident.note ? ` — ${incident.note}` : ''}`,
+    };
+  },
+  // The admin's own announcement. The body is plain text: a blank line starts a
+  // new paragraph, a single line break is kept. `important` only changes the
+  // look (orange accent, «Важно» in the subject) — it is still opt-in mail.
+  newsletter(brand, { subject, body, important = false }) {
+    const paragraphs = String(body || '').split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    const html = paragraphs.map((p) => P(xmlEscape(p).replace(/\n/g, '<br>'))).join('');
+    const accent = important ? COLORS.warning : COLORS.primary;
+    return {
+      subject: `${brand}: ${important ? 'Важно — ' : ''}${subject}`,
+      html: layout(brand, subject,
+        (important ? callout(`<b style="color:${COLORS.warning}">Важная информация</b>`, COLORS.warning) : '')
+        + html,
+        { accent }),
+      text: `${important ? 'ВАЖНО. ' : ''}${subject}\n\n${paragraphs.join('\n\n')}`,
     };
   },
   test(brand) {
@@ -335,6 +358,79 @@ export async function notifyContentChange(user, diff, { planName = '' } = {}) {
   return dispatch('content', user.id, sub.email, templates.contentChange(brandName(), {
     user, change, planName,
   }));
+}
+
+// ---- Newsletter ----
+
+export const NEWSLETTER_LIMITS = { subject: 150, body: 10_000 };
+
+// Pure: validate a newsletter draft. `audience` null = every subscriber who
+// opted into news; otherwise only those customers (see core/audience.js).
+export function validateNewsletter(body = {}) {
+  const subject = String(body.subject ?? '').replace(/\s+/g, ' ').trim();
+  if (!subject) return { error: 'Укажите тему письма' };
+  if (subject.length > NEWSLETTER_LIMITS.subject) {
+    return { error: `Тема — не больше ${NEWSLETTER_LIMITS.subject} символов` };
+  }
+  const text = String(body.body ?? '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return { error: 'Напишите текст письма' };
+  if (text.length > NEWSLETTER_LIMITS.body) {
+    return { error: `Текст — не больше ${NEWSLETTER_LIMITS.body} символов` };
+  }
+  const audience = body.audience === null || body.audience === undefined ? null : cleanAudience(body.audience);
+  if (body.audience && !audience) return { error: 'bad audience' };
+  return {
+    value: {
+      subject, body: text, important: body.important === true, audience,
+    },
+  };
+}
+
+// Pure: who receives a newsletter — verified subscribers who opted into news,
+// whose customer still exists and is in the audience. -> [{ user, sub }]
+export function newsletterRecipients(audience, users = [], subscribers = []) {
+  const byId = new Map(users.map((u) => [Number(u.id), u]));
+  const out = [];
+  for (const sub of subscribers) {
+    const user = byId.get(Number(sub.user_id));
+    if (!user || !sub.verified || !sub.options?.news) continue;
+    if (!audienceMatches(audience, user)) continue;
+    out.push({ user, sub });
+  }
+  return out;
+}
+
+// Mail one newsletter to its recipients. With the global switch off it throws
+// rather than "sending" to nobody, so the admin sees why nothing went out.
+// Returns { recipients, sent, failed }.
+export async function sendNewsletter(newsletter, { onProgress } = {}) {
+  if (!notifyEnabled()) throw new Error('уведомления выключены — включите их выше');
+  const brand = brandName();
+  const recipients = newsletterRecipients(newsletter.audience, Users.all(), Subscribers.all());
+  const message = templates.newsletter(brand, newsletter);
+  let sent = 0;
+  let failed = 0;
+  for (const { user, sub } of recipients) {
+    if (await dispatch('news', user.id, sub.email, message)) sent += 1;
+    else failed += 1;
+    onProgress?.({ recipients: recipients.length, sent, failed });
+  }
+  return { recipients: recipients.length, sent, failed };
+}
+
+// The admin's preview copy of a newsletter, to one address of their choosing.
+// Like sendTest, provider errors surface instead of being logged away.
+export async function sendNewsletterTest(to, newsletter) {
+  const email = String(to || '').trim().toLowerCase();
+  if (!EMAIL_RE.test(email) || email.length > 254) throw new Error('bad email address');
+  const message = templates.newsletter(brandName(), newsletter);
+  try {
+    await sendEmail({ to: email, ...message, subject: `[Тест] ${message.subject}` });
+    NotifyLog.add({ user_id: null, email, type: 'news_test', ok: true });
+  } catch (e) {
+    NotifyLog.add({ user_id: null, email, type: 'news_test', ok: false, error: e.message });
+    throw e;
+  }
 }
 
 // Server-status change ('raised' | 'resolved') to everyone opted into it.

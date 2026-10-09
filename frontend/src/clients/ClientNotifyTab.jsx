@@ -18,6 +18,7 @@ export default function ClientNotifyTab({
       expiry: subscriber ? !!subscriber.options.expiry : true,
       // Grandfathered on for subscribers stored before this topic existed.
       content: subscriber ? subscriber.options.content !== false : true,
+      news: subscriber ? subscriber.options.news !== false : true,
       server: subscriber ? !!subscriber.options.server : false,
       verified: subscriber ? !!subscriber.verified : true,
     });
@@ -28,7 +29,9 @@ export default function ClientNotifyTab({
     try {
       const res = await api.put(`/admin/api/users/${user.id}/subscriber`, {
         email: v.email.trim(),
-        options: { expiry: v.expiry, content: v.content, server: v.server },
+        options: {
+          expiry: v.expiry, content: v.content, news: v.news, server: v.server,
+        },
         verified: v.verified,
       });
       message.success(res.sentVerification
@@ -82,6 +85,9 @@ export default function ClientNotifyTab({
             </Form.Item>
             <Form.Item name="content" valuePropName="checked" noStyle>
               <Checkbox>Изменения в списке каналов (тариф или персональные)</Checkbox>
+            </Form.Item>
+            <Form.Item name="news" valuePropName="checked" noStyle>
+              <Checkbox>Новости и важные объявления (рассылка)</Checkbox>
             </Form.Item>
             <Form.Item name="server" valuePropName="checked" noStyle>
               <Checkbox>Статус сервера</Checkbox>

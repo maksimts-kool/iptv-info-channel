@@ -35,3 +35,36 @@ export function planOptions(plans) {
     };
   });
 }
+
+// "Paid for N ..." — the units the payment endpoint understands.
+export const PERIOD_UNITS = [
+  { value: 'month', label: 'мес.' },
+  { value: 'year', label: 'год' },
+  { value: 'day', label: 'дн.' },
+];
+
+export const periodWord = (period, count = 1) => {
+  const n = Math.abs(count) % 100;
+  const n1 = n % 10;
+  const few = n1 >= 2 && n1 <= 4 && (n < 10 || n >= 20);
+  const one = n1 === 1 && n !== 11;
+  if (period === 'year') return one ? 'год' : few ? 'года' : 'лет';
+  if (period === 'day') return one ? 'день' : few ? 'дня' : 'дней';
+  return one ? 'месяц' : few ? 'месяца' : 'месяцев';
+};
+
+// The default amount of a payment: the plan's price for the periods paid,
+// converted between month and year (mirrors suggestedPaymentCents in
+// src/http/admin.js). null = no fair price (days).
+export function suggestedPaymentCents(plan, { count, period }) {
+  if (!plan || !Number.isFinite(plan.price_cents)) return null;
+  const billed = ['day', 'month', 'year'].includes(plan.billing_period) ? plan.billing_period : 'month';
+  if (period === billed) return plan.price_cents * count;
+  if (billed === 'month' && period === 'year') return plan.price_cents * 12 * count;
+  if (billed === 'year' && period === 'month') return Math.round((plan.price_cents * count) / 12);
+  return null;
+}
+
+export const euros = (cents) => (cents === null || cents === undefined
+  ? '—'
+  : `${(cents / 100).toLocaleString('ru-RU', { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })} €`);

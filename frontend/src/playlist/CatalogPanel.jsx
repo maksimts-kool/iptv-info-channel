@@ -4,8 +4,8 @@ import {
   Switch, Tag, Typography,
 } from 'antd';
 import {
-  ArrowDownOutlined, ArrowUpOutlined, DownOutlined, EditOutlined, FolderOpenOutlined,
-  PlusOutlined, RightOutlined,
+  ArrowDownOutlined, ArrowUpOutlined, DownOutlined, EditOutlined, FolderOpenOutlined, LockOutlined,
+  PlusOutlined, RightOutlined, SettingOutlined,
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
@@ -27,8 +27,17 @@ import { count } from '../lib/format.js';
 
 const PAGE_SIZE = 25;
 
+// The built-in rows of Информация are this server's own channels: they are
+// listed here so the category reads truthfully, but they are managed on their
+// own pages, not in the catalog.
+const BUILTIN_PAGES = {
+  'info-account': { section: 'info', page: 'Инфоканал', tag: 'инфоканал' },
+  'info-media': { section: 'media', page: 'Медиаканал', tag: 'медиаканал' },
+};
+const builtinPage = (ch) => BUILTIN_PAGES[ch.id] || BUILTIN_PAGES['info-account'];
+
 export default function CatalogPanel({
-  api, message, onAuthError, catalog, refresh,
+  api, message, onAuthError, catalog, refresh, go,
 }) {
   const [mode, setMode] = useState('tree'); // 'tree' | 'search'
   const [search, setSearch] = useState('');
@@ -332,8 +341,11 @@ export default function CatalogPanel({
       ) : null}
       <Space direction="vertical" size={0}>
         <Space size={6}>
-          <span>{ch.name}</span>
-          {ch.builtin ? <Tag color="blue">инфоканал</Tag> : null}
+          {ch.name ? <span>{ch.name}</span> : (
+            // The account channel's default: named per customer in the .m3u.
+            <Typography.Text type="secondary" italic>Название сервиса — имя клиента</Typography.Text>
+          )}
+          {ch.builtin ? <Tag color="blue" icon={<LockOutlined />}>{builtinPage(ch).tag}</Tag> : null}
           {ch.custom ? <Tag>своя</Tag> : null}
           {ch.missing ? <Tag color="red">нет у провайдера</Tag> : null}
         </Space>
@@ -377,20 +389,25 @@ export default function CatalogPanel({
       title: 'В эфире',
       key: 'enabled',
       width: 84,
-      render: (_, ch) => (
+      render: (_, ch) => (ch.builtin ? (
+        ch.enabled ? <Tag color="green">да</Tag> : <Tag>нет</Tag>
+      ) : (
         <Switch
           size="small"
           checked={ch.enabled}
-          disabled={ch.builtin}
           onChange={(enabled) => patchChannel(ch.id, { enabled })}
         />
-      ),
+      )),
     },
     {
       title: '',
       key: 'actions',
       width: 130,
-      render: (_, ch) => (
+      render: (_, ch) => (ch.builtin ? (
+        <Button size="small" icon={<SettingOutlined />} onClick={() => go?.(builtinPage(ch).section)}>
+          {builtinPage(ch).page}
+        </Button>
+      ) : (
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => openChannelModal(ch)}>
             Изменить
@@ -411,7 +428,7 @@ export default function CatalogPanel({
             </Popconfirm>
           ) : null}
         </Space>
-      ),
+      )),
     },
   ];
 
@@ -434,18 +451,16 @@ export default function CatalogPanel({
           <Space direction="vertical" size={0}>
             {/* The whole name is the open/close control — a much larger target
                 than the chevron, and it looks clickable. */}
-            {c.builtin ? label : (
-              <Button
-                type="text"
-                style={{
-                  padding: '4px 8px', height: 'auto', marginInlineStart: -8, textAlign: 'left',
-                }}
-                aria-expanded={open}
-                onClick={() => toggleCategory(c, !open)}
-              >
-                {label}
-              </Button>
-            )}
+            <Button
+              type="text"
+              style={{
+                padding: '4px 8px', height: 'auto', marginInlineStart: -8, textAlign: 'left',
+              }}
+              aria-expanded={open}
+              onClick={() => toggleCategory(c, !open)}
+            >
+              {label}
+            </Button>
             {c.source_name && c.source_name !== c.name ? (
               <Typography.Text type="secondary" style={{ fontSize: 12, marginInlineStart: 24 }}>
                 {`у провайдера: ${c.source_name}`}
@@ -459,9 +474,7 @@ export default function CatalogPanel({
       title: 'Каналов в эфире',
       key: 'channels',
       width: 150,
-      render: (_, c) => (c.builtin
-        ? <Typography.Text type="secondary">инфоканал</Typography.Text>
-        : `${count(c.channels_enabled)} / ${count(c.channels)}`),
+      render: (_, c) => `${count(c.channels_enabled)} / ${count(c.channels)}`,
     },
     {
       // A category nobody sells is invisible to every customer, however enabled
@@ -532,6 +545,36 @@ export default function CatalogPanel({
     const state = byCategory[category.id];
     if (!state || (state.loading && !state.rows)) return <Spin style={{ margin: 16 }} />;
     const key = `cat:${category.id}`;
+    if (category.builtin) {
+      return (
+        <div style={{ padding: '8px 0 8px 24px' }}>
+          <Alert
+            type="info"
+            showIcon
+            icon={<LockOutlined />}
+            style={{ marginBottom: 8 }}
+            message="Служебные каналы этого сервера — здесь только для просмотра"
+            description={(
+              <Space wrap size={[8, 4]}>
+                <span>Название, включение и содержимое настраиваются на их страницах:</span>
+                <Button size="small" type="link" style={{ padding: 0 }} onClick={() => go?.('info')}>Инфоканал</Button>
+                <span>и</span>
+                <Button size="small" type="link" style={{ padding: 0 }} onClick={() => go?.('media')}>Медиаканал</Button>
+              </Space>
+            )}
+          />
+          <ResponsiveTable
+            rowKey="id"
+            size="small"
+            loading={state.loading}
+            columns={channelColumns(false)}
+            dataSource={state.rows || []}
+            scroll={{ x: 'max-content' }}
+            pagination={false}
+          />
+        </div>
+      );
+    }
     return (
       <div style={{ padding: '8px 0 8px 24px' }}>
         <Space style={{ marginBottom: 8 }}>
@@ -669,12 +712,12 @@ export default function CatalogPanel({
           expandable={{
             expandedRowKeys: expanded,
             expandedRowRender: expandedRow,
-            rowExpandable: (c) => !c.builtin,
+            rowExpandable: () => true,
             columnWidth: 56,
             onExpand: (open, category) => toggleCategory(category, open),
             // A full-size chevron button instead of AntD's small +/- glyph,
             // which was both hard to aim at and easy to overlook.
-            expandIcon: ({ expanded: open, record }) => (record.builtin ? null : (
+            expandIcon: ({ expanded: open, record }) => (
               <Button
                 type="text"
                 shape="circle"
@@ -685,7 +728,7 @@ export default function CatalogPanel({
                 style={{ color: '#2563eb' }}
                 onClick={(e) => { e.stopPropagation(); toggleCategory(record, !open); }}
               />
-            )),
+            ),
           }}
         />
       ) : (

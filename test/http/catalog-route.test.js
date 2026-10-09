@@ -22,6 +22,8 @@ process.env.EPG_FOSS_ENABLED = 'false';
 // binary that does not exist: the job fails instantly (the admin route already
 // swallows it) instead of burning CPU and racing the teardown.
 process.env.FFMPEG_PATH = 'ffmpeg-absent-in-tests';
+// The newsletter test sends for real through the dispatch path, minus the HTTP call.
+process.env.NOTIFY_DRY_RUN = 'true';
 
 const UPSTREAM = [
   '#EXTM3U url-tvg="http://provider/epg.xml"',
@@ -132,7 +134,7 @@ test('a fresh catalog has only the built-in Информация category', asyn
   assert.equal(status, 200);
   assert.deepEqual(body.categories.map((c) => c.name), ['Информация']);
   assert.equal(body.categories[0].builtin, true);
-  assert.equal(body.totals.channels, 1);
+  assert.equal(body.totals.channels, 2); // the account + media channels
 });
 
 test('adding and refreshing a source imports the upstream channels', async () => {
@@ -148,7 +150,7 @@ test('adding and refreshing a source imports the upstream channels', async () =>
 
   const { body } = await req('GET', '/admin/api/catalog');
   assert.deepEqual(body.categories.map((c) => c.name), ['Информация', 'Спорт', 'Новости']);
-  assert.equal(body.totals.channels, 4); // 3 imported + the info channel
+  assert.equal(body.totals.channels, 5); // 3 imported + the account and media channels
   // The provider's own guide is remembered for pass-through.
   assert.equal(body.sources[0].epg_url, 'http://provider/epg.xml');
 
@@ -678,7 +680,74 @@ test('recording a payment dates the subscription from the plan period', async ()
 
   assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { count: 0 })).status, 400);
   assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { period: 'week' })).status, 400);
+  assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { amount_eur: 'lots' })).status, 400);
   assert.equal((await req('POST', '/admin/api/users/999999/payment', {})).status, 404);
+});
+
+test('every payment lands in one ledger, and only the latest can be undone', async () => {
+  const plan = (await req('GET', '/admin/api/state')).body.plans.find((p) => p.id === ids.plan);
+  const ledger = await req('GET', '/admin/api/payments');
+  const mine = ledger.body.payments.filter((p) => p.user_id === ids.user);
+  assert.equal(mine.length, 2, 'both payments from the previous test');
+  // Newest first; the amount defaults to the plan price for the periods paid.
+  assert.equal(mine[0].count, 3);
+  assert.equal(mine[0].amount_cents, plan.price_cents * 3);
+  assert.equal(mine[0].previous_expires_at, '2099-04-15');
+  assert.ok(ledger.body.summary.month_count >= 2);
+
+  const custom = await req('POST', `/admin/api/users/${ids.user}/payment`, {
+    count: 1, period: 'day', amount_eur: '2.50', note: ' наличными ',
+  });
+  assert.equal(custom.body.payment.amount_cents, 250);
+  assert.equal(custom.body.payment.note, 'наличными');
+  assert.equal(custom.body.user.expires_at, '2099-07-16');
+
+  // An older payment no longer decides the date, so it cannot be undone.
+  assert.equal((await req('DELETE', `/admin/api/payments/${mine[0].id}`)).status, 409);
+  const undone = await req('DELETE', `/admin/api/payments/${custom.body.payment.id}`);
+  assert.equal(undone.status, 200);
+  assert.equal(undone.body.user.expires_at, '2099-07-15', 'the date goes back to before it');
+  assert.equal((await req('DELETE', `/admin/api/payments/${custom.body.payment.id}`)).status, 404);
+  // A manual date change since the payment also protects it.
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2099-08-01' });
+  assert.equal((await req('DELETE', `/admin/api/payments/${mine[0].id}`)).status, 409);
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2099-07-15' });
+});
+
+test('a newsletter goes to subscribers who opted into news, in its audience', async () => {
+  const draft = { subject: 'Плановые работы', body: 'Ночью 10 минут без эфира.' };
+  await req('PATCH', '/admin/api/notifications', { enabled: false });
+  assert.equal((await req('POST', '/admin/api/newsletters', draft)).status, 409, 'not while mail is off');
+  await req('PATCH', '/admin/api/notifications', { enabled: true });
+  assert.equal((await req('POST', '/admin/api/newsletters', draft)).status, 409, 'nobody subscribed yet');
+  assert.equal((await req('POST', '/admin/api/newsletters', { subject: '', body: 'x' })).status, 400);
+
+  await req('PUT', `/admin/api/users/${ids.user}/subscriber`, {
+    email: 'reader@example.com', options: { news: true }, verified: true,
+  });
+  const state = await req('GET', '/admin/api/state');
+  assert.equal(state.body.subscribers.find((s) => s.user_id === ids.user).options.news, true);
+
+  // Aimed at a group the subscriber is not in: refused, nothing sent.
+  const elsewhere = await req('POST', '/admin/api/newsletters', { ...draft, audience: { users: [999999], plans: [] } });
+  assert.equal(elsewhere.status, 409);
+
+  const sent = await req('POST', '/admin/api/newsletters', { ...draft, audience: { users: [ids.user], plans: [] } });
+  assert.equal(sent.status, 201);
+  assert.equal(sent.body.recipients, 1);
+  await new Promise((r) => setTimeout(r, 50));
+  const history = await req('GET', '/admin/api/newsletters');
+  assert.deepEqual(
+    [history.body.newsletters[0].status, history.body.newsletters[0].sent],
+    ['sent', 1],
+  );
+  const log = await req('GET', '/admin/api/notifications');
+  assert.equal(log.body.log[0].type, 'news');
+  assert.equal(log.body.log[0].email, 'reader@example.com');
+
+  assert.equal((await req('DELETE', `/admin/api/newsletters/${sent.body.id}`)).status, 200);
+  await req('DELETE', `/admin/api/users/${ids.user}/subscriber`);
+  await req('PATCH', '/admin/api/notifications', { enabled: false });
 });
 
 test('mutating catalog calls are rejected without a CSRF token', async () => {
@@ -725,4 +794,191 @@ test('the gateway passes a provider URL through without re-encoding it', async (
 
   await req('DELETE', `/admin/api/users/${user.body.id}`);
   await req('DELETE', `/admin/api/catalog/channels/${created.body.id}`);
+});
+
+// ---------------------------------------------------------------------------
+// The media channel (Информация -> «Медиа»)
+// ---------------------------------------------------------------------------
+
+// A finished loop on disk, as media/build.js leaves it — the encode itself is
+// covered by test/encode/media-args.test.js and needs ffmpeg + fonts.
+function fakeMediaLoop(dir = path.join(DATA_DIR, 'hls', '_media')) {
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:6', '#EXT-X-TARGETDURATION:6', '#EXT-X-PLAYLIST-TYPE:VOD'];
+  for (let i = 0; i < 8; i += 1) {
+    lines.push('#EXTINF:6.000000,', `seg_${String(i).padStart(3, '0')}.ts`);
+    fs.writeFileSync(path.join(dir, `seg_${String(i).padStart(3, '0')}.ts`), 'ts');
+  }
+  lines.push('#EXT-X-ENDLIST', '');
+  fs.writeFileSync(path.join(dir, 'index.m3u8'), lines.join('\n'));
+  return dir;
+}
+
+test('the media channel joins every playlist once its loop exists — even an expired one', async () => {
+  const user = await req('POST', '/admin/api/users', {
+    username: 'media-viewer',
+    plan_id: ids.plan,
+    expires_at: new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10),
+  });
+  ids.mediaUser = user.body.id;
+  ids.mediaToken = user.body.token;
+  const mediaUrl = `${'https://iptv.example'}/m/${ids.mediaToken}/index.m3u8`;
+
+  const before = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.ok(!before.text.includes('/m/'), 'nothing to play yet, so not listed');
+
+  fakeMediaLoop();
+  const listed = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.match(listed.text, /group-title="Информация",Медиа\n/);
+  assert.ok(listed.text.includes(mediaUrl));
+
+  const live = await req('GET', `/m/${ids.mediaToken}/index.m3u8`, null, { raw: true });
+  assert.equal(live.status, 200);
+  assert.match(live.text, /#EXT-X-MEDIA-SEQUENCE:/);
+  assert.doesNotMatch(live.text, /#EXT-X-ENDLIST/, 'served as a live channel');
+  assert.equal((await req('GET', `/m/${ids.mediaToken}/seg_000.ts`, null, { raw: true })).status, 200);
+  assert.equal((await req('GET', '/m/not-a-token/index.m3u8', null, { raw: true })).status, 404);
+  assert.equal((await req('GET', `/m/${ids.mediaToken}/..%2Fdb.json`, null, { raw: true })).status, 400);
+
+  const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+  await req('PATCH', `/admin/api/users/${ids.mediaUser}`, { expires_at: yesterday });
+  const expired = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.equal(expired.text.split('\n').filter((l) => l.startsWith('#EXTINF')).length, 2);
+  assert.ok(expired.text.includes(mediaUrl), 'expired customers keep it, with the account card');
+});
+
+test('switching the media channel off hides it and sends open players to the card', async () => {
+  const off = await req('PATCH', '/admin/api/media/channel', { enabled: false, name: 'Новости сервиса' });
+  assert.equal(off.status, 200);
+  assert.deepEqual(off.body.channel, { id: 'info-media', name: 'Новости сервиса', enabled: false });
+
+  const playlist = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.ok(!playlist.text.includes('/m/'));
+  const hopped = await hop(`/m/${ids.mediaToken}/index.m3u8`);
+  assert.equal(hopped.status, 302);
+  assert.match(hopped.location, /\/hls\/[^/]+\/index\.m3u8$/);
+
+  await req('PATCH', '/admin/api/media/channel', { enabled: true });
+  const back = await req('GET', `/u/${ids.mediaToken}/playlist.m3u`, null, { raw: true });
+  assert.match(back.text, /,Новости сервиса\n/);
+  assert.equal((await req('PATCH', '/admin/api/media/channel', { name: '  ' })).status, 400);
+});
+
+test('the admin writes articles with images in them; dropped files leave the disk', async () => {
+  const created = await req('POST', '/admin/api/media/articles', { title: 'Инструкция' });
+  assert.equal(created.status, 201);
+  const article = created.body;
+  assert.equal(article.empty, true, 'a new article is empty until something is written');
+  assert.equal(article.doc.type, 'doc');
+
+  // Upload a real image into it (multipart, like the editor's toolbar does).
+  const sharp = (await import('sharp')).default;
+  const png = await sharp({
+    create: { width: 64, height: 48, channels: 3, background: '#336699' },
+  }).png().toBuffer();
+  const upload = async (body, articleId = article.id, headers = { cookie, 'x-csrf-token': csrf }) => fetch(
+    `${base}/admin/api/media/articles/${articleId}/assets`, { method: 'POST', headers, body },
+  );
+  const form = (blob, name) => { const f = new FormData(); f.append('file', blob, name); return f; };
+  const uploaded = await upload(form(new Blob([png], { type: 'image/png' }), 'картинка.png'));
+  assert.equal(uploaded.status, 201);
+  const image = await uploaded.json();
+  assert.equal(image.kind, 'image');
+  assert.equal(image.original_name, 'картинка.png');
+  assert.deepEqual([image.width, image.height], [64, 48]);
+  const filesDir = path.join(DATA_DIR, 'media', 'files');
+  assert.equal(fs.readdirSync(filesDir).length, 1);
+  assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'media', 'incoming')), [], 'the raw upload is gone');
+  assert.equal((await req('GET', `/admin/api/media/assets/${image.id}/picture`, null, { raw: true })).status, 200);
+
+  // Refused: not an accepted type, not really an image, no CSRF header, no such article.
+  assert.equal((await upload(form(new Blob(['%PDF'], { type: 'application/pdf' }), 'doc.pdf'))).status, 415);
+  assert.equal((await upload(form(new Blob(['not an image'], { type: 'image/png' }), 'fake.png'))).status, 400);
+  assert.equal((await upload(form(new Blob([png], { type: 'image/png' }), 'a.png'), article.id, { cookie })).status, 403);
+  assert.equal((await upload(form(new Blob([png], { type: 'image/png' }), 'a.png'), 'nope0000')).status, 404);
+  assert.deepEqual(fs.readdirSync(path.join(DATA_DIR, 'media', 'incoming')), []);
+
+  // Save the document with the image in it.
+  const doc = {
+    type: 'doc',
+    content: [
+      { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Как настроить' }] },
+      { type: 'mediaImage', attrs: { assetId: image.id, size: 'half', caption: 'Пульт' } },
+      { type: 'script', content: [{ type: 'text', text: 'alert(1)' }] },
+    ],
+  };
+  const saved = await req('PATCH', `/admin/api/media/articles/${article.id}`, { doc, seconds: 20 });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.images, 1);
+  assert.equal(saved.body.summary, 'Как настроить');
+  assert.equal(saved.body.cover, image.id);
+  assert.ok(saved.body.assets[image.id]);
+  assert.ok(!JSON.stringify(saved.body.doc).includes('"script"'), 'unknown nodes never reach the store');
+  assert.equal((await req('PATCH', `/admin/api/media/articles/${article.id}`, {
+    doc: { type: 'doc', content: [{ type: 'mediaImage', attrs: { assetId: 'gone00000000' } }] },
+  })).status, 400, 'a document cannot point at a file that does not exist');
+
+  const list = await req('GET', '/admin/api/media');
+  assert.deepEqual(list.body.articles.map((a) => a.title), ['Инструкция']);
+  assert.ok(!('doc' in list.body.articles[0]), 'the list carries summaries, not whole documents');
+
+  // A second article, reorder, then take the image out of the first: it leaves the disk.
+  const second = await req('POST', '/admin/api/media/articles', { title: 'Акция' });
+  const order = await req('PUT', '/admin/api/media/order', { ids: [second.body.id, article.id] });
+  assert.deepEqual(order.body.articles.map((a) => a.title), ['Акция', 'Инструкция']);
+  assert.equal((await req('PUT', '/admin/api/media/order', { ids: [article.id] })).status, 400);
+
+  await req('PATCH', `/admin/api/media/articles/${article.id}`, { doc: { type: 'doc', content: doc.content.slice(0, 1) } });
+  assert.deepEqual(fs.readdirSync(filesDir), [], 'removed from the article = removed from disk');
+  assert.equal((await req('GET', `/admin/api/media/assets/${image.id}`)).status, 404);
+
+  // Deleting an article deletes the files uploaded into it.
+  const again = await (await upload(form(new Blob([png], { type: 'image/png' }), 'b.png'))).json();
+  await req('PATCH', `/admin/api/media/articles/${article.id}`, {
+    doc: { type: 'doc', content: [{ type: 'mediaImage', attrs: { assetId: again.id, size: 'full' } }] },
+  });
+  assert.equal(fs.readdirSync(filesDir).length, 1);
+  const removed = await req('DELETE', `/admin/api/media/articles/${article.id}`);
+  assert.deepEqual(removed.body.articles.map((a) => a.title), ['Акция']);
+  assert.deepEqual(fs.readdirSync(filesDir), []);
+  assert.equal((await req('DELETE', `/admin/api/media/articles/${article.id}`)).status, 404);
+  await req('DELETE', `/admin/api/media/articles/${second.body.id}`);
+  await req('DELETE', `/admin/api/users/${ids.mediaUser}`);
+});
+
+test('private media goes only to its audience, each on its own loop', async () => {
+  const { Articles } = await import('../../src/media/store.js');
+  const { mediaVariantLoopDir } = await import('../../src/media/build.js');
+  const { articlesFor, variantKey } = await import('../../src/media/variants.js');
+  const until = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+  const insider = (await req('POST', '/admin/api/users', { username: 'insider', plan_id: ids.plan, expires_at: until })).body;
+  const outsider = (await req('POST', '/admin/api/users', { username: 'outsider', plan_id: ids.plan, expires_at: until })).body;
+  fs.rmSync(path.join(DATA_DIR, 'hls', '_media'), { recursive: true, force: true });
+
+  // Written straight to the store: through the API it would schedule an encode.
+  const article = Articles.create({
+    title: 'Только для своих',
+    doc: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'секрет' }] }] },
+    audience: { users: [insider.id], plans: [] },
+  });
+  const listed = async (user) => (await req('GET', `/u/${user.token}/playlist.m3u`, null, { raw: true })).text.includes('/m/');
+  assert.equal(await listed(insider), false, 'no loop built for them yet, and nothing public to fall back on');
+  assert.equal(await listed(outsider), false);
+
+  const key = variantKey(articlesFor(Articles.all(), { id: insider.id, plan_id: ids.plan }));
+  const dir = fakeMediaLoop(mediaVariantLoopDir(key));
+  assert.equal(await listed(insider), true);
+  assert.equal(await listed(outsider), false, 'an article for someone else never lists the channel');
+  assert.equal((await req('GET', `/m/${insider.token}/index.m3u8`, null, { raw: true })).status, 200);
+  assert.equal((await req('GET', `/m/${insider.token}/seg_000.ts`, null, { raw: true })).status, 200);
+  assert.equal((await hop(`/m/${outsider.token}/index.m3u8`)).status, 302, 'sent to their own card');
+  assert.equal((await req('GET', `/m/${outsider.token}/seg_000.ts`, null, { raw: true })).status, 404);
+
+  const summary = (await req('GET', '/admin/api/media')).body.articles.find((a) => a.id === article.id);
+  assert.deepEqual(summary.audience, { users: [insider.id], plans: [] });
+
+  Articles.remove(article.id);
+  fs.rmSync(dir, { recursive: true, force: true });
+  await req('DELETE', `/admin/api/users/${insider.id}`);
+  await req('DELETE', `/admin/api/users/${outsider.id}`);
 });

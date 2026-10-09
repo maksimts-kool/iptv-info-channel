@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildUserPlaylist } from '../../src/http/stream.js';
 import { fossIdHash } from '../../src/epg/epgfoss.js';
-import { INFO_CATEGORY_ID, INFO_CHANNEL_ID } from '../../src/playlist/model.js';
+import { INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID } from '../../src/playlist/model.js';
 
 const USER = { token: 'abc123', username: 'ivan' };
 const CONFIG = {
@@ -90,6 +90,17 @@ test('a locked (expired) customer receives only the info channel', () => {
   const playlist = buildUserPlaylist(USER, { brand_name: 'TestIPTV' }, CONFIG, entries());
   const urls = playlist.split('\n').filter((l) => l && !l.startsWith('#'));
   assert.deepEqual(urls, ['https://iptv.example/hls/abc123/index.m3u8']);
+});
+
+test('the media channel points at the shared loop, behind the customer token', () => {
+  const media = { category: INFO_CATEGORY, channel: { id: INFO_MEDIA_CHANNEL_ID, name: '', builtin: true, attrs: {} } };
+  const playlist = buildUserPlaylist(USER, {}, { ...CONFIG, gateway: { enabled: true } }, entries(media));
+  // Unnamed falls back to the default; never gated (it is served from here).
+  assert.match(playlist, /#EXTINF:-1 tvg-name="Медиа" group-title="Информация",Медиа\nhttps:\/\/iptv\.example\/m\/abc123\/index\.m3u8/);
+  const renamed = buildUserPlaylist(USER, {}, CONFIG, entries({
+    ...media, channel: { ...media.channel, name: 'Инструкции' },
+  }));
+  assert.match(renamed, /,Инструкции\n/);
 });
 
 const hlsEntry = {

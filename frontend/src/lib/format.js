@@ -32,3 +32,21 @@ export function intervalLabel(hours) {
   if (hours === 168) return 'раз в неделю';
   return `каждые ${hours} ч.`;
 }
+
+// "1,2 МБ" / "340 КБ" for a byte count (disk usage, upload sizes).
+export function bytes(value) {
+  const n = Number(value || 0);
+  if (n < 1024) return `${n} Б`;
+  const units = ['КБ', 'МБ', 'ГБ'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v.toLocaleString('ru-RU', { maximumFractionDigits: v < 10 ? 1 : 0 })} ${units[i]}`;
+}
+
+// "1 мин. 05 сек." / "45 сек." for a duration in seconds.
+export function seconds(value) {
+  const s = Math.round(Number(value || 0));
+  if (s < 60) return `${s} сек.`;
+  return `${Math.floor(s / 60)} мин. ${String(s % 60).padStart(2, '0')} сек.`;
+}

@@ -1,34 +1,47 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Select, Space,
+  Alert, Button, Card, Col, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Row, Select, Space,
   Spin, Switch, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  CopyOutlined, ExportOutlined, KeyOutlined, WalletOutlined,
+  CopyOutlined, DesktopOutlined, ExportOutlined, KeyOutlined, RightOutlined, WalletOutlined,
 } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { devicesLabel, periodSuffix, planOptions } from '../lib/plans.js';
 import ClientAccessTab from './ClientAccessTab.jsx';
-import ClientDevicesCard from './ClientDevicesCard.jsx';
 import ClientNotifyTab from './ClientNotifyTab.jsx';
 
-// "Paid for N ..." — the units the payment endpoint understands. The default is
-// the plan's own billing period, so a monthly plan needs no thought at all.
-const PERIOD_UNITS = [
-  { value: 'month', label: 'мес.' },
-  { value: 'year', label: 'год' },
-  { value: 'day', label: 'дн.' },
-];
+// A shortcut from the customer's card into a section that manages this
+// customer among everyone else (payments, devices): the section opens with
+// them already picked.
+function SectionLink({
+  icon, title, detail, onClick,
+}) {
+  return (
+    <Card size="small" hoverable onClick={onClick} styles={{ body: { padding: '10px 14px' } }}>
+      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+        <Space size={10}>
+          <span style={{ color: '#2563eb', fontSize: 18 }}>{icon}</span>
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{title}</Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{detail}</Typography.Text>
+          </Space>
+        </Space>
+        <RightOutlined style={{ color: '#8c8c8c' }} />
+      </Space>
+    </Card>
+  );
+}
 
 // Everything about one customer in one place: the account, the channels they
 // personally get, their email subscription, and the exact playlist their player
-// will download.
+// will download. Payments and devices are kept in their own sections (one
+// ledger, one live view for everyone); the card links straight into them.
 export default function ClientDrawer({
-  user, subscriber, state, api, withRegen, reload, message, onAuthError, onClose,
+  user, subscriber, state, api, withRegen, reload, message, onAuthError, onClose, go,
 }) {
   const [tab, setTab] = useState('account');
   const [form] = Form.useForm();
-  const [payForm] = Form.useForm();
   const plans = state?.plans || [];
   const plan = plans.find((p) => p.id === user?.plan_id) || null;
 
@@ -43,16 +56,6 @@ export default function ClientDrawer({
       max_devices: user.max_devices ?? null,
     });
   }, [user, form]);
-
-  // The payment form defaults to one of whatever the plan is billed in, so
-  // "клиент заплатил" is one click for the normal case.
-  useEffect(() => {
-    if (!user) return;
-    payForm.setFieldsValue({
-      count: 1,
-      period: ['month', 'year', 'day'].includes(plan?.billing_period) ? plan.billing_period : 'month',
-    });
-  }, [user, plan, payForm]);
 
   if (!user) return <Drawer open={false} />;
 
@@ -79,21 +82,6 @@ export default function ClientDrawer({
     } catch {
       window.prompt('Скопируйте ссылку:', text);
     }
-  };
-
-  // Record a payment: the server works the new date out from the plan period and
-  // pushes the expiry, so nobody has to count months in their head.
-  const recordPayment = async (from) => {
-    const v = await payForm.validateFields();
-    await withRegen(
-      `Оплата «${user.username}»`,
-      async () => {
-        const res = await api.post(`/admin/api/users/${user.id}/payment`, {
-          count: v.count, period: v.period, from,
-        });
-        message.success(`Подписка продлена до ${res.user.expires_pretty}`);
-      },
-    );
   };
 
   const locked = user.status === 'expired' || user.status === 'disabled';
@@ -124,7 +112,7 @@ export default function ClientDrawer({
         <Form.Item
           name="expires_at"
           label="Подписка действует до"
-          extra="Обычно эту дату ставит блок «Оплата» ниже. Здесь её можно поправить вручную, если дата неверная. Перенос вперёд считается продлением: клиенту уйдёт письмо и каналы включатся обратно."
+          extra="Обычно эту дату ставит отметка об оплате (раздел «Оплаты»). Здесь её можно поправить вручную, если дата неверная. Перенос вперёд считается продлением: клиенту уйдёт письмо и каналы включатся обратно."
         >
           <Input type="date" />
         </Form.Item>
@@ -147,45 +135,24 @@ export default function ClientDrawer({
         <Button type="primary" onClick={save}>Сохранить</Button>
       </Form>
 
-      <Card size="small" title={<Space><WalletOutlined />Оплата</Space>}>
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <Typography.Text type="secondary">
-            {`Отметьте оплаченный срок — дата окончания посчитается сама${
-              plan?.billing_period ? ` по периоду тарифа (${periodSuffix(plan.billing_period).replace('/', '')})` : ''
-            }. Оплаченное время прибавляется к текущей дате, поэтому досрочное продление не съедает остаток.`}
-          </Typography.Text>
-          <Form form={payForm} layout="inline" style={{ rowGap: 8 }}>
-            <Form.Item name="count" label="Заплатили за" rules={[{ required: true }]}>
-              <InputNumber min={1} max={120} precision={0} style={{ width: 90 }} />
-            </Form.Item>
-            <Form.Item name="period" rules={[{ required: true }]}>
-              <Select options={PERIOD_UNITS} style={{ width: 100 }} />
-            </Form.Item>
-            <Form.Item>
-              <Space wrap>
-                <Button type="primary" onClick={() => recordPayment('expiry')}>
-                  Продлить
-                </Button>
-                <Popconfirm
-                  title="Отсчитать срок от сегодняшнего дня?"
-                  description="Остаток текущей подписки при этом сгорает."
-                  okText="Отсчитать от сегодня"
-                  onConfirm={() => recordPayment('today')}
-                >
-                  <Button>С сегодняшнего дня</Button>
-                </Popconfirm>
-              </Space>
-            </Form.Item>
-          </Form>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {user.expires_at
-              ? `Сейчас действует до ${user.expires_pretty}`
-              : 'Срок сейчас не ограничен — первая же отметка об оплате поставит дату от сегодняшнего дня.'}
-          </Typography.Text>
-        </Space>
-      </Card>
-
-      <ClientDevicesCard user={user} api={api} onAuthError={onAuthError} message={message} />
+      <Row gutter={[12, 12]}>
+        <Col xs={24} sm={12}>
+          <SectionLink
+            icon={<WalletOutlined />}
+            title="Оплаты"
+            detail={user.expires_at ? `продлить · сейчас до ${user.expires_pretty}` : 'отметить оплату · срок не ограничен'}
+            onClick={() => go(`payments/${user.id}`)}
+          />
+        </Col>
+        <Col xs={24} sm={12}>
+          <SectionLink
+            icon={<DesktopOutlined />}
+            title="Устройства"
+            detail={`смотрят ${user.devices_active || 0} · ${devicesLabel(user.device_limit)}`}
+            onClick={() => go(`devices/${user.id}`)}
+          />
+        </Col>
+      </Row>
 
       <Descriptions bordered size="small" column={1} title="Ссылки">
         <Descriptions.Item label="Плейлист (m3u)">

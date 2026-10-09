@@ -68,6 +68,14 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       PROVIDER_NEWS_AI_MODEL: ${PROVIDER_NEWS_AI_MODEL:-openrouter/free}
       PROVIDER_NEWS_AI_TIMEOUT_MS: ${PROVIDER_NEWS_AI_TIMEOUT_MS:-30000}
+      # Media channel (Информация -> «Медиа»): upload caps + total disk budget.
+      MEDIA_MAX_VIDEO_MB: ${MEDIA_MAX_VIDEO_MB:-300}
+      MEDIA_MAX_IMAGE_MB: ${MEDIA_MAX_IMAGE_MB:-20}
+      MEDIA_QUOTA_MB: ${MEDIA_QUOTA_MB:-2048}
+      MEDIA_FPS: ${MEDIA_FPS:-25}
+      MEDIA_PRESET: ${MEDIA_PRESET:-veryfast}
+      MEDIA_CRF: ${MEDIA_CRF:-24}
+      MEDIA_MAXRATE: ${MEDIA_MAXRATE:-2500k}
       # --- 5. EPG / programme guide ---
       EPG_ENABLED: ${EPG_ENABLED:-true}
       EPG_DAYS_AHEAD: ${EPG_DAYS_AHEAD:-7}

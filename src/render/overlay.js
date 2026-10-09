@@ -43,6 +43,29 @@ function svgDoc(inner) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${config.channel.width}" height="${config.channel.height}" viewBox="0 0 1280 720">${SHARED_DEFS}${BG}${inner}</svg>`;
 }
 
+// The bare channel background (gradient, grid, accent bar) — the canvas the
+// media channel's text and image slides are drawn on (render/media.js).
+//
+// `edges: true` returns only the top and bottom bands of it, fading out toward
+// the middle: drawn OVER a scrolling text page so lines glide in and out under
+// the accent bar instead of being cut by the frame edge.
+export function buildBackgroundSvg({ edges = false } = {}) {
+  if (!edges) return svgDoc('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${config.channel.width}" height="${config.channel.height}" viewBox="0 0 1280 720">${SHARED_DEFS}
+  <defs>
+    <linearGradient id="edgeFade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="1"/>
+      <stop offset="0.07" stop-color="#fff" stop-opacity="1"/>
+      <stop offset="0.15" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.85" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.93" stop-color="#fff" stop-opacity="1"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="1"/>
+    </linearGradient>
+    <mask id="edges"><rect width="1280" height="720" fill="url(#edgeFade)"/></mask>
+  </defs>
+  <g mask="url(#edges)">${BG}</g></svg>`;
+}
+
 // A small rounded "logo mark" with the brand's initial — purely decorative.
 function logoMark(brand, cx, cy, size) {
   const initial = xmlEscape((brand || 'I').trim().charAt(0).toUpperCase() || 'I');

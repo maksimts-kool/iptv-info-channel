@@ -3,7 +3,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
 import cron from 'node-cron';
 import { config } from '../config.js';
 import { Users, Plans, Settings, Incidents } from '../data/store.js';
@@ -19,8 +18,8 @@ import {
   currentLoopPosition, LIVE_WINDOW_SEGMENTS, writeLoopState,
 } from './liveloop.js';
 import { elapsedMs, log } from '../core/logger.js';
+import { FFMPEG, AbortedError, run } from './ffmpeg.js';
 
-const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
 // Common HLS output args. ffmpeg writes a finite VOD asset on disk; liveloop.js
 // then serves it as one shared, always-running live channel (it is not
@@ -310,34 +309,6 @@ export function stillFfmpegArgs(cardPng, extras, music, tmpDir) {
     '-shortest',
     ...hlsOutArgs(tmpDir),
   ];
-}
-
-class AbortedError extends Error {
-  constructor() { super('generation aborted by newer request'); this.aborted = true; }
-}
-
-function run(cmd, args, label = cmd, signal = null) {
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let err = '';
-    p.stderr.on('data', (d) => { err += d.toString(); });
-    p.on('error', (error) => {
-      if (signal?.aborted) { reject(new AbortedError()); return; }
-      log.error('process', `${label} could not start`, { error: error.message });
-      reject(error);
-    });
-    p.on('close', (code) => {
-      if (code === 0) { resolve(); return; }
-      if (signal?.aborted) { reject(new AbortedError()); return; }
-      log.error('process', `${label} failed`, {
-        pid: p.pid,
-        code,
-        output: err.slice(-800),
-      });
-      reject(new Error(`${cmd} exited ${code}: ${err.slice(-800)}`));
-    });
-    signal?.addEventListener('abort', () => p.kill(), { once: true });
-  });
 }
 
 // Prefer the configured track, then the bundled asset, with synthesis as a
