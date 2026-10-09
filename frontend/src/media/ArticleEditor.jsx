@@ -4,13 +4,20 @@ import StarterKit from '@tiptap/starter-kit';
 import { TableKit } from '@tiptap/extension-table';
 import { Placeholder } from '@tiptap/extensions';
 import {
-  Alert, App as AntApp, Button, Drawer, Grid, Input, InputNumber, Modal, Progress, Space, Spin, Tooltip, Typography,
+  Alert, App as AntApp, Button, Drawer, Grid, Input, InputNumber, Modal, Progress, Segmented, Select, Space, Spin,
+  Tooltip, Typography,
 } from 'antd';
-import { ColumnHeightOutlined, EyeOutlined, SaveOutlined } from '@ant-design/icons';
+import {
+  ColumnHeightOutlined, EyeInvisibleOutlined, EyeOutlined, LockOutlined, SaveOutlined, TeamOutlined,
+} from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { bytes, seconds as secondsPretty } from '../lib/format.js';
+import { EMPTY_AUDIENCE } from '../lib/audience.js';
+import AudiencePicker from '../components/AudiencePicker.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 import { MediaImage, MediaVideo } from './mediaNodes.js';
+import { PrivateSection } from './privateSection.js';
+import { AudienceContext } from './audienceContext.js';
 import { isVideoFile, uploadFile } from './upload.js';
 
 const EXTENSIONS = [
@@ -20,6 +27,7 @@ const EXTENSIONS = [
   Placeholder.configure({ placeholder: 'Начните писать статью… Изображения и видео — кнопками на панели или перетаскиванием файла сюда.' }),
   MediaImage,
   MediaVideo,
+  PrivateSection,
 ];
 
 const isEmptyDoc = (doc) => !doc?.content?.some((n) => n.type !== 'paragraph' || n.content?.length);
@@ -29,7 +37,7 @@ const isEmptyDoc = (doc) => !doc?.content?.some((n) => n.type !== 'paragraph' ||
 // background, the channel's colours), so the editor is close to what airs;
 // "Как на ТВ" renders the real thing on the server.
 export default function ArticleEditor({
-  articleId, isNew, api, defaults, limits, usage, onAuthError, onSaved, onClose,
+  articleId, isNew, api, defaults, limits, usage, onAuthError, onSaved, onClose, users = [], plans = [],
 }) {
   const { message, modal } = AntApp.useApp();
   const screens = Grid.useBreakpoint();
@@ -41,6 +49,8 @@ export default function ArticleEditor({
   const [saving, setSaving] = useState(false);
   const [uploads, setUploads] = useState([]); // [{ key, name, percent }]
   const [preview, setPreview] = useState(null); // null | 'loading' | result
+  const [viewer, setViewer] = useState('all'); // whose eyes the preview uses
+  const [audience, setAudience] = useState(null); // null = every customer
   const savedOnce = useRef(!isNew);
   const queue = useRef(Promise.resolve());
 
@@ -84,6 +94,7 @@ export default function ArticleEditor({
         setTitle(loaded.title);
         setSeconds(loaded.seconds);
         setSpeed(loaded.scroll_speed);
+        setAudience(loaded.audience || null);
       } catch (e) {
         fail(e);
         onClose();
@@ -131,7 +142,7 @@ export default function ArticleEditor({
   onUploadRef.current = onUpload;
 
   const body = () => ({
-    title, doc: editor.getJSON(), seconds, scroll_speed: speed,
+    title, doc: editor.getJSON(), seconds, scroll_speed: speed, audience,
   });
 
   const save = async ({ close = false } = {}) => {
@@ -150,15 +161,22 @@ export default function ArticleEditor({
     }
   };
 
-  const showPreview = async () => {
+  const showPreview = async (as = viewer) => {
+    setViewer(as);
     setPreview('loading');
     try {
-      setPreview(await api.post('/admin/api/media/preview', body()));
+      setPreview(await api.post('/admin/api/media/preview', { ...body(), viewer: as }));
     } catch (e) {
       setPreview(null);
       fail(e);
     }
   };
+
+  const viewerOptions = [
+    { value: 'all', label: 'Всё, включая закрытые части' },
+    { value: 'public', label: 'Клиент без доступа к закрытому' },
+    ...users.map((u) => ({ value: u.id, label: `Как видит: ${u.username}` })),
+  ];
 
   // Closing: confirm unsaved changes; a brand-new article that was never saved
   // (and so is empty) is removed instead of being left behind.
@@ -197,7 +215,7 @@ export default function ArticleEditor({
       extra={(
         <Space>
           <Tooltip title={screens.sm ? null : 'Как на ТВ'}>
-            <Button icon={<EyeOutlined />} onClick={showPreview} disabled={!article} aria-label="Как на ТВ">
+            <Button icon={<EyeOutlined />} onClick={() => showPreview()} disabled={!article} aria-label="Как на ТВ">
               {screens.sm ? 'Как на ТВ' : null}
             </Button>
           </Tooltip>
@@ -216,6 +234,37 @@ export default function ArticleEditor({
             maxLength={limits?.titleChars}
             onChange={(e) => setTitle(e.target.value)}
           />
+          <div className={`article-audience${audience ? ' is-private' : ''}`}>
+            <Space wrap size={12}>
+              <Typography.Text strong>
+                {audience ? <LockOutlined /> : <TeamOutlined />}
+                {' Кто видит статью'}
+              </Typography.Text>
+              <Segmented
+                size="small"
+                value={audience ? 'group' : 'all'}
+                onChange={(v) => { setAudience(v === 'all' ? null : (audience || EMPTY_AUDIENCE)); setDirty(true); }}
+                options={[
+                  { value: 'all', label: 'Все клиенты' },
+                  { value: 'group', label: 'Только выбранные' },
+                ]}
+              />
+            </Space>
+            {audience ? (
+              <div style={{ marginTop: 10 }}>
+                <AudiencePicker
+                  value={audience}
+                  onChange={(next) => { setAudience(next); setDirty(true); }}
+                  users={users}
+                  plans={plans}
+                />
+              </div>
+            ) : (
+              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+                Отдельный абзац, картинку или видео можно скрыть от остальных кнопкой с замком на панели.
+              </Typography.Text>
+            )}
+          </div>
           <div className="article-editor">
             <EditorToolbar editor={editor} onUpload={onUpload} uploading={false} />
             {uploads.map((u) => (
@@ -224,7 +273,9 @@ export default function ArticleEditor({
                 <Progress percent={u.percent} size="small" style={{ flex: 1, margin: 0 }} />
               </div>
             ))}
-            <EditorContent editor={editor} />
+            <AudienceContext.Provider value={{ users, plans }}>
+              <EditorContent editor={editor} />
+            </AudienceContext.Provider>
           </div>
           <Space wrap size={24}>
             <Space>
@@ -262,9 +313,24 @@ export default function ArticleEditor({
         width={900}
         onCancel={() => setPreview(null)}
       >
+        <Select
+          value={viewer}
+          onChange={(v) => showPreview(v)}
+          options={viewerOptions}
+          showSearch
+          optionFilterProp="label"
+          style={{ width: '100%', maxWidth: 360, marginBottom: 12 }}
+        />
         {preview === 'loading' ? <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div> : null}
         {preview && preview !== 'loading' ? (
-          preview.image ? (
+          preview.hidden ? (
+            <Alert
+              type="info"
+              showIcon
+              icon={<EyeInvisibleOutlined />}
+              message="Этот клиент статью не увидит — она только для выбранной группы."
+            />
+          ) : preview.image ? (
             <>
               <div className="article-preview">
                 <img src={preview.image} alt="Предпросмотр" />
@@ -275,7 +341,15 @@ export default function ArticleEditor({
                 На экране: {secondsPretty(preview.seconds)}.
               </Typography.Paragraph>
             </>
-          ) : <Alert type="info" showIcon message="Статья пока пустая — на канал она не попадёт." />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message={viewer === 'all'
+                ? 'Статья пока пустая — на канал она не попадёт.'
+                : 'Для этого клиента в статье ничего нет — у него её не будет на канале.'}
+            />
+          )
         ) : null}
       </Modal>
     </Drawer>

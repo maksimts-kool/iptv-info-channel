@@ -17,9 +17,9 @@ import { Users, Plans } from '../data/store.js';
 import {
   Sources, Categories, Channels, Overrides,
   queryChannels, refreshSource, refreshAllSources, catalog,
-  planCategorySet, planCountsByCategory, INFO_CATEGORY_ID, INFO_MEDIA_CHANNEL_ID, REFRESH_INTERVALS,
+  planCategorySet, planCountsByCategory, INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, REFRESH_INTERVALS,
 } from '../playlist/catalog.js';
-import { mediaLoopReady } from '../media/build.js';
+import { mediaLoopDirFor } from '../media/build.js';
 import {
   channelCounts, categoryEnabledFor, effectiveEnabled, resolveUserChannels,
 } from '../playlist/model.js';
@@ -141,11 +141,13 @@ export function validateCategory(body, { partial = false } = {}) {
 
 // Fields an admin may change on a channel row. `category_id` is checked against
 // the live catalog by the caller.
-export function validateChannelPatch(body) {
+// `allowEmptyName`: the account channel's name may be cleared — empty is its
+// default, "<brand> — <customer name>" per customer (see buildUserPlaylist).
+export function validateChannelPatch(body, { allowEmptyName = false } = {}) {
   const out = {};
   if (body.name !== undefined) {
     const name = String(body.name).trim();
-    if (!name) return { error: 'channel name required' };
+    if (!name && !allowEmptyName) return { error: 'channel name required' };
     if (name.length > 160) return { error: 'name must be 160 characters or less' };
     out.name = name;
   }
@@ -388,7 +390,7 @@ router.post('/catalog/channels', (req, res) => {
 
 router.patch('/catalog/channels/:id', (req, res) => {
   if (!Channels.get(req.params.id)) return res.status(404).json({ error: 'not found' });
-  const { error, value } = validateChannelPatch(req.body || {});
+  const { error, value } = validateChannelPatch(req.body || {}, { allowEmptyName: req.params.id === INFO_CHANNEL_ID });
   if (error) return res.status(400).json({ error });
   if (value.category_id && !Categories.get(value.category_id)) {
     return res.status(400).json({ error: 'unknown category' });
@@ -464,9 +466,10 @@ router.get('/users/:id/channels', (req, res) => {
     plan: { id: user.plan_id, name: user.plan_name, categories: [...planCategories] },
     categories,
     overrideCount: Object.keys(overrides.categories).length + Object.keys(overrides.channels).length,
-    // Counted like the .m3u is built: the media channel only once it has a loop.
+    // Counted like the .m3u is built: the media channel only once it has a loop
+    // for this customer.
     visibleCount: resolveUserChannels(catalog(), { overrides, locked, planCategories })
-      .filter((e) => e.channel.id !== INFO_MEDIA_CHANNEL_ID || mediaLoopReady()).length,
+      .filter((e) => e.channel.id !== INFO_MEDIA_CHANNEL_ID || mediaLoopDirFor(user)).length,
     channels: {
       total,
       page: params.page,

@@ -12,6 +12,8 @@ const NOTIFY_TYPE = {
   expiry: 'Истечение',
   renewal: 'Продление',
   content: 'Изменения в каналах',
+  news: 'Рассылка',
+  news_test: 'Рассылка (тест)',
   server: 'Статус сервера',
   test: 'Тест',
 };

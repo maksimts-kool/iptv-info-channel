@@ -31,9 +31,10 @@ lost access and what a renewal costs.
 - **Expired-account offer slide** — expired customers see the available plans in an automatic 2-, 3- or 4-column grid, each listing the channel categories it includes.
 - **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin, plus the upstream provider's own maintenance/outage notices pulled automatically from its news feed (listed alongside your incidents in blue — the status turns blue rather than green when only the provider has trouble; channel-lineup news is filtered out).
 - **Branding intro animation**, configurable (`INTRO_*`) or disablable, and **background music** (bundled track or your own).
-- **Media channel** — a second channel in **Информация** with your own articles: formatted text with images and videos inside, written in a visual editor. On TV a long article scrolls, stops while each video plays in place, and shows «1/3 · title» in the corner. One loop for every customer, expired ones included. Videos are re-encoded to 720p and the original deleted; a disk budget caps the total.
+- **Media channel** — a second channel in **Информация** with your own articles: formatted text with images and videos inside, written in a visual editor. On TV a long article scrolls, stops while each video plays in place, and shows «1/3 · title» in the corner. Shared by every customer, expired ones included — except what you mark **private**: a whole article, or any part of one, can be shown to a chosen group of customers only. Videos are re-encoded to 720p and the original deleted; a disk budget caps the total.
+- **Payments ledger** — record what a customer paid and the expiry date works itself out; every payment is kept in one history with totals, and a mistaken one can be undone.
 - **Programme guide** — a per-customer XMLTV guide (plus the OTT-play FOSS JSON format) carrying service and account status.
-- **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API.
+- **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API — and a **newsletter** you write yourself (news, important announcements) for every subscriber who opted into it, or for a group of customers.
 
 ### Operations
 - **Web admin** (`/admin`) — playlist, clients, plans, info channel and notifications.
@@ -268,7 +269,10 @@ the other channels in a combined playlist.
 
 `http://<host>:9222/admin` — sign in with `ADMIN_PASSWORD`. The sections:
 
-**Обзор** — headline numbers, who is about to expire, current service status.
+**Обзор** — what needs doing (setup gaps, customers to renew, with a one-click
+«Продлить»), this month's payments, who is watching, and a card per part of the
+service — status, playlist, devices, media channel, email, plans — each opening
+its section.
 
 **Плейлист** — the main screen, two tabs:
 
@@ -281,9 +285,10 @@ the other channels in a combined playlist.
   than just the current page. Typing in the search box switches the panel to
   flat results across the whole catalog, where the same selection works over
   everything matching the filter.
-  **Информация** is the built-in category holding the info channel: it can be
-  renamed but never deleted or switched off, because it is the fallback an
-  expired customer is left with. Imported channels and categories have no delete
+  **Информация** is the built-in category holding the info and media channels:
+  it can be renamed but never deleted or switched off, because it is the
+  fallback an expired customer is left with. Expanding it lists its two channels
+  read-only, with a link to the page that manages each (Инфоканал, Медиаканал). Imported channels and categories have no delete
   button on purpose — the next source refresh would bring them straight back, so
   switching them off is the control that sticks. Only rows you added by hand can
   be deleted.
@@ -295,18 +300,30 @@ the other channels in a combined playlist.
 
 **Клиенты** — the customer list, with a card per customer covering:
 
-- *Аккаунт* — name, plan, expiry, active toggle, their `.m3u` link and link
-  re-issue. **Оплата** is where the expiry date normally comes from: enter how
-  much was paid for ("1 мес.") and the date is worked out from the plan's
-  billing period. Paid time is added on top of what is left, so renewing early
-  costs the customer nothing; a lapsed or open-ended account starts from today.
-  The date field above stays editable for fixing a wrong date by hand.
+- *Аккаунт* — name, plan, expiry, device limit, active toggle, their `.m3u`
+  link and link re-issue, plus shortcuts to this customer in **Оплаты** and
+  **Устройства**. The date field stays editable for fixing a wrong date by
+  hand; renewals are normally recorded as payments.
 - *Каналы клиента* — per-customer access. Every category and channel shows its
   global setting, this customer's pin (**По умолчанию / Включить / Выключить**)
   and the effective result. A pin works both ways: it can withhold a channel
   everyone else has, or grant one that is globally off.
 - *Уведомления* — their email subscription and its topics.
 - *Плейлист клиента* — the literal `.m3u` their player downloads.
+
+**Оплаты** — one place for every payment. Pick the customer (or «Выбрать» in
+the list of those about to lapse), enter how much was paid for ("1 мес.") and
+the new expiry date is worked out from the plan's billing period. Paid time is
+added on top of what is left, so renewing early costs the customer nothing; a
+lapsed or open-ended account starts from today. The amount defaults to the
+plan's price for that period (type another, or a note like «наличными»). The
+history lists every payment with the date it set; the latest payment of a
+customer can be undone while nothing has changed their date since. Totals for
+the month and the last 30 days sit on top.
+
+**Устройства** — who is watching right now (stream gateway), per-plan and
+personal limits, and freeing stale slots. Opened from a customer's card it
+shows that customer first.
 
 **Тарифы** — a plan **is** the channel package: a name, a price, and the
 tick-list of categories its customers receive. That same list is what the info
@@ -315,12 +332,14 @@ with nothing ticked sells nothing — its customers get only Информаци�
 is flagged on the Обзор, Тарифы and Плейлист screens. A plan assigned to
 customers can't be deleted until they are moved off it.
 
-**Инфоканал** — branding (service name + tagline), incidents feeding the status
-board, and the "rebuild all streams" control.
+**Инфоканал** — laid out like Медиаканал: the channel's name (by default
+«service — customer name», different for each customer), the rebuild control,
+its numbers, then branding (service name + tagline), incidents feeding the
+status board and the provider's notices.
 
 **Медиаканал** — the second channel of Информация («Медиа» by default; rename
-or switch it off here). It shows **articles**, one after another, the same for
-every customer:
+or switch it off here). It shows **articles**, one after another — the same for
+every customer unless you make something private:
 
 - **Новая статья** opens the editor: a title (shown in the corner of the
   screen as «1/3 · Заголовок») and a body written with the toolbar — headings,
@@ -330,7 +349,15 @@ every customer:
   or pasting a file into the text). Each one can be full width, half or small,
   with a caption. JPG/PNG/WebP images; MP4/MKV/MOV/WebM videos, re-encoded once
   to 720p with the original upload deleted.
-- **Как на ТВ** renders the article on the server exactly as it will air.
+- **Кто видит статью** — «Все клиенты» or «Только выбранные»: plans and/or
+  individual customers. Inside any article, the **lock** button on the toolbar
+  wraps the selected text, images or videos in a **closed part** that only a
+  chosen group sees; everyone else gets the article without it. Customers who
+  see the same things share one version of the channel; each other combination
+  is built as its own loop (more disk, so keep groups purposeful).
+- **Как на ТВ** renders the article on the server exactly as it will air — as
+  the editor sees it, as a customer without access sees it, or as a particular
+  customer sees it.
 - On TV a long article scrolls; when it reaches a video it **stops while the
   video plays in its place** (with the video's sound), then carries on.
 
@@ -339,7 +366,11 @@ article, or deleting the article, deletes its files from disk. The page shows
 the disk used against `MEDIA_QUOTA_MB` — an upload that would not fit is
 refused. The channel appears in playlists once an article has content.
 
-**Уведомления** — the global email switch, provider health and the send log.
+**Уведомления** — the **newsletter** (subject, text, «Важное» to highlight it,
+to everyone subscribed to news or to a group of customers; send a test to
+yourself first; a history of what went out), then the global email switch,
+provider health and the send log. Customers choose the «Новости и важные
+объявления» topic on their sign-up page; the admin can change it in their card.
 
 > Playlist edits never trigger an ffmpeg rebuild — the `.m3u` is rendered per
 > request. Only plan, branding and incident changes re-encode the info channel,
@@ -405,11 +436,12 @@ State is kept in two JSON files, plus the generated streams:
 
 | Path | Holds |
 |---|---|
-| `DATA_DIR/db.json` | customers, plans, incidents, subscribers, settings |
+| `DATA_DIR/db.json` | customers, plans, incidents, subscribers, payments, newsletters, settings |
 | `DATA_DIR/catalog.json` | playlist sources, categories, channels, per-customer access |
 | `DATA_DIR/hls/<userId>/` | that customer's generated info-channel segments |
 | `DATA_DIR/media/` | media channel files: images, 720p video copies, cached per-slide clips |
-| `DATA_DIR/hls/_media/` | the media channel's loop (one for everyone) |
+| `DATA_DIR/hls/_media/` | the media channel's loop (what everyone sees) |
+| `DATA_DIR/hls/_media-<hash>/` | one more loop per group of customers who see private media content |
 
 The catalog is a separate file on purpose: a provider list can be tens of
 thousands of channels, and both stores rewrite the whole file on every save —
@@ -484,6 +516,12 @@ out by `/admin/api/state`.
 | `POST` | `/admin/api/users/:id/regenerate` | rebuild this customer's stream now |
 | `GET` | `/admin/api/users/:id/playlist` | the exact `.m3u` this customer receives |
 | `DELETE` | `/admin/api/users/:id` | delete customer (drops their overrides too) |
+| `POST` | `/admin/api/users/:id/payment` | record a payment `{count, period, from, amount_eur, note}` (all optional) → new expiry |
+| `GET` | `/admin/api/payments` | the payments ledger, newest first, with month / 30-day totals |
+| `DELETE` | `/admin/api/payments/:id` | undo a customer's latest payment (restores the previous expiry) |
+| `GET`/`POST` | `/admin/api/newsletters` | newsletter history / send `{subject, body, important, audience}` |
+| `POST` | `/admin/api/newsletters/test` | send one copy to `{email}` |
+| `DELETE` | `/admin/api/newsletters/:id` | remove one from the history |
 | `GET` | `/admin/api/catalog` | sources, categories with counts, totals |
 | `POST` | `/admin/api/catalog/sources` | add a provider playlist `{name, url}` |
 | `PATCH`/`DELETE` | `/admin/api/catalog/sources/:id` | edit / remove a source |
@@ -509,11 +547,11 @@ out by `/admin/api/state`.
 | `GET` | `/admin/api/media` | media channel: name/switch, article summaries, build status, disk usage |
 | `PATCH` | `/admin/api/media/channel` | `{name, enabled}` |
 | `POST` | `/admin/api/media/articles` | create an article `{title?, doc?}` |
-| `GET`/`PATCH`/`DELETE` | `/admin/api/media/articles/:id` | the article with its document / save `{title, doc, seconds, scroll_speed}` / delete it and its files |
+| `GET`/`PATCH`/`DELETE` | `/admin/api/media/articles/:id` | the article with its document / save `{title, doc, seconds, scroll_speed, audience}` / delete it and its files |
 | `POST` | `/admin/api/media/articles/:id/assets` | multipart `file` → an image or video asset for that article |
 | `GET` | `/admin/api/media/assets/:id` (`/picture`) | asset status (a video is `processing` until re-encoded) / its picture |
 | `PUT` | `/admin/api/media/order` | `{ids[]}` → new play order |
-| `POST` | `/admin/api/media/preview` | `{doc, …}` → how the article renders on TV |
+| `POST` | `/admin/api/media/preview` | `{doc, …, viewer}` → how the article renders on TV (`viewer`: `all`, `public` or a customer id) |
 | `POST` | `/admin/api/media/rebuild` | rebuild the media loop from scratch |
 
 ## Security

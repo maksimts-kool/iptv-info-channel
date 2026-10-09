@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Input, Progress, Row, Space, Statistic, Switch, Tag, Tooltip, Typography,
+  Alert, Button, Card, Col, Progress, Row, Space, Statistic, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  CheckCircleOutlined, ExclamationCircleOutlined, LoadingOutlined, PlusOutlined, ReloadOutlined, SaveOutlined,
+  CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, FileTextOutlined, LoadingOutlined,
+  LockOutlined, PictureOutlined, PlusOutlined,
 } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { bytes, count, seconds as secondsPretty } from '../lib/format.js';
+import { clientsWord } from '../lib/audience.js';
+import ChannelHeader from '../components/ChannelHeader.jsx';
 import ArticleList from '../media/ArticleList.jsx';
 import ArticleEditor from '../media/ArticleEditor.jsx';
 
@@ -29,30 +32,30 @@ function StatusTag({ status, hasArticles }) {
 
 // The media channel: the second built-in channel of Информация. Its content is
 // a set of articles — text with images and videos inside — shown one after
-// another, the same for every customer (expired ones too). Edits save at once;
-// the server rebuilds the loop in the background, re-encoding only what changed.
-export default function MediaPage({ api, message, onAuthError }) {
+// another. Everyone sees the same channel unless an article (or a section of
+// one) is addressed to a group of customers; those customers get their own
+// version of the loop. Edits save at once; the server rebuilds in the
+// background, re-encoding only what changed. Laid out like Инфоканал.
+export default function MediaPage({
+  api, state, message, onAuthError,
+}) {
   const [data, setData] = useState(null);
-  const [name, setName] = useState('');
   const [editing, setEditing] = useState(null); // { id, isNew }
+  const users = state?.users || [];
+  const plans = state?.plans || [];
 
   const fail = useCallback((e) => {
     if (e instanceof AuthError) onAuthError();
     else message.error(e.message);
   }, [onAuthError, message]);
 
-  const accept = useCallback((next) => {
-    setData(next);
-    setName((current) => current || next.channel.name);
-  }, []);
-
   const load = useCallback(async () => {
     try {
-      accept(await api.get('/admin/api/media'));
+      setData(await api.get('/admin/api/media'));
     } catch (e) {
       fail(e);
     }
-  }, [api, accept, fail]);
+  }, [api, fail]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -68,7 +71,7 @@ export default function MediaPage({ api, message, onAuthError }) {
 
   const mutate = async (action, success) => {
     try {
-      accept(await action());
+      setData(await action());
       if (success) message.success(success);
     } catch (e) {
       fail(e);
@@ -92,52 +95,55 @@ export default function MediaPage({ api, message, onAuthError }) {
     channel, articles, status, usage,
   } = data;
   const usedPercent = Math.min(100, Math.round((usage.used / usage.quota) * 100));
-  const saveName = () => mutate(() => api.patch('/admin/api/media/channel', { name }), 'Название сохранено');
+  const privateArticles = articles.filter((a) => a.audience || a.private_sections).length;
 
   return (
-    <Space direction="vertical" size={24} style={{ width: '100%' }}>
-      <Alert
-        type="info"
-        showIcon
-        message="Медиаканал — второй канал категории «Информация»: ваши статьи с текстом, изображениями и видео, одна за другой."
-        description="Один и тот же для всех клиентов, в том числе с истёкшей подпиской. Длинная статья прокручивается, а на видео прокрутка останавливается, пока оно идёт. В углу экрана — «1/3 · заголовок». Видео перекодируется в 720p, а оригинал удаляется — так экономится место."
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <ChannelHeader
+        icon={<PictureOutlined />}
+        name={channel.name}
+        onRename={(name) => mutate(() => api.patch('/admin/api/media/channel', { name }), 'Название сохранено')}
+        description="Второй канал категории «Информация»: ваши статьи с текстом, изображениями и видео, одна за другой — в том числе у клиентов с истёкшей подпиской. Длинная статья прокручивается, на видео прокрутка останавливается. Статью или её часть можно показать только выбранным клиентам."
+        status={<StatusTag status={status} hasArticles={articles.some((a) => !a.empty)} />}
+        enabled={channel.enabled}
+        onToggle={(enabled) => mutate(
+          () => api.patch('/admin/api/media/channel', { enabled }),
+          enabled ? 'Канал включён' : 'Канал выключен — он пропадёт из плейлистов',
+        )}
+        onRebuild={() => mutate(() => api.post('/admin/api/media/rebuild'), 'Пересборка запущена')}
+        rebuilding={status.state === 'building'}
+        rebuildHint="Обычно не нужно: канал пересобирается сам после каждой правки."
       />
 
       <Row gutter={[16, 16]}>
-        <Col xs={24} md={12}>
-          <Card size="small" title="Канал">
-            <Space direction="vertical" size={12} style={{ width: '100%' }}>
-              <Space.Compact style={{ width: '100%' }}>
-                <Input
-                  value={name}
-                  maxLength={80}
-                  onChange={(e) => setName(e.target.value)}
-                  onPressEnter={saveName}
-                  addonBefore="Название"
-                />
-                <Button icon={<SaveOutlined />} disabled={!name.trim() || name === channel.name} onClick={saveName}>
-                  Сохранить
-                </Button>
-              </Space.Compact>
-              <Space wrap>
-                <Switch
-                  checked={channel.enabled}
-                  onChange={(enabled) => mutate(
-                    () => api.patch('/admin/api/media/channel', { enabled }),
-                    enabled ? 'Канал включён' : 'Канал выключен — он пропадёт из плейлистов',
-                  )}
-                />
-                <Typography.Text>{channel.enabled ? 'Показывается клиентам' : 'Выключен'}</Typography.Text>
-                <StatusTag status={status} hasArticles={articles.some((a) => !a.empty)} />
-              </Space>
-            </Space>
+        <Col xs={12} md={6}>
+          <Card size="small">
+            <Statistic
+              title="Статей в эфире у всех"
+              value={status.articles || 0}
+              formatter={count}
+              prefix={<FileTextOutlined />}
+              suffix={<Typography.Text type="secondary" style={{ fontSize: 14 }}>{`/ ${count(articles.length)}`}</Typography.Text>}
+            />
           </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
-            <Statistic title="Статей в эфире" value={status.articles || 0} formatter={count} />
+            <Statistic title="Длительность круга" value={secondsPretty(status.seconds)} prefix={<ClockCircleOutlined />} valueStyle={{ fontSize: 20 }} />
+          </Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card size="small">
+            <Statistic
+              title="Статей с закрытым содержимым"
+              value={privateArticles}
+              formatter={count}
+              prefix={<LockOutlined />}
+            />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Круг: {secondsPretty(status.seconds)}
+              {status.private_viewers
+                ? `${status.private_viewers} ${clientsWord(status.private_viewers)} видят свою версию канала`
+                : 'Все клиенты видят один и тот же канал'}
             </Typography.Text>
           </Card>
         </Col>
@@ -163,21 +169,12 @@ export default function MediaPage({ api, message, onAuthError }) {
 
       <Card
         title="Статьи"
-        extra={(
-          <Space wrap>
-            <Button icon={<PlusOutlined />} type="primary" onClick={createArticle}>Новая статья</Button>
-            <Tooltip title="Пересобрать канал полностью">
-              <Button
-                icon={<ReloadOutlined />}
-                aria-label="Пересобрать"
-                onClick={() => mutate(() => api.post('/admin/api/media/rebuild'), 'Пересборка запущена')}
-              />
-            </Tooltip>
-          </Space>
-        )}
+        extra={<Button icon={<PlusOutlined />} type="primary" onClick={createArticle}>Новая статья</Button>}
       >
         <ArticleList
           articles={articles}
+          users={users}
+          plans={plans}
           onReorder={(next) => {
             setData((d) => ({ ...d, articles: next })); // optimistic
             mutate(() => api.put('/admin/api/media/order', { ids: next.map((a) => a.id) }));
@@ -193,6 +190,8 @@ export default function MediaPage({ api, message, onAuthError }) {
           articleId={editing.id}
           isNew={editing.isNew}
           api={api}
+          users={users}
+          plans={plans}
           defaults={data.defaults}
           limits={data.limits}
           usage={usage}

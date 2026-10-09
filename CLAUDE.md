@@ -38,11 +38,12 @@ belongs in a concern folder; put new modules there rather than at the root.
 src/
   server.js            # express wiring, landing, health, shutdown (entry point)
   config.js            # .env parser + typed config (ROOT lives here — do not move)
-  core/    logger.js util.js                      # cross-cutting primitives:
+  core/    logger.js util.js audience.js          # cross-cutting primitives:
                        #   logger.js  structured logger
                        #   util.js    formatters (dateFormatter), STATUS_META, xmlEscape
+                       #   audience.js a group of customers {users, plans} (private media, newsletter)
   data/    store.js seed.js                       # JSON-file store + its CLI shim:
-                       #   store.js   users/plans/incidents/subscribers (+ seedDemo)
+                       #   store.js   users/plans/incidents/subscribers/payments/newsletters (+ seedDemo)
                        #   seed.js    `npm run seed` -> store.seedDemo()
   notify/  notify.js                              # email notifications (transport, templates, dispatch)
   playlist/ m3u.js model.js catalog.js hls.js devices.js # provider m3u + the channel catalog
@@ -54,10 +55,11 @@ src/
   encode/  channel.js liveloop.js ffmpeg.js media.js # ffmpeg encode + live HLS window:
                        #   ffmpeg.js  spawn helpers shared by both channels
                        #   media.js   media-channel clip/loop arg builders (golden-pinned)
-  media/   doc.js store.js build.js               # the media channel:
-                       #   doc.js     article schema: sanitize, assets, split at videos (pure)
+  media/   doc.js variants.js store.js build.js   # the media channel:
+                       #   doc.js     article schema: sanitize, assets, private sections, split at videos (pure)
+                       #   variants.js who sees what: per-viewer articles, variant keys (pure)
                        #   store.js   articles + assets (Settings `media_channel`), files, disk budget
-                       #   build.js   video queue, per-article clip cache, debounced loop build
+                       #   build.js   video queue, per-article clip cache, debounced build of every variant loop
   http/    stream.js subscribe.js admin.js catalog.js media.js auth.js # all HTTP surfaces
   epg/     epg.js epgfoss.js xxhash32.js          # XMLTV + OTT-play FOSS guides
   news/    notices.js providernews.js             # provider service notices on the status slide:
@@ -75,13 +77,15 @@ recurses, so a new subfolder needs no wiring.
 frontend/              # React + Vite + Ant Design admin app (own package.json)
   src/main.jsx         # entry
   src/App.jsx          # sider shell + hash routing
-  src/lib/             # api.js (fetch wrapper + AuthError), plans.js, format.js
-  src/pages/           # one component per nav section (Overview/Playlist/Clients/Devices/…)
+  src/lib/             # api.js (fetch wrapper + AuthError), plans.js, format.js, audience.js
+  src/pages/           # one component per nav section (Overview/Playlist/Clients/Payments/Devices/…)
   src/playlist/        # SourcesPanel + CatalogPanel (categories with channels nested)
   src/clients/         # the per-customer drawer and its tabs
-  src/components/      # Login, RegenBanner, and the Plans/Branding/Incidents/Notify/Gateway cards
+  src/components/      # Login, RegenBanner, ChannelHeader, AudiencePicker, and the
+                       #   Plans/Branding/Incidents/Notify/Newsletter/Gateway cards
   src/media/           # Медиаканал: ArticleList (dnd-kit), ArticleEditor (TipTap) + toolbar,
-                       #   image/video nodes (mediaNodes.js + MediaNodeView), upload helper
+                       #   image/video nodes (mediaNodes.js + MediaNodeView), the private-section
+                       #   node (privateSection.js + PrivateSectionView), upload helper
 ```
 
 ## Commands
@@ -133,7 +137,7 @@ Request/data flow, entry point [src/server.js](src/server.js):
 1. **Data** — [src/data/store.js](src/data/store.js) is a JSON-file store, **not** a real
    database (the project predates this and some history/comments still say
    "SQLite"). State lives in `DATA_DIR/db.json` (`plans`, `users`, `incidents`,
-   `subscribers`, `settings`) with atomic writes (tmp + rename) and a
+   `subscribers`, `payments`, `newsletters`, `settings`) with atomic writes (tmp + rename) and a
    corrupt-file backup-and-reset path. Users
    are decorated with their plan's fields on read (mimics an old SQL join).
    Access tokens are unguessable nanoid strings; there is no user login, only
@@ -514,12 +518,20 @@ Request/data flow, entry point [src/server.js](src/server.js):
    mail an unconsenting address. `expiryDue`/dispatch all gate on `verified`. Mail is sent over a
    **third-party HTTP email API** (Brevo default, Resend optional — `NOTIFY_*`
    env) because DigitalOcean blocks outbound SMTP ports; `NOTIFY_DRY_RUN` logs
-   instead of sending. Four triggers: **server status** (admin incident
+   instead of sending. Five triggers: **server status** (admin incident
    raised/resolved, opt-in), **expiring soon** (`expirySweep()` from the daily
    cron, opt-in, once per expiry date via a `last_expiry_notice` dedup marker),
    **renewal** (admin pushes expiry later, or records a payment — mandatory),
    and **content** (the customer's channel package changed — opt-in, the
-   `content` option; subscribers predating the topic are grandfathered on).
+   `content` option; subscribers predating the topic are grandfathered on),
+   and the admin's **newsletter** (news / important announcements — opt-in, the
+   `news` option, grandfathered on the same way). A newsletter goes to every
+   verified `news` subscriber or to an **audience** (`core/audience.js`: customer
+   ids and/or plans); `newsletterRecipients` is the pure rule, the UI computes
+   the same count before sending. `POST /api/newsletters` refuses (409) while
+   mail is off or nobody would receive it, records the newsletter
+   (`Newsletters`, status `sending` → `sent`) and dispatches in the background;
+   `important` only changes the look, it is still opt-in mail.
    The content trigger fires from two places and both diff **effective
    visibility**, never the raw edit, so a change the customer cannot see mails
    nothing: a plan's `category_ids` edit (`planCategoryDiff` in `http/admin.js`,
@@ -568,6 +580,17 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `PATCH /users/:id` so a payment bot can call it with an empty body; the
    manual date field stays for fixing a wrong date.
 
+   Every payment is also written to a **ledger** (`Payments` in `data/store.js`,
+   `GET /api/payments`): amount (`amount_eur`, blank = the plan's price for the
+   periods paid, `suggestedPaymentCents`), note, previous and new expiry, with
+   the customer's name and plan snapshotted so the history survives a rename or
+   a deleted customer. `DELETE /api/payments/:id` undoes a mistake by restoring
+   the previous date — but **only the customer's latest payment, and only while
+   their expiry is still the date it set** (409 otherwise), so an undo can never
+   silently revert a later payment or a manual fix. The admin records payments
+   in the **Оплаты** section (`pages/PaymentsPage.jsx`), not in the customer
+   card; the card links there (`#/payments/<id>` pre-selects the customer).
+
    **Catalog edits do not regenerate anything** (the `.m3u` is rendered per
    request), which is the main reason this router is separate. Other mutations
    still trigger **fire-and-forget** regeneration: plan, branding and
@@ -588,10 +611,16 @@ Request/data flow, entry point [src/server.js](src/server.js):
    `/admin/api` to the backend).
 
    The app is a sider-navigated shell (`App.jsx`) with one page per section —
-   Обзор / Плейлист / Клиенты / Устройства / Тарифы / Инфоканал / Медиаканал / Уведомления —
+   Обзор / Плейлист / Клиенты / Оплаты / Устройства / Тарифы / Инфоканал / Медиаканал / Уведомления —
    routed off the URL hash (`#/clients`) rather than a router dependency; only
    the first segment picks the section, so `#/clients/<id>` opens that
-   customer's drawer. Mutations that
+   customer's drawer (and `#/payments/<id>`, `#/devices/<id>` open those
+   sections with the customer picked — `go('payments/12')`). The customer
+   drawer deliberately holds **no payment form and no device list**: both are
+   managed for everyone in their own section, and the drawer links there.
+   Инфоканал and Медиаканал share one layout (`ChannelHeader` → a row of
+   stat cards → content cards, the same shape as Устройства) so the two
+   built-in channels read as siblings. Mutations that
    *do* re-encode run through the shared `withRegen` banner/reload lifecycle
    (`App.jsx` + `RegenBanner`); the playlist screens deliberately save directly
    instead, since showing an encoding banner for an edit that never encodes
@@ -617,7 +646,13 @@ Request/data flow, entry point [src/server.js](src/server.js):
    by the limit, per-plan limits editable inline, and
    `POST /api/users/:id/devices/reset` to free stale slots. The tracker
    remembers a refused newcomer for the same idle window so the admin can see
-   the attempt; it never holds a slot.
+   the attempt; it never holds a slot. Opened as `#/devices/<id>` it puts that
+   customer's own card (`ClientDevicesCard`) on top.
+
+   The built-in **Информация** category expands like any other but read-only:
+   its two channels are listed with no switch, no edit and no selection, and a
+   link to the page that manages each (Инфоканал / Медиаканал) — they are this
+   server's own channels, not catalog rows to curate.
    Channels are never all in the browser at once — a provider
    list is tens of thousands of rows, so every view is a server-side page.
 
@@ -682,6 +717,33 @@ Request/data flow, entry point [src/server.js](src/server.js):
    references `__dirname` and throws on import — which also keeps it off the
    host-run test path (fonts: `MEDIA_FONT_DIR`). Bump `CLIP_VERSION` /
    `LOOP_VERSION` in `media/build.js` when the look or the loop recipe changes.
+
+   **Private content.** An article can be for an **audience** only
+   (`article.audience`, `core/audience.js`: customer ids and/or plans; `null` =
+   everyone), and any part of an article can be wrapped in a `privateSection`
+   block `{ audience }` (the editor's lock button). The TV renderer never sees a
+   private section: `filterPrivate` (media/doc.js) resolves the document for one
+   viewer first — unwrapped for a member (so a video inside it pauses the
+   scroll like any top-level video), removed for everyone else. Customers are
+   then grouped into **variants** by what they actually see
+   (`media/variants.js`: the visible articles plus which of their sections
+   each keeps), and **each variant gets its own loop**: the public one (what a
+   customer in no audience sees) at `hls/_media` as before, the others at
+   `hls/_media-<hash of the variant key>`. Clips are cached by the resolved
+   document, so an article everyone sees alike is still encoded once; «1/3»
+   counts per variant. `mediaLoopDirFor(user)` (media/build.js) picks a
+   customer's loop for both `/m/:token/` and the `.m3u` listing — and falls back
+   to the public loop while theirs is not built yet, which is safe because every
+   variant is a **superset** of the public one (private content only adds); a
+   customer for whom nothing is visible gets no media channel at all. Because a
+   player can move between loops (public → its own, or an old variant → the
+   new one after an edit), every new loop's live counters start past the
+   **furthest** position of any media loop (`furthestMediaPosition`). With no
+   private content anywhere it short-circuits to the public loop. Customer
+   changes that can move someone between audiences (create, delete, plan
+   change) call `scheduleMediaBuildForClients`, a no-op without private
+   content; loops of variants nobody is on any more are swept by the build.
+   The preview (`POST /media/preview`) takes `viewer: 'all' | 'public' | <id>`.
 
 ## Config
 

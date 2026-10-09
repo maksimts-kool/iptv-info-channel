@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config.js';
 import {
-  Users, Plans, Settings, Incidents, Subscribers, NotifyLog,
+  Users, Plans, Settings, Incidents, Subscribers, NotifyLog, Payments, Newsletters,
 } from '../data/store.js';
 import { statusSummary, withProviderNotices, INCIDENT_SEVERITIES } from '../render/status.js';
 import {
@@ -27,7 +27,9 @@ import mediaRouter from './media.js';
 import {
   renderUserPlaylist, syncGatewaySettings, gatewayDevices, gatewayDeviceCount, forgetGatewayDevices,
 } from './stream.js';
-import { Overrides, catalog } from '../playlist/catalog.js';
+import { Overrides, catalog, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID } from '../playlist/catalog.js';
+import { mediaStatus, scheduleMediaBuildForClients } from '../media/build.js';
+import { Articles } from '../media/store.js';
 import { isHlsUrl } from '../playlist/hls.js';
 import { log } from '../core/logger.js';
 import {
@@ -244,6 +246,88 @@ export function paymentExpiry(user, { period, count, from = 'expiry' }, today) {
   return addPeriod(base, period, count);
 }
 
+// What a payment is worth by default: the plan's price for the periods paid.
+// Converts between the plan's own period and a month/year payment; a payment
+// in days has no fair price (null — the admin types one, or leaves it blank).
+export function suggestedPaymentCents(plan, { count, period }) {
+  if (!plan || !Number.isFinite(plan.price_cents)) return null;
+  const billed = PAYMENT_PERIODS.includes(plan.billing_period) ? plan.billing_period : 'month';
+  if (period === billed) return plan.price_cents * count;
+  if (billed === 'month' && period === 'year') return plan.price_cents * 12 * count;
+  if (billed === 'year' && period === 'month') return Math.round((plan.price_cents * count) / 12);
+  return null;
+}
+
+// The ledger fields of a payment: the amount actually received (blank = the
+// plan's price, `suggestedPaymentCents`) and an optional note ("наличными").
+export function validatePaymentRecord(body = {}) {
+  let amountCents;
+  if (body.amount_eur !== undefined && body.amount_eur !== null && body.amount_eur !== '') {
+    const price = parsePriceCents(body.amount_eur);
+    if (price.error) return { error: 'bad amount' };
+    amountCents = price.cents;
+  }
+  const note = String(body.note ?? '').replace(/\s+/g, ' ').trim();
+  if (note.length > 200) return { error: 'note must be 200 characters or less' };
+  return { value: { amount_cents: amountCents, note } };
+}
+
+export function paymentJson(p) {
+  return {
+    id: p.id,
+    at: p.at,
+    user_id: p.user_id,
+    username: p.username,
+    plan_name: p.plan_name || '',
+    count: p.count,
+    period: p.period,
+    from: p.from,
+    previous_expires_at: p.previous_expires_at || null,
+    expires_at: p.expires_at,
+    expires_pretty: formatDate(p.expires_at),
+    amount_cents: Number.isFinite(p.amount_cents) ? p.amount_cents : null,
+    amount: Number.isFinite(p.amount_cents) ? formatPrice(p.amount_cents, p.currency || 'EUR') : null,
+    currency: p.currency || 'EUR',
+    note: p.note || '',
+  };
+}
+
+// Headline numbers for the ledger: this calendar month and the last 30 days.
+// `today` is the local YYYY-MM-DD (payments store an ISO instant).
+export function paymentsSummary(payments, today, { timezone } = {}) {
+  const month = today.slice(0, 7);
+  const since = Date.parse(`${today}T00:00:00Z`) - 29 * 864e5;
+  const sum = (list) => list.reduce((n, p) => n + (Number.isFinite(p.amount_cents) ? p.amount_cents : 0), 0);
+  const local = (p) => localDateString(new Date(p.at), timezone);
+  const thisMonth = payments.filter((p) => local(p).slice(0, 7) === month);
+  const last30 = payments.filter((p) => Date.parse(`${local(p)}T00:00:00Z`) >= since);
+  return {
+    month_count: thisMonth.length,
+    month_cents: sum(thisMonth),
+    month_total: formatPrice(sum(thisMonth), 'EUR'),
+    last30_count: last30.length,
+    last30_cents: sum(last30),
+    last30_total: formatPrice(sum(last30), 'EUR'),
+  };
+}
+
+export function newsletterJson(n) {
+  return {
+    id: n.id,
+    subject: n.subject,
+    body: n.body,
+    important: !!n.important,
+    audience: n.audience || null,
+    status: n.status || 'sent',
+    recipients: n.recipients ?? 0,
+    sent: n.sent ?? 0,
+    failed: n.failed ?? 0,
+    error: n.error || null,
+    created_at: n.created_at,
+    sent_at: n.sent_at || null,
+  };
+}
+
 // Shared incident field validation; returns { error } or { value } for a
 // create (full) or patch (partial) request.
 export function validateIncident(body, { partial = false } = {}) {
@@ -410,6 +494,8 @@ router.use('/api', mediaRouter);
 
 router.get('/api/state', (req, res) => {
   const incidents = Incidents.all();
+  const payments = Payments.all();
+  const lastNewsletter = Newsletters.all()[0];
   const overrideCounts = Overrides.countByUser();
   const channels = catalog().channels;
   res.json({
@@ -454,6 +540,22 @@ router.get('/api/state', (req, res) => {
       user_id: s.user_id, email: s.email, options: s.options, verified: !!s.verified,
     })),
     incidents: incidents.map(incidentJson),
+    // The two built-in channels of Информация, by name — their own pages and the
+    // catalog link to them.
+    builtinChannels: catalog().channels
+      .filter((c) => c.id === INFO_CHANNEL_ID || c.id === INFO_MEDIA_CHANNEL_ID)
+      .map((c) => ({ id: c.id, name: c.name, enabled: c.enabled !== false })),
+    payments: {
+      ...paymentsSummary(payments, localDateString(new Date(), config.timezone), { timezone: config.timezone }),
+      recent: payments.slice(0, 6).map(paymentJson),
+    },
+    media: {
+      ...mediaStatus(),
+      total_articles: Articles.all().length,
+    },
+    newsletters: {
+      last: lastNewsletter ? newsletterJson(lastNewsletter) : null,
+    },
     status: withProviderNotices(
       statusSummary(incidents, { tz: config.timezone }),
       currentProviderNotices(),
@@ -474,6 +576,7 @@ router.post('/api/users', (req, res) => {
   const u = Users.create({ username, plan_id, expires_at: expires_at || null, active });
   log.info('admin', 'user created', { user_id: u.id, username: u.username, plan_id });
   regen(u.id, 'admin user created');
+  scheduleMediaBuildForClients('client created');
   res.status(201).json(decorateUser(u));
 });
 
@@ -497,6 +600,8 @@ router.patch('/api/users/:id', (req, res) => {
   });
   log.info('admin', 'user updated', { user_id: u.id, username: u.username });
   regen(u.id, 'admin user updated');
+  // A plan change can move the customer into or out of a private audience.
+  if (plan_id && plan_id !== before.plan_id) scheduleMediaBuildForClients('client plan changed');
   // Renewal: the admin pushed the expiry to a later date — notify (mandatory).
   if (expires_at !== undefined && before.expires_at && u.expires_at && u.expires_at > before.expires_at) {
     fireNotify(() => notify.notifyRenewal(u), 'renewal notification failed');
@@ -513,15 +618,35 @@ router.post('/api/users/:id/payment', (req, res) => {
   const user = Users.get(id);
   if (!user) return res.status(404).json({ error: 'not found' });
 
-  const { error, value } = validatePayment(req.body || {}, Plans.get(user.plan_id));
+  const plan = Plans.get(user.plan_id);
+  const { error, value } = validatePayment(req.body || {}, plan);
   if (error) return res.status(400).json({ error });
+  const record = validatePaymentRecord(req.body || {});
+  if (record.error) return res.status(400).json({ error: record.error });
   const today = localDateString(new Date(), config.timezone);
   const expiresAt = paymentExpiry(user, value, today);
   if (!expiresAt) return res.status(400).json({ error: 'could not compute the new expiry date' });
 
   const updated = Users.update(id, { expires_at: expiresAt });
+  // The ledger entry (Оплаты). Blank amount = the plan's price for that period.
+  const amount = record.value.amount_cents !== undefined
+    ? record.value.amount_cents
+    : suggestedPaymentCents(plan, value);
+  const payment = Payments.add({
+    user_id: id,
+    username: updated.username,
+    plan_id: user.plan_id,
+    plan_name: user.plan_name,
+    ...value,
+    previous_expires_at: user.expires_at || null,
+    expires_at: expiresAt,
+    amount_cents: amount,
+    currency: plan?.currency || 'EUR',
+    note: record.value.note,
+  });
   log.info('admin', 'payment recorded', {
     user_id: id, username: updated.username, ...value, from_date: user.expires_at, expires_at: expiresAt,
+    payment_id: payment.id, amount_cents: amount,
   });
   regen(id, 'admin payment recorded');
   // Same mandatory renewal notice the manual date change sends.
@@ -529,8 +654,42 @@ router.post('/api/users/:id/payment', (req, res) => {
     fireNotify(() => notify.notifyRenewal(updated), 'renewal notification failed');
   }
   return res.json({
-    ok: true, previous_expires_at: user.expires_at || null, ...value, user: decorateUser(updated),
+    ok: true,
+    previous_expires_at: user.expires_at || null,
+    ...value,
+    payment: paymentJson(payment),
+    user: decorateUser(updated),
   });
+});
+
+// The ledger: every recorded payment, newest first, with this month's totals.
+router.get('/api/payments', (req, res) => {
+  const payments = Payments.all();
+  res.json({
+    payments: payments.map(paymentJson),
+    summary: paymentsSummary(payments, localDateString(new Date(), config.timezone), { timezone: config.timezone }),
+  });
+});
+
+// Undo a payment recorded by mistake. Only a customer's LATEST payment, and
+// only while their expiry is still the date it set — anything else (a later
+// payment, a manual date change) means the date no longer comes from this
+// payment, and putting the old one back would silently undo that too.
+router.delete('/api/payments/:id', (req, res) => {
+  const payment = Payments.get(req.params.id);
+  if (!payment) return res.status(404).json({ error: 'not found' });
+  const user = Users.get(payment.user_id);
+  if (user) {
+    const last = Payments.lastForUser(user.id);
+    if (last?.id !== payment.id || user.expires_at !== payment.expires_at) {
+      return res.status(409).json({ error: 'отменить можно только последнюю оплату клиента, пока дата окончания не менялась' });
+    }
+    Users.update(user.id, { expires_at: payment.previous_expires_at || null });
+    regen(user.id, 'admin payment undone');
+  }
+  Payments.remove(payment.id);
+  log.info('admin', 'payment undone', { payment_id: payment.id, user_id: payment.user_id });
+  return res.json({ ok: true, user: user ? decorateUser(Users.get(user.id)) : null });
 });
 
 // Regenerate access token (invalidates old m3u link)
@@ -569,6 +728,7 @@ router.delete('/api/users/:id', (req, res) => {
   // user id reuse can't inherit a stranger's exceptions.
   Overrides.reset(id);
   log.info('admin', 'user deleted', { user_id: id });
+  scheduleMediaBuildForClients('client deleted');
   res.json({ ok: true });
 });
 
@@ -916,6 +1076,57 @@ router.delete('/api/users/:id/subscriber', (req, res) => {
   Subscribers.remove(id);
   log.info('admin', 'subscriber removed', { user_id: id });
   res.json({ ok: true });
+});
+
+// ---------- Newsletter ----------
+// The admin's own news and announcements, mailed to verified subscribers who
+// opted into the `news` topic — all of them, or an audience (core/audience.js).
+router.get('/api/newsletters', (req, res) => {
+  res.json({ newsletters: Newsletters.all().map(newsletterJson) });
+});
+
+// Send now. The response returns at once with the newsletter in `sending`;
+// the dispatch runs in the background and the list shows the counts as they
+// land (one send per recipient, each logged in the notification log).
+router.post('/api/newsletters', (req, res) => {
+  const { error, value } = notify.validateNewsletter(req.body || {});
+  if (error) return res.status(400).json({ error });
+  if (!config.notify.enabled) return res.status(409).json({ error: 'уведомления выключены — включите их, чтобы отправить рассылку' });
+  const recipients = notify.newsletterRecipients(value.audience, Users.all(), Subscribers.all()).length;
+  if (!recipients) return res.status(409).json({ error: 'нет получателей: никто из выбранных клиентов не подписан на новости' });
+  const newsletter = Newsletters.create({
+    ...value, status: 'sending', recipients, sent: 0, failed: 0,
+  });
+  log.info('admin', 'newsletter sending', { newsletter_id: newsletter.id, recipients });
+  notify.sendNewsletter(newsletter, {
+    onProgress: ({ sent, failed }) => Newsletters.update(newsletter.id, { sent, failed }),
+  })
+    .then((result) => Newsletters.update(newsletter.id, {
+      ...result, status: 'sent', sent_at: new Date().toISOString(),
+    }))
+    .catch((e) => {
+      log.error('admin', 'newsletter failed', { newsletter_id: newsletter.id, error: e.message });
+      Newsletters.update(newsletter.id, { status: 'error', error: e.message });
+    });
+  return res.status(201).json(newsletterJson(newsletter));
+});
+
+// One copy to the admin's own address first, to see how it reads.
+router.post('/api/newsletters/test', async (req, res) => {
+  const { error, value } = notify.validateNewsletter(req.body || {});
+  if (error) return res.status(400).json({ error });
+  try {
+    await notify.sendNewsletterTest(req.body?.email, value);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+});
+
+// Remove a newsletter from the history (it has already been mailed).
+router.delete('/api/newsletters/:id', (req, res) => {
+  if (!Newsletters.remove(req.params.id)) return res.status(404).json({ error: 'not found' });
+  return res.json({ ok: true });
 });
 
 // Rebuild all streams

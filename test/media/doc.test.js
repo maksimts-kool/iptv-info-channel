@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sanitizeDoc, docAssetIds, docHasContent, docSummary, docSections, emptyDoc, DOC_MAX_BYTES,
+  filterPrivate, privateSections,
 } from '../../src/media/doc.js';
 
 const t = (text, ...marks) => (marks.length ? { type: 'text', text, marks: marks.map((type) => ({ type })) } : { type: 'text', text });
@@ -76,4 +77,43 @@ test('an article is split at its top-level videos', () => {
   assert.deepEqual(docSections(doc).map((s) => s.kind), ['flow', 'video', 'video', 'flow']);
   // A video nested in a quote stays in its flow (shown as a still).
   assert.equal(docSections(doc)[3].nodes.length, 2);
+});
+
+const priv = (audience, ...content) => ({ type: 'privateSection', attrs: { audience }, content });
+
+test('a private section keeps its audience; one nested in another is spliced into it', () => {
+  const { value } = sanitizeDoc({
+    type: 'doc',
+    content: [
+      priv({ users: ['4', 4], plans: ['pro'], extra: 1 }, p(t('для своих')), priv({ users: [9] }, p(t('вложенный')))),
+      priv(null, p(t('без аудитории'))),
+      priv({ users: [1] }),
+    ],
+  });
+  const [first, second, ...rest] = value.content;
+  assert.deepEqual(first.attrs, { audience: { users: [4], plans: ['pro'] } });
+  assert.deepEqual(first.content.map((n) => n.type), ['paragraph', 'paragraph'], 'the inner section is unwrapped');
+  assert.deepEqual(second.attrs.audience, { users: [], plans: [] }, 'a missing audience is nobody');
+  assert.equal(rest.length, 0, 'an empty section is dropped');
+});
+
+test('private sections are unwrapped for members and removed for everyone else', () => {
+  const doc = {
+    type: 'doc',
+    content: [
+      p(t('для всех')),
+      priv({ users: [1], plans: [] }, p(t('секрет')), vid('vid111111')),
+      { type: 'blockquote', content: [priv({ users: [2], plans: [] }, p(t('цитата')))] },
+    ],
+  };
+  const member = filterPrivate(doc, (aud) => aud.users.includes(1));
+  assert.deepEqual(member.content.map((n) => n.type), ['paragraph', 'paragraph', 'mediaVideo', 'blockquote']);
+  assert.deepEqual(member.content[3].content, [], 'a section deeper down is resolved too');
+  // Unwrapped, a video inside a section is a top-level video like any other.
+  assert.deepEqual(docSections(member).map((s) => s.kind), ['flow', 'video', 'flow']);
+  const outsider = filterPrivate(doc, () => false);
+  assert.deepEqual(outsider.content.map((n) => n.type), ['paragraph', 'blockquote']);
+  assert.equal(JSON.stringify(outsider).includes('секрет'), false);
+  assert.equal(privateSections(doc).length, 2);
+  assert.equal(docHasContent(filterPrivate({ type: 'doc', content: [priv({ users: [1] }, p(t('x')))] }, () => false)), false);
 });

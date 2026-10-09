@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
-  MenuOutlined, PictureOutlined, PlaySquareOutlined, TeamOutlined, WifiOutlined,
+  MenuOutlined, PictureOutlined, PlaySquareOutlined, TeamOutlined, WalletOutlined, WifiOutlined,
 } from '@ant-design/icons';
 import {
   api, AuthError, login, logout, setCsrfToken,
@@ -15,6 +15,7 @@ import OverviewPage from './pages/OverviewPage.jsx';
 import PlaylistPage from './pages/PlaylistPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
 import DevicesPage from './pages/DevicesPage.jsx';
+import PaymentsPage from './pages/PaymentsPage.jsx';
 import PlansPage from './pages/PlansPage.jsx';
 import InfoChannelPage from './pages/InfoChannelPage.jsx';
 import MediaPage from './pages/MediaPage.jsx';
@@ -32,6 +33,7 @@ const SECTIONS = [
   { key: 'overview', label: 'Обзор', Icon: DashboardOutlined, title: 'Обзор', Page: OverviewPage },
   { key: 'playlist', label: 'Плейлист', Icon: PlaySquareOutlined, title: 'Плейлист', Page: PlaylistPage },
   { key: 'clients', label: 'Клиенты', Icon: TeamOutlined, title: 'Клиенты', Page: ClientsPage },
+  { key: 'payments', label: 'Оплаты', Icon: WalletOutlined, title: 'Оплаты и продления', Page: PaymentsPage },
   { key: 'devices', label: 'Устройства', Icon: LaptopOutlined, title: 'Устройства', Page: DevicesPage },
   { key: 'plans', label: 'Тарифы', Icon: EuroCircleOutlined, title: 'Тарифы и цены', Page: PlansPage },
   { key: 'info', label: 'Инфоканал', Icon: DesktopOutlined, title: 'Информационный канал', Page: InfoChannelPage },
@@ -70,9 +72,11 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  const go = useCallback((key) => {
-    window.location.hash = `#/${key}`;
-    setSection(key);
+  // `go('payments/12')` opens a section with something already picked; the
+  // page reads the rest of the hash itself.
+  const go = useCallback((target) => {
+    window.location.hash = `#/${target}`;
+    setSection(target.split('/')[0]);
     setNavOpen(false);
   }, []);
 

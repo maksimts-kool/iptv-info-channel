@@ -19,7 +19,11 @@ import {
   Articles, Assets, MEDIA_DIRS, DEFAULTS, LIMITS, mediaUsage, uploadKind, validateArticleFields, validateOrder,
   assetFilePath, assetThumbPath, ensureMediaDirs, newMediaId,
 } from '../media/store.js';
-import { docAssetIds, docHasContent, docSummary } from '../media/doc.js';
+import {
+  docAssetIds, docHasContent, docSummary, filterPrivate, privateSections,
+} from '../media/doc.js';
+import { canSeeFor } from '../media/variants.js';
+import { Users } from '../data/store.js';
 import {
   scheduleMediaBuild, buildMediaLoop, mediaStatus, queueVideo, cancelVideo, storeImage,
   articleMedia, layoutArticle,
@@ -63,6 +67,9 @@ export function articleSummaryJson(article, assetsById = new Map()) {
     videos: assets.filter((a) => a.kind === 'video').length,
     processing: assets.filter((a) => a.status === 'processing').length,
     cover: cover ? cover.id : null,
+    // null = every customer; otherwise only this group (core/audience.js).
+    audience: article.audience || null,
+    private_sections: privateSections(article.doc).length,
     error: article.error || null,
     updated_at: article.updated_at,
   };
@@ -191,13 +198,34 @@ router.post('/media/rebuild', (req, res) => {
   return res.json(mediaView());
 });
 
+// Who the preview is for: 'all' (every private section shown — the editor's
+// view), 'public' (a customer in no audience) or a customer id.
+export function previewViewer(raw, getUser = (id) => Users.get(id)) {
+  if (raw === undefined || raw === null || raw === 'all') return { value: 'all' };
+  if (raw === 'public') return { value: null };
+  const user = Number.isInteger(Number(raw)) ? getUser(Number(raw)) : null;
+  return user ? { value: user } : { error: 'unknown viewer' };
+}
+
 // What an article will look like on TV, from the same layout code the encoder
 // uses: the whole page (tall when it scrolls) with video posters in place, and
-// how long it will be on screen. Works on the unsaved document in the editor.
+// how long it will be on screen. Works on the unsaved document in the editor,
+// as seen by one viewer (private sections resolved for them).
 router.post('/media/preview', async (req, res) => {
   const { value, error } = validateArticleFields(req.body || {});
   if (error) return res.status(400).json({ error });
-  const article = { ...value, seconds: value.seconds || DEFAULTS.seconds, scroll_speed: value.scroll_speed || DEFAULTS.scrollSpeed };
+  const viewer = previewViewer(req.body?.viewer);
+  if (viewer.error) return res.status(400).json({ error: viewer.error });
+  const canSee = canSeeFor(viewer.value);
+  if (value.audience && !canSee(value.audience)) {
+    return res.json({ image: null, seconds: 0, scrolls: false, hidden: true });
+  }
+  const article = {
+    ...value,
+    doc: filterPrivate(value.doc, canSee),
+    seconds: value.seconds || DEFAULTS.seconds,
+    scroll_speed: value.scroll_speed || DEFAULTS.scrollSpeed,
+  };
   ensureMediaDirs();
   const layerFile = path.join(MEDIA_DIRS.incoming, `preview-${newMediaId()}.png`);
   try {

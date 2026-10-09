@@ -12,7 +12,7 @@ import { periodSuffix, planOptions, expiryForPlan } from '../lib/plans.js';
 import ClientDrawer from '../clients/ClientDrawer.jsx';
 
 // #/clients/12 opens that customer's card straight away (linked from the
-// Устройства tab).
+// Устройства and Оплаты sections).
 function clientIdFromHash() {
   const m = window.location.hash.match(/^#\/?clients\/(\d+)/);
   return m ? Number(m[1]) : null;

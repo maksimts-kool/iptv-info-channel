@@ -2,8 +2,8 @@ import {
   Button, Empty, Grid, Popconfirm, Space, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  DeleteOutlined, EditOutlined, ExclamationCircleOutlined, FileTextOutlined, HolderOutlined,
-  LoadingOutlined, PictureOutlined, VideoCameraOutlined,
+  DeleteOutlined, EditOutlined, ExclamationCircleOutlined, EyeInvisibleOutlined, FileTextOutlined, HolderOutlined,
+  LoadingOutlined, LockOutlined, PictureOutlined, VideoCameraOutlined,
 } from '@ant-design/icons';
 import {
   DndContext, KeyboardSensor, PointerSensor, TouchSensor, closestCenter, useSensor, useSensors,
@@ -13,6 +13,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { seconds as secondsPretty } from '../lib/format.js';
+import { audienceLabel } from '../lib/audience.js';
 
 function Cover({ article, compact }) {
   const box = {
@@ -32,7 +33,7 @@ function Cover({ article, compact }) {
 }
 
 function ArticleRow({
-  article, index, playing, compact, onEdit, onDelete,
+  article, index, playing, compact, onEdit, onDelete, users, plans,
 }) {
   const {
     attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging,
@@ -73,7 +74,9 @@ function ArticleRow({
       />
       {compact ? null : (
         <Typography.Text type="secondary" style={{ width: 36, textAlign: 'right' }}>
-          {playing ? `${playing.index}/${playing.total}` : '—'}
+          {article.audience
+            ? <Tooltip title="Номер у каждого клиента свой"><LockOutlined /></Tooltip>
+            : (playing ? `${playing.index}/${playing.total}` : '—')}
         </Typography.Text>
       )}
       <Cover article={article} compact={compact} />
@@ -91,6 +94,16 @@ function ArticleRow({
         </div>
         <Space size={8} wrap style={{ fontSize: 12 }}>
           {article.empty ? <Tag>пустая — не в эфире</Tag> : null}
+          {article.audience ? (
+            <Tag icon={<LockOutlined />} color="purple">
+              {`только: ${audienceLabel(article.audience, users, plans)}`}
+            </Tag>
+          ) : null}
+          {article.private_sections ? (
+            <Tag icon={<EyeInvisibleOutlined />} color="purple">
+              {`закрытых частей: ${article.private_sections}`}
+            </Tag>
+          ) : null}
           {article.processing ? <Tag icon={<LoadingOutlined />} color="processing">видео обрабатывается</Tag> : null}
           {article.error ? (
             <Tooltip title={article.error}>
@@ -129,7 +142,7 @@ function ArticleRow({
 // The articles in play order. Drag the handle (mouse, touch or keyboard) to
 // reorder; the order — and so each article's «1/3» — is saved on drop.
 export default function ArticleList({
-  articles, onReorder, onEdit, onDelete,
+  articles, onReorder, onEdit, onDelete, users = [], plans = [],
 }) {
   const compact = !Grid.useBreakpoint().sm;
   const sensors = useSensors(
@@ -142,8 +155,9 @@ export default function ArticleList({
     return <Empty description="Статей пока нет — создайте первую" />;
   }
 
-  // «1/3» counts only articles with something in them, as on the channel.
-  const live = articles.filter((a) => !a.empty);
+  // «1/3» counts only articles with something in them, as on the channel —
+  // shown for the shared version; an article for a group is numbered per viewer.
+  const live = articles.filter((a) => !a.empty && !a.audience);
   const place = new Map(live.map((a, i) => [a.id, { index: i + 1, total: live.length }]));
 
   const onDragEnd = ({ active, over }) => {
@@ -165,6 +179,8 @@ export default function ArticleList({
             compact={compact}
             onEdit={onEdit}
             onDelete={onDelete}
+            users={users}
+            plans={plans}
           />
         ))}
       </SortableContext>

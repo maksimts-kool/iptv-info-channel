@@ -15,12 +15,15 @@
 //   thumbs/    a poster per video
 //   clips/     encoded per-article clips, cached by content hash
 //   incoming/  uploads still streaming in; emptied at startup
-// and the finished loop in DATA_DIR/hls/_media (served at /m/:token/).
+// and the finished loops in DATA_DIR/hls/_media (the public one) and
+// DATA_DIR/hls/_media-<variant> (customers who see private content — see
+// media/variants.js), served at /m/:token/.
 import fs from 'node:fs';
 import path from 'node:path';
 import { customAlphabet } from 'nanoid';
 import { config } from '../config.js';
 import { Settings } from '../data/store.js';
+import { cleanAudience } from '../core/audience.js';
 import {
   sanitizeDoc, docAssetIds, docHasContent, emptyDoc,
 } from './doc.js';
@@ -38,6 +41,18 @@ export const MEDIA_DIRS = {
 
 export function mediaLoopDir() {
   return path.join(config.hlsDir, '_media');
+}
+
+// The loop of a non-public variant (media/variants.js), named by a hash of its key.
+export function mediaVariantDir(hashed) {
+  return path.join(config.hlsDir, `_media-${hashed}`);
+}
+
+// Every variant loop directory on disk (not the public one).
+export function mediaVariantDirs() {
+  let names = [];
+  try { names = fs.readdirSync(config.hlsDir); } catch { return []; }
+  return names.filter((n) => /^_media-[a-z0-9]+$/.test(n)).map((n) => path.join(config.hlsDir, n));
 }
 
 export function ensureMediaDirs() {
@@ -106,6 +121,15 @@ export function validateArticleFields(body = {}, { partial = false } = {}) {
     const r = intIn(body.scroll_speed, LIMITS.minSpeed, LIMITS.maxSpeed, 'scroll speed');
     if (r.error) return r;
     out.scroll_speed = r.value;
+  }
+  // null = every customer; an audience = only that group (core/audience.js).
+  if (has('audience')) {
+    if (body.audience === null) out.audience = null;
+    else {
+      const audience = cleanAudience(body.audience);
+      if (!audience) return { error: 'audience must be null or { users, plans }' };
+      out.audience = audience;
+    }
   }
   return { value: out };
 }
@@ -191,6 +215,7 @@ export const Articles = {
       doc: emptyDoc(),
       seconds: DEFAULTS.seconds,
       scroll_speed: DEFAULTS.scrollSpeed,
+      audience: null,
       created_at: now,
       updated_at: now,
       ...fields,
@@ -298,7 +323,8 @@ function dirSize(dir) {
 }
 
 export function mediaUsage() {
-  const used = dirSize(config.mediaDir) + dirSize(mediaLoopDir());
+  const used = dirSize(config.mediaDir) + dirSize(mediaLoopDir())
+    + mediaVariantDirs().reduce((sum, dir) => sum + dirSize(dir), 0);
   return {
     used,
     quota: config.media.quotaMb * 1024 * 1024,

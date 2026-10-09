@@ -7,6 +7,13 @@
 // attributes coerced, so a hand-crafted request can't smuggle anything else in.
 // Images and videos are referenced by ASSET id (media/store.js), never by URL —
 // the renderer reads the files from disk.
+//
+// A `privateSection` block wraps part of an article that only an audience (a
+// group of customers, core/audience.js) gets to see. It never reaches the TV
+// renderer: `filterPrivate` resolves every section for one viewer first —
+// unwrapped for a member, dropped for everyone else — so render/article.js only
+// ever draws a plain document.
+import { cleanAudience } from '../core/audience.js';
 
 export const MEDIA_SIZES = ['full', 'half', 'small'];
 const MARKS = new Set(['bold', 'italic', 'strike', 'code']);
@@ -38,22 +45,35 @@ function cleanText(node) {
   return marks.length ? { type: 'text', text, marks } : { type: 'text', text };
 }
 
-function cleanChildren(node, depth) {
+// A cleaned child may come back as an array: a private section nested inside
+// another one is spliced into its parent (a section inside a section would
+// mean "members of both", which the editor never offers).
+function cleanChildren(node, depth, inPrivate = false) {
   return (Array.isArray(node.content) ? node.content : [])
-    .map((child) => cleanNode(child, depth + 1))
+    .flatMap((child) => cleanNode(child, depth + 1, inPrivate))
     .filter(Boolean);
 }
 
-function cleanNode(node, depth = 0) {
+function cleanNode(node, depth = 0, inPrivate = false) {
   if (!node || typeof node !== 'object' || depth > MAX_DEPTH) return null;
   const withContent = (type, attrs) => {
     const out = { type };
     if (attrs) out.attrs = attrs;
-    const content = cleanChildren(node, depth);
+    const content = cleanChildren(node, depth, inPrivate);
     if (content.length) out.content = content;
     return out;
   };
   switch (node.type) {
+    case 'privateSection': {
+      const content = cleanChildren(node, depth, true);
+      if (inPrivate) return content;
+      if (!content.length) return null;
+      return {
+        type: 'privateSection',
+        attrs: { audience: cleanAudience(node.attrs?.audience) || { users: [], plans: [] } },
+        content,
+      };
+    }
     case 'doc':
     case 'paragraph':
     case 'bulletList':
@@ -160,4 +180,39 @@ export function docSections(doc) {
   }
   if (flow.length) sections.push({ kind: 'flow', nodes: flow });
   return sections;
+}
+
+// ---------------------------------------------------------------------------
+// Private sections
+// ---------------------------------------------------------------------------
+
+// Resolve every private section for one viewer: `canSee(audience)` -> bool.
+// A section the viewer may see is unwrapped into its parent (so a video inside
+// it becomes a top-level video and pauses the scroll like any other); one they
+// may not see is removed. The result is a plain document.
+export function filterPrivate(doc, canSee) {
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return [node];
+    if (node.type === 'privateSection') {
+      if (!canSee(node.attrs?.audience || null)) return [];
+      return (node.content || []).flatMap(walk);
+    }
+    if (!Array.isArray(node.content)) return [node];
+    return [{ ...node, content: node.content.flatMap(walk) }];
+  };
+  return walk(doc)[0] || { type: 'doc' };
+}
+
+// The private sections in document order (their audiences), for counting and
+// for telling viewers apart: two customers who see the same sections of the
+// same articles see the same channel.
+export function privateSections(doc) {
+  const found = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'privateSection') found.push(node.attrs?.audience || null);
+    (node.content || []).forEach(walk);
+  };
+  walk(doc);
+  return found;
 }

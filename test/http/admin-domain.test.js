@@ -4,11 +4,15 @@ import {
   parsePriceCents,
   parsePlanCategories,
   duplicatePlanName,
-  validateIncident,  planJson,
+  validateIncident,
+  planJson,
   incidentJson,
   decorateUser,
   validatePayment,
   paymentExpiry,
+  suggestedPaymentCents,
+  validatePaymentRecord,
+  paymentsSummary,
   planCategoryDiff,
 } from '../../src/http/admin.js';
 
@@ -212,4 +216,37 @@ test('the device limit: a personal override beats the plan, 0 means unlimited', 
   assert.equal(json.device_limit, 2);
   assert.equal(planJson({ id: 'p', name: 'P', price_cents: 0, max_devices: 3 }).max_devices, 3);
   assert.equal(planJson({ id: 'p', name: 'P', price_cents: 0 }).max_devices, 0);
+});
+
+test('a payment is worth the plan price for the periods paid, converted where it can be', () => {
+  const monthly = { price_cents: 500, billing_period: 'month' };
+  const yearly = { price_cents: 6000, billing_period: 'year' };
+  assert.equal(suggestedPaymentCents(monthly, { count: 3, period: 'month' }), 1500);
+  assert.equal(suggestedPaymentCents(monthly, { count: 1, period: 'year' }), 6000);
+  assert.equal(suggestedPaymentCents(yearly, { count: 2, period: 'month' }), 1000);
+  assert.equal(suggestedPaymentCents({ price_cents: 500, billing_period: '' }, { count: 2, period: 'month' }), 1000);
+  assert.equal(suggestedPaymentCents(monthly, { count: 10, period: 'day' }), null, 'no fair price for days');
+  assert.equal(suggestedPaymentCents(null, { count: 1, period: 'month' }), null);
+});
+
+test('a payment record takes an optional amount and note', () => {
+  assert.deepEqual(validatePaymentRecord({}).value, { amount_cents: undefined, note: '' });
+  assert.equal(validatePaymentRecord({ amount_eur: '12.5' }).value.amount_cents, 1250);
+  assert.equal(validatePaymentRecord({ amount_eur: 0 }).value.amount_cents, 0);
+  assert.ok(validatePaymentRecord({ amount_eur: -1 }).error);
+  assert.ok(validatePaymentRecord({ note: 'x'.repeat(201) }).error);
+});
+
+test('the ledger summary counts this month and the last 30 days', () => {
+  const payments = [
+    { at: '2026-10-08T10:00:00Z', amount_cents: 500 },
+    { at: '2026-10-01T10:00:00Z', amount_cents: null },
+    { at: '2026-09-20T10:00:00Z', amount_cents: 700 },
+    { at: '2026-08-01T10:00:00Z', amount_cents: 900 },
+  ];
+  const s = paymentsSummary(payments, '2026-10-09', { timezone: 'UTC' });
+  assert.equal(s.month_count, 2);
+  assert.equal(s.month_cents, 500);
+  assert.equal(s.last30_count, 3);
+  assert.equal(s.last30_cents, 1200);
 });

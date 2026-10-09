@@ -27,8 +27,7 @@ import {
   channelsForUser, channelAccessForUser, planCategorySet, Sources, INFO_CHANNEL_ID,
   INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME,
 } from '../playlist/catalog.js';
-import { mediaLoopReady } from '../media/build.js';
-import { mediaLoopDir } from '../media/store.js';
+import { mediaLoopDirFor } from '../media/build.js';
 import { accountStatus } from '../core/util.js';
 import {
   fossIdHash,
@@ -223,10 +222,11 @@ export function renderUserPlaylist(user, settings = Settings.all(), { deviceTag 
   const locked = status === 'expired' || status === 'disabled';
   // The plan is the base entitlement: a customer sees the categories their plan
   // grants (an empty plan grants none), then their personal exceptions.
-  // The media channel is listed only once its loop exists: an empty channel
-  // would be a black screen, i.e. a support ticket.
+  // The media channel is listed only once there is a loop for this customer:
+  // an empty channel would be a black screen, i.e. a support ticket. (With
+  // private articles, "nothing for this customer" is a real possibility.)
   const entries = channelsForUser(user.id, { locked, planCategories: planCategorySet(user) })
-    .filter((e) => e.channel.id !== INFO_MEDIA_CHANNEL_ID || mediaLoopReady());
+    .filter((e) => e.channel.id !== INFO_MEDIA_CHANNEL_ID || mediaLoopDirFor(user));
   const usedSources = new Set(entries.map((e) => e.channel.source_id).filter(Boolean));
   const epgUrls = Sources.all()
     .filter((s) => s.epg_url && usedSources.has(s.id))
@@ -707,8 +707,10 @@ router.get('/notice/devices/:file', async (req, res) => {
   return serveLoopFile(req, res, noticeHlsDir(), file, { notice: 'devices' });
 });
 
-// GET /m/:token/:file -> the media channel's loop (built by media/build.js,
-// shared by everyone). The token keeps it a capability URL like the rest, and
+// GET /m/:token/:file -> the media channel's loop (built by media/build.js).
+// Customers who see the same articles share one loop: the public one, or the
+// loop of their variant when private content is addressed to them
+// (media/variants.js). The token keeps it a capability URL like the rest, and
 // the playlist is re-checked against the customer's access on every refresh,
 // so switching the channel off (globally or for one customer) ends playback by
 // sending the player to the customer's own info card.
@@ -720,14 +722,16 @@ router.get('/m/:token/:file', (req, res) => {
     log.warn('stream', 'media channel requested with unknown token', { file });
     return res.status(404).type('text/plain').send('Unknown token');
   }
+  const dir = mediaLoopDirFor(user);
   if (file === 'index.m3u8') {
     const status = accountStatus(user, config.expiringThresholdDays);
     const access = channelAccessForUser(user.id, INFO_MEDIA_CHANNEL_ID, {
       locked: status === 'expired' || status === 'disabled', planCategories: planCategorySet(user),
     });
-    if (!access.allowed || !mediaLoopReady()) return redirectStream(res, userStreamUrl(user, config));
+    if (!access.allowed || !dir) return redirectStream(res, userStreamUrl(user, config));
   }
-  return serveLoopFile(req, res, mediaLoopDir(), file, { media: true, user_id: user.id });
+  if (!dir) return res.status(404).type('text/plain').send('Not found');
+  return serveLoopFile(req, res, dir, file, { media: true, user_id: user.id });
 });
 
 function serveLoopFile(req, res, dir, file, logContext) {

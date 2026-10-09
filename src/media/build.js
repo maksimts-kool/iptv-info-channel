@@ -8,6 +8,11 @@
 //     «1/3» order), so a rebuild after editing one article re-encodes only it.
 //   - The loop rebuild is debounced (a burst of edits = one build) and a newer
 //     build aborts a running one, like generateForUser in encode/channel.js.
+//   - Private content (an article or a section of one for an audience) splits
+//     the customers into VARIANTS (media/variants.js): one loop per distinct
+//     "what this customer sees", the public one at hls/_media as before. Clips
+//     are cached per resolved document, so an article everyone sees the same
+//     is still encoded once.
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -24,10 +29,14 @@ import {
 import {
   renderBackgroundPng, renderArticleLayer, renderIndicatorPng, slideScale,
 } from '../render/media.js';
-import { docAssetIds, docHasContent } from './doc.js';
+import { Users } from '../data/store.js';
+import { docAssetIds } from './doc.js';
 import {
-  Articles, Assets, MEDIA_DIRS, DEFAULTS, mediaLoopDir, assetFilePath, assetThumbPath,
-  ensureMediaDirs, mediaUsage, sweepUnusedAssets, sweepAbandonedArticles,
+  articlesFor, variantKey, mediaVariants, hasPrivateContent,
+} from './variants.js';
+import {
+  Articles, Assets, MEDIA_DIRS, DEFAULTS, mediaLoopDir, mediaVariantDir, mediaVariantDirs,
+  assetFilePath, assetThumbPath, ensureMediaDirs, mediaUsage, sweepUnusedAssets, sweepAbandonedArticles,
 } from './store.js';
 
 // Bump when the look of an article changes, so cached clips re-render.
@@ -61,15 +70,54 @@ function musicMtime(music) {
 // Status (for the admin page)
 // ---------------------------------------------------------------------------
 
-let status = { state: 'idle', error: null, built_at: null, seconds: 0, articles: 0 };
+let status = {
+  state: 'idle', error: null, built_at: null, seconds: 0, articles: 0, variants: 0, private_viewers: 0,
+};
 let pendingTimer = null;
 
 export function mediaStatus() {
-  return { ...status, pending: !!pendingTimer, ready: mediaLoopReady() };
+  // On air when any loop exists — with only private articles there is no
+  // public loop, but their audiences are watching theirs.
+  const ready = mediaLoopReady() || mediaVariantDirs().some(loopReady);
+  return { ...status, pending: !!pendingTimer, ready };
 }
 
+function loopReady(dir) {
+  return fs.existsSync(path.join(dir, 'index.m3u8'));
+}
+
+// The PUBLIC loop — what a customer in no audience sees.
 export function mediaLoopReady() {
-  return fs.existsSync(path.join(mediaLoopDir(), 'index.m3u8'));
+  return loopReady(mediaLoopDir());
+}
+
+// Where the loop of a (non-public) variant lives, by its key.
+export function mediaVariantLoopDir(key) {
+  return mediaVariantDir(hash(key));
+}
+const variantDirFor = mediaVariantLoopDir;
+
+// The loop this customer's player is served, or null when they have nothing
+// to watch (no loop yet, or every article is private to someone else). A
+// customer whose own variant is not built yet gets the public loop meanwhile:
+// it is a subset of what they may see, so it never shows them too much.
+export function mediaLoopDirFor(user) {
+  const articles = Articles.all();
+  const publicDir = mediaLoopDir();
+  const fallback = loopReady(publicDir) ? publicDir : null;
+  if (!hasPrivateContent(articles)) return fallback;
+  const mine = variantKey(articlesFor(articles, user));
+  if (mine !== variantKey(articlesFor(articles, null))) {
+    const dir = variantDirFor(mine);
+    if (loopReady(dir)) return dir;
+  }
+  return fallback;
+}
+
+// Customers moving between audiences (created, deleted, a plan change) can
+// change what they see — but only when something is private at all.
+export function scheduleMediaBuildForClients(reason = 'clients changed') {
+  if (hasPrivateContent(Articles.all())) scheduleMediaBuild(reason);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,84 +391,146 @@ export function buildMediaLoop({ reason = 'unspecified', force = false } = {}) {
   return job.promise;
 }
 
+// The clips of one variant, in play order («1/3» counts this variant's articles).
+async function variantClips(entries, music, signal) {
+  const clips = [];
+  for (let i = 0; i < entries.length; i += 1) {
+    if (signal.aborted) throw new AbortedError();
+    const { article } = entries[i];
+    try {
+      const clip = await articleClip(article, { index: i + 1, total: entries.length }, music, signal);
+      if (clip) clips.push(clip);
+      if (article.error) Articles.update(article.id, { error: null });
+    } catch (e) {
+      if (e.aborted || signal.aborted) throw new AbortedError();
+      log.error('media', 'article could not be rendered', { article_id: article.id, error: e.message });
+      Articles.update(article.id, { error: String(e.message).slice(0, 200) });
+    }
+  }
+  return clips;
+}
+
+// The furthest live position of ANY media loop on disk. A customer can move
+// between loops — public while theirs is built, an old variant to a new one
+// after an edit — so a new loop continues from the furthest of them all:
+// whichever loop a player was on, its counters never move backwards.
+function furthestMediaPosition() {
+  let best = null;
+  for (const dir of [mediaLoopDir(), ...mediaVariantDirs()]) {
+    const pos = currentLoopPosition(dir);
+    if (!pos) continue;
+    best = {
+      mediaSequence: Math.max(best?.mediaSequence ?? 0, pos.mediaSequence),
+      discontinuitySequence: Math.max(best?.discontinuitySequence ?? 0, pos.discontinuitySequence),
+    };
+  }
+  return best;
+}
+
+// Join one variant's clips into its live loop in `finalDir` (a no-op when the
+// loop there already has exactly these clips).
+async function buildLoop(finalDir, clips, {
+  reason, force, signal, label,
+}) {
+  const seconds = clips.reduce((sum, c) => sum + c.seconds, 0);
+  const repeats = loopRepeats(seconds);
+  const files = Array.from({ length: repeats }, () => clips.map((c) => c.file)).flat();
+  const signature = hash({
+    v: LOOP_VERSION, files, seg: config.channel.hlsTime, live: config.channel.liveLoop,
+  });
+  if (!force && loopReady(finalDir) && readSig(finalDir) === signature) return { seconds, built: false };
+
+  log.info('media', 'building media loop', {
+    reason, variant: label, articles: clips.length, seconds, repeats,
+  });
+  const previousPosition = config.channel.liveLoop ? furthestMediaPosition() : null;
+  fs.mkdirSync(config.hlsDir, { recursive: true });
+  const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, '.build-media-'));
+  try {
+    const list = path.join(tmpDir, 'list.txt');
+    fs.writeFileSync(list, concatList(files));
+    await run(FFMPEG, loopArgs({ list, outDir: tmpDir }), `media loop ${label}`, signal);
+    fs.rmSync(list, { force: true });
+    if (config.channel.liveLoop) {
+      // Never move the live counters backwards (see encode/channel.js).
+      writeLoopState(tmpDir, {
+        baseSeq: previousPosition ? previousPosition.mediaSequence + LIVE_WINDOW_SEGMENTS : 0,
+        baseDiscontinuity: previousPosition ? previousPosition.discontinuitySequence + 1 : 0,
+      });
+    }
+    fs.writeFileSync(path.join(tmpDir, SIG_FILE), signature);
+    fs.rmSync(finalDir, { recursive: true, force: true });
+    fs.renameSync(tmpDir, finalDir);
+  } catch (e) {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    throw e;
+  }
+  return { seconds, built: true };
+}
+
 async function doBuild({ reason, force, signal }) {
   const startedAt = Date.now();
   ensureMediaDirs();
   sweepAbandonedArticles({ minAgeMs: UNSAVED_ASSET_TTL_MS });
   sweepUnusedAssets({ minAgeMs: UNSAVED_ASSET_TTL_MS });
-  const finalDir = mediaLoopDir();
+  const publicDir = mediaLoopDir();
   status = { ...status, state: 'building', error: null, started_at: new Date().toISOString() };
   try {
     const music = await ensureMusic();
     // Only articles with something in them take part — and count in «1/3».
-    const articles = Articles.all().filter((a) => docHasContent(a.doc));
-    const clips = [];
-    for (let i = 0; i < articles.length; i += 1) {
+    // The public variant comes first: it is every other customer's stand-in.
+    const { variants } = mediaVariants(Articles.all(), Users.all());
+    const keepClips = new Set();
+    const keepDirs = new Set();
+    let publicSummary = { seconds: 0, articles: 0 };
+    let privateLoops = 0;
+    let privateViewers = 0;
+    let rebuilt = 0;
+
+    for (const [key, variant] of variants) {
       if (signal.aborted) throw new AbortedError();
-      const article = articles[i];
-      try {
-        const clip = await articleClip(article, { index: i + 1, total: articles.length }, music, signal);
-        if (clip) clips.push(clip);
-        if (article.error) Articles.update(article.id, { error: null });
-      } catch (e) {
-        if (e.aborted || signal.aborted) throw new AbortedError();
-        log.error('media', 'article could not be rendered', { article_id: article.id, error: e.message });
-        Articles.update(article.id, { error: String(e.message).slice(0, 200) });
+      const dir = variant.public ? publicDir : variantDirFor(key);
+      const clips = await variantClips(variant.entries, music, signal);
+      clips.forEach((c) => keepClips.add(path.basename(c.file, '.mp4')));
+      if (!clips.length) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        continue;
+      }
+      keepDirs.add(dir);
+      const { seconds, built } = await buildLoop(dir, clips, {
+        reason,
+        force,
+        signal,
+        label: variant.public ? 'public' : path.basename(dir),
+      });
+      if (built) rebuilt += 1;
+      if (variant.public) publicSummary = { seconds, articles: clips.length };
+      else {
+        privateLoops += 1;
+        privateViewers += variant.userIds.length;
       }
     }
-    sweepClips(new Set(clips.map((c) => path.basename(c.file, '.mp4'))));
-
-    if (!clips.length) {
-      fs.rmSync(finalDir, { recursive: true, force: true });
-      status = { state: 'empty', error: null, built_at: new Date().toISOString(), seconds: 0, articles: 0 };
-      return null;
+    sweepClips(keepClips);
+    // Loops of variants nobody is on any more (a customer deleted, an audience narrowed).
+    for (const dir of mediaVariantDirs()) {
+      if (!keepDirs.has(dir)) fs.rmSync(dir, { recursive: true, force: true });
     }
 
-    const seconds = clips.reduce((sum, c) => sum + c.seconds, 0);
-    const repeats = loopRepeats(seconds);
-    const files = Array.from({ length: repeats }, () => clips.map((c) => c.file)).flat();
-    const signature = hash({
-      v: LOOP_VERSION, files, seg: config.channel.hlsTime, live: config.channel.liveLoop,
-    });
-    if (!force && mediaLoopReady() && readSig(finalDir) === signature) {
-      status = {
-        state: 'idle', error: null, built_at: status.built_at || new Date().toISOString(), seconds, articles: clips.length,
-      };
-      return finalDir;
-    }
-
-    log.info('media', 'building media loop', {
-      reason, articles: clips.length, seconds, repeats,
-    });
-    const previousPosition = config.channel.liveLoop ? currentLoopPosition(finalDir) : null;
-    fs.mkdirSync(config.hlsDir, { recursive: true });
-    const tmpDir = fs.mkdtempSync(path.join(config.hlsDir, '.build-media-'));
-    try {
-      const list = path.join(tmpDir, 'list.txt');
-      fs.writeFileSync(list, concatList(files));
-      await run(FFMPEG, loopArgs({ list, outDir: tmpDir }), 'media loop', signal);
-      fs.rmSync(list, { force: true });
-      if (config.channel.liveLoop) {
-        // Never move the live counters backwards (see encode/channel.js).
-        writeLoopState(tmpDir, {
-          baseSeq: previousPosition ? previousPosition.mediaSequence + LIVE_WINDOW_SEGMENTS : 0,
-          baseDiscontinuity: previousPosition ? previousPosition.discontinuitySequence + 1 : 0,
-        });
-      }
-      fs.writeFileSync(path.join(tmpDir, SIG_FILE), signature);
-      fs.rmSync(finalDir, { recursive: true, force: true });
-      fs.renameSync(tmpDir, finalDir);
-    } catch (e) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      throw e;
-    }
     status = {
-      state: 'idle', error: null, built_at: new Date().toISOString(), seconds, articles: clips.length,
+      state: keepDirs.size ? 'idle' : 'empty',
+      error: null,
+      built_at: rebuilt || !status.built_at ? new Date().toISOString() : status.built_at,
+      seconds: publicSummary.seconds,
+      articles: publicSummary.articles,
+      variants: privateLoops,
+      private_viewers: privateViewers,
     };
-    log.info('media', 'media loop ready', {
-      articles: clips.length, seconds: seconds * repeats, duration_ms: elapsedMs(startedAt), disk_bytes: mediaUsage().used,
-    });
-    return finalDir;
+    if (rebuilt) {
+      log.info('media', 'media loop ready', {
+        loops: keepDirs.size, rebuilt, duration_ms: elapsedMs(startedAt), disk_bytes: mediaUsage().used,
+      });
+    }
+    return keepDirs.size ? publicDir : null;
   } catch (e) {
     if (e.aborted || signal.aborted) {
       status = { ...status, state: 'idle' };

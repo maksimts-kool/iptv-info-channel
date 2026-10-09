@@ -22,6 +22,8 @@ process.env.EPG_FOSS_ENABLED = 'false';
 // binary that does not exist: the job fails instantly (the admin route already
 // swallows it) instead of burning CPU and racing the teardown.
 process.env.FFMPEG_PATH = 'ffmpeg-absent-in-tests';
+// The newsletter test sends for real through the dispatch path, minus the HTTP call.
+process.env.NOTIFY_DRY_RUN = 'true';
 
 const UPSTREAM = [
   '#EXTM3U url-tvg="http://provider/epg.xml"',
@@ -678,7 +680,74 @@ test('recording a payment dates the subscription from the plan period', async ()
 
   assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { count: 0 })).status, 400);
   assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { period: 'week' })).status, 400);
+  assert.equal((await req('POST', `/admin/api/users/${ids.user}/payment`, { amount_eur: 'lots' })).status, 400);
   assert.equal((await req('POST', '/admin/api/users/999999/payment', {})).status, 404);
+});
+
+test('every payment lands in one ledger, and only the latest can be undone', async () => {
+  const plan = (await req('GET', '/admin/api/state')).body.plans.find((p) => p.id === ids.plan);
+  const ledger = await req('GET', '/admin/api/payments');
+  const mine = ledger.body.payments.filter((p) => p.user_id === ids.user);
+  assert.equal(mine.length, 2, 'both payments from the previous test');
+  // Newest first; the amount defaults to the plan price for the periods paid.
+  assert.equal(mine[0].count, 3);
+  assert.equal(mine[0].amount_cents, plan.price_cents * 3);
+  assert.equal(mine[0].previous_expires_at, '2099-04-15');
+  assert.ok(ledger.body.summary.month_count >= 2);
+
+  const custom = await req('POST', `/admin/api/users/${ids.user}/payment`, {
+    count: 1, period: 'day', amount_eur: '2.50', note: ' наличными ',
+  });
+  assert.equal(custom.body.payment.amount_cents, 250);
+  assert.equal(custom.body.payment.note, 'наличными');
+  assert.equal(custom.body.user.expires_at, '2099-07-16');
+
+  // An older payment no longer decides the date, so it cannot be undone.
+  assert.equal((await req('DELETE', `/admin/api/payments/${mine[0].id}`)).status, 409);
+  const undone = await req('DELETE', `/admin/api/payments/${custom.body.payment.id}`);
+  assert.equal(undone.status, 200);
+  assert.equal(undone.body.user.expires_at, '2099-07-15', 'the date goes back to before it');
+  assert.equal((await req('DELETE', `/admin/api/payments/${custom.body.payment.id}`)).status, 404);
+  // A manual date change since the payment also protects it.
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2099-08-01' });
+  assert.equal((await req('DELETE', `/admin/api/payments/${mine[0].id}`)).status, 409);
+  await req('PATCH', `/admin/api/users/${ids.user}`, { expires_at: '2099-07-15' });
+});
+
+test('a newsletter goes to subscribers who opted into news, in its audience', async () => {
+  const draft = { subject: 'Плановые работы', body: 'Ночью 10 минут без эфира.' };
+  await req('PATCH', '/admin/api/notifications', { enabled: false });
+  assert.equal((await req('POST', '/admin/api/newsletters', draft)).status, 409, 'not while mail is off');
+  await req('PATCH', '/admin/api/notifications', { enabled: true });
+  assert.equal((await req('POST', '/admin/api/newsletters', draft)).status, 409, 'nobody subscribed yet');
+  assert.equal((await req('POST', '/admin/api/newsletters', { subject: '', body: 'x' })).status, 400);
+
+  await req('PUT', `/admin/api/users/${ids.user}/subscriber`, {
+    email: 'reader@example.com', options: { news: true }, verified: true,
+  });
+  const state = await req('GET', '/admin/api/state');
+  assert.equal(state.body.subscribers.find((s) => s.user_id === ids.user).options.news, true);
+
+  // Aimed at a group the subscriber is not in: refused, nothing sent.
+  const elsewhere = await req('POST', '/admin/api/newsletters', { ...draft, audience: { users: [999999], plans: [] } });
+  assert.equal(elsewhere.status, 409);
+
+  const sent = await req('POST', '/admin/api/newsletters', { ...draft, audience: { users: [ids.user], plans: [] } });
+  assert.equal(sent.status, 201);
+  assert.equal(sent.body.recipients, 1);
+  await new Promise((r) => setTimeout(r, 50));
+  const history = await req('GET', '/admin/api/newsletters');
+  assert.deepEqual(
+    [history.body.newsletters[0].status, history.body.newsletters[0].sent],
+    ['sent', 1],
+  );
+  const log = await req('GET', '/admin/api/notifications');
+  assert.equal(log.body.log[0].type, 'news');
+  assert.equal(log.body.log[0].email, 'reader@example.com');
+
+  assert.equal((await req('DELETE', `/admin/api/newsletters/${sent.body.id}`)).status, 200);
+  await req('DELETE', `/admin/api/users/${ids.user}/subscriber`);
+  await req('PATCH', '/admin/api/notifications', { enabled: false });
 });
 
 test('mutating catalog calls are rejected without a CSRF token', async () => {
@@ -733,8 +802,7 @@ test('the gateway passes a provider URL through without re-encoding it', async (
 
 // A finished loop on disk, as media/build.js leaves it — the encode itself is
 // covered by test/encode/media-args.test.js and needs ffmpeg + fonts.
-function fakeMediaLoop() {
-  const dir = path.join(DATA_DIR, 'hls', '_media');
+function fakeMediaLoop(dir = path.join(DATA_DIR, 'hls', '_media')) {
   fs.mkdirSync(dir, { recursive: true });
   const lines = ['#EXTM3U', '#EXT-X-VERSION:6', '#EXT-X-TARGETDURATION:6', '#EXT-X-PLAYLIST-TYPE:VOD'];
   for (let i = 0; i < 8; i += 1) {
@@ -876,4 +944,41 @@ test('the admin writes articles with images in them; dropped files leave the dis
   assert.equal((await req('DELETE', `/admin/api/media/articles/${article.id}`)).status, 404);
   await req('DELETE', `/admin/api/media/articles/${second.body.id}`);
   await req('DELETE', `/admin/api/users/${ids.mediaUser}`);
+});
+
+test('private media goes only to its audience, each on its own loop', async () => {
+  const { Articles } = await import('../../src/media/store.js');
+  const { mediaVariantLoopDir } = await import('../../src/media/build.js');
+  const { articlesFor, variantKey } = await import('../../src/media/variants.js');
+  const until = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+  const insider = (await req('POST', '/admin/api/users', { username: 'insider', plan_id: ids.plan, expires_at: until })).body;
+  const outsider = (await req('POST', '/admin/api/users', { username: 'outsider', plan_id: ids.plan, expires_at: until })).body;
+  fs.rmSync(path.join(DATA_DIR, 'hls', '_media'), { recursive: true, force: true });
+
+  // Written straight to the store: through the API it would schedule an encode.
+  const article = Articles.create({
+    title: 'Только для своих',
+    doc: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'секрет' }] }] },
+    audience: { users: [insider.id], plans: [] },
+  });
+  const listed = async (user) => (await req('GET', `/u/${user.token}/playlist.m3u`, null, { raw: true })).text.includes('/m/');
+  assert.equal(await listed(insider), false, 'no loop built for them yet, and nothing public to fall back on');
+  assert.equal(await listed(outsider), false);
+
+  const key = variantKey(articlesFor(Articles.all(), { id: insider.id, plan_id: ids.plan }));
+  const dir = fakeMediaLoop(mediaVariantLoopDir(key));
+  assert.equal(await listed(insider), true);
+  assert.equal(await listed(outsider), false, 'an article for someone else never lists the channel');
+  assert.equal((await req('GET', `/m/${insider.token}/index.m3u8`, null, { raw: true })).status, 200);
+  assert.equal((await req('GET', `/m/${insider.token}/seg_000.ts`, null, { raw: true })).status, 200);
+  assert.equal((await hop(`/m/${outsider.token}/index.m3u8`)).status, 302, 'sent to their own card');
+  assert.equal((await req('GET', `/m/${outsider.token}/seg_000.ts`, null, { raw: true })).status, 404);
+
+  const summary = (await req('GET', '/admin/api/media')).body.articles.find((a) => a.id === article.id);
+  assert.deepEqual(summary.audience, { users: [insider.id], plans: [] });
+
+  Articles.remove(article.id);
+  fs.rmSync(dir, { recursive: true, force: true });
+  await req('DELETE', `/admin/api/users/${insider.id}`);
+  await req('DELETE', `/admin/api/users/${outsider.id}`);
 });

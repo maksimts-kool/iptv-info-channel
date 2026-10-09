@@ -4,7 +4,7 @@ import {
   Button, Divider, Dropdown, Tooltip,
 } from 'antd';
 import {
-  BoldOutlined, CodeOutlined, CommentOutlined, ConsoleSqlOutlined, ItalicOutlined, LineOutlined,
+  BoldOutlined, CodeOutlined, CommentOutlined, ConsoleSqlOutlined, ItalicOutlined, LineOutlined, LockOutlined,
   OrderedListOutlined, PictureOutlined, RedoOutlined, StrikethroughOutlined, TableOutlined,
   UndoOutlined, UnorderedListOutlined, VideoCameraOutlined,
 } from '@ant-design/icons';
@@ -33,7 +33,8 @@ function Tool({
 }
 
 // The editor's formatting bar: everything Markdown can express, as buttons,
-// plus image and video upload. `onUpload(kind, file)` inserts the result.
+// plus image and video upload (`onUpload(kind, file)` inserts the result) and
+// the private-section wrapper (a part only some customers see).
 export default function EditorToolbar({ editor, onUpload, uploading }) {
   const imageInput = useRef(null);
   const videoInput = useRef(null);
@@ -53,6 +54,7 @@ export default function EditorToolbar({ editor, onUpload, uploading }) {
       blockquote: e.isActive('blockquote'),
       codeBlock: e.isActive('codeBlock'),
       table: e.isActive('table'),
+      privateSection: e.isActive('privateSection'),
       canUndo: e.can().undo(),
       canRedo: e.can().redo(),
     }),
@@ -116,6 +118,16 @@ export default function EditorToolbar({ editor, onUpload, uploading }) {
       <Divider type="vertical" />
       <Tool title="Вставить изображение" icon={<PictureOutlined />} disabled={uploading} onClick={() => pick(imageInput)} />
       <Tool title="Вставить видео" icon={<VideoCameraOutlined />} disabled={uploading} onClick={() => pick(videoInput)} />
+      <Divider type="vertical" />
+      {/* Wraps the selected blocks; on a section already, takes its content back out. */}
+      <Tool
+        title={s.privateSection ? 'Убрать закрытую часть (показывать всем)' : 'Закрытая часть — только для выбранных клиентов'}
+        icon={<LockOutlined />}
+        active={s.privateSection}
+        onClick={() => (s.privateSection
+          ? chain().lift('privateSection').run()
+          : chain().wrapIn('privateSection').run())}
+      />
       <input ref={imageInput} type="file" accept={IMAGE_ACCEPT} multiple hidden onChange={picked('image')} />
       <input ref={videoInput} type="file" accept={VIDEO_ACCEPT} hidden onChange={picked('video')} />
     </div>

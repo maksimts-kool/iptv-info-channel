@@ -72,6 +72,8 @@ function load() {
   data.incidents ||= [];
   data.subscribers ||= [];
   data.notify_log ||= [];
+  data.payments ||= [];
+  data.newsletters ||= [];
   data.seq ||= 0;
   data.settings ||= {};
   if (data.settings.brand_name === undefined) data.settings.brand_name = 'Мой IPTV-сервис';
@@ -101,6 +103,9 @@ function load() {
     // news about the package they are paying for, and they can switch it off on
     // the same page they subscribed from.
     if (s.options && s.options.content === undefined) { s.options.content = true; changed = true; }
+    // Same for the newsletter topic: news from the service they subscribed to
+    // is what they signed up for, and it is one checkbox away from off.
+    if (s.options && s.options.news === undefined) { s.options.news = true; changed = true; }
   }
   if (changed) save();
 }
@@ -277,12 +282,14 @@ export const Users = {
 
 // ---- Notification subscribers (one per user; keyed by user_id) ----
 // Renewal notices are mandatory, so that option is always forced on.
-// `content` = "channels added to / removed from your package".
+// `content` = "channels added to / removed from your package"; `news` = the
+// admin's newsletter (news and important announcements).
 function cleanOptions(options = {}) {
   return {
     server: !!options.server,
     expiry: !!options.expiry,
     content: !!options.content,
+    news: !!options.news,
     renewal: true,
   };
 }
@@ -359,6 +366,80 @@ export const NotifyLog = {
       data.notify_log.splice(0, data.notify_log.length - NOTIFY_LOG_MAX);
     }
     save();
+  },
+};
+
+// ---- Payments (every "клиент заплатил", newest last) ----
+// A record of what was paid and what it did to the expiry date, so the admin
+// has one ledger for all customers instead of a per-customer form. The user's
+// name and plan are snapshotted: the ledger must still read correctly after a
+// rename, a plan change or a deleted customer.
+const PAYMENTS_MAX = 5000;
+const makePaymentId = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz', 10);
+
+export const Payments = {
+  // Newest first.
+  all: () => [...data.payments].reverse().map((p) => ({ ...p })),
+  get: (id) => {
+    const p = data.payments.find((x) => x.id === id);
+    return p ? { ...p } : null;
+  },
+  forUser: (userId) => data.payments.filter((p) => p.user_id === Number(userId)).reverse().map((p) => ({ ...p })),
+  lastForUser: (userId) => {
+    for (let i = data.payments.length - 1; i >= 0; i -= 1) {
+      if (data.payments[i].user_id === Number(userId)) return { ...data.payments[i] };
+    }
+    return null;
+  },
+  add: (fields) => {
+    const p = { id: makePaymentId(), at: new Date().toISOString(), ...fields };
+    data.payments.push(p);
+    if (data.payments.length > PAYMENTS_MAX) data.payments.splice(0, data.payments.length - PAYMENTS_MAX);
+    save();
+    return { ...p };
+  },
+  remove: (id) => {
+    const i = data.payments.findIndex((x) => x.id === id);
+    if (i === -1) return null;
+    const [removed] = data.payments.splice(i, 1);
+    save();
+    return removed;
+  },
+};
+
+// ---- Newsletters (admin-written news mailed to opted-in customers) ----
+const NEWSLETTERS_MAX = 200;
+const makeNewsletterId = customAlphabet('23456789abcdefghjkmnpqrstuvwxyz', 10);
+
+export const Newsletters = {
+  // Newest first.
+  all: () => [...data.newsletters].reverse().map((n) => ({ ...n })),
+  get: (id) => {
+    const n = data.newsletters.find((x) => x.id === id);
+    return n ? { ...n } : null;
+  },
+  create: (fields) => {
+    const n = { id: makeNewsletterId(), created_at: new Date().toISOString(), ...fields };
+    data.newsletters.push(n);
+    if (data.newsletters.length > NEWSLETTERS_MAX) {
+      data.newsletters.splice(0, data.newsletters.length - NEWSLETTERS_MAX);
+    }
+    save();
+    return { ...n };
+  },
+  update: (id, fields) => {
+    const n = data.newsletters.find((x) => x.id === id);
+    if (!n) return null;
+    Object.assign(n, fields);
+    save();
+    return { ...n };
+  },
+  remove: (id) => {
+    const i = data.newsletters.findIndex((x) => x.id === id);
+    if (i === -1) return false;
+    data.newsletters.splice(i, 1);
+    save();
+    return true;
   },
 };
 
