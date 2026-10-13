@@ -581,7 +581,7 @@ fn apply_channel_fields(c: &mut Channel, patch: &ChannelPatch, category_known: b
 
 /// PostgreSQL persistence of the catalog: a full load at startup and a
 /// row-level diff on every write.
-mod sql {
+pub(crate) mod sql {
     use std::collections::{HashMap, HashSet};
 
     use serde_json::Value;
