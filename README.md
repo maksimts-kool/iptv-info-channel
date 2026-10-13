@@ -47,9 +47,9 @@ docker compose exec m3u-info iptv-server seed
 
 The bind-mounted `./data` directory must be writable by uid 1000. PostgreSQL holds metadata; `data/` holds media uploads, article clips, previews and HLS output. Back up both PostgreSQL and this directory.
 
-For a Portainer Git stack, select `refs/heads/rust-port` and `docker-compose.yml`, copy the production environment settings, and set `DATA_VOLUME` to the absolute host path of the existing data directory. This keeps media files independent of Portainer's Git checkout directory. Set `DATABASE_URL` to the existing `iptv` database on `shared-db`, and enable Git polling if pushes should deploy automatically. Stop the previous stack before deploying the replacement: only one server instance may use this database and port.
+For a Portainer Git stack, select `refs/heads/rust-port` and `docker-compose.yml`, copy the production environment settings, and set `DATA_VOLUME` to the absolute host path of the existing data directory. This keeps media files independent of Portainer's Git checkout directory. Set `DATABASE_URL` to the existing `iptv` database on `shared-db`. Keep Git polling and automatic updates disabled, and deploy new commits manually in Portainer. Stop the previous stack before deploying the replacement: only one server instance may use this database and port.
 
-The production Portainer stack is `iptv-rust`. It tracks `refs/heads/rust-port` with a five-minute polling interval on its GitOps source. Automatic updates are enabled for the stack, with force redeployment disabled. The previous `iptvinfov2` stack is stopped and retained for rollback.
+The production Portainer stack is `iptv-rust`. It tracks `refs/heads/rust-port`; GitOps source polling and automatic stack updates are disabled. Deploy new commits manually in Portainer. The previous `iptvinfov2` stack is stopped and retained for rollback.
 
 ## Migrate from the Node backend
 
