@@ -1,0 +1,58 @@
+[package]
+name = "iptv-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["multipart", "macros"] }
+base64 = "0.23.1"
+bytes = "1.12.1"
+futures-util = "0.3.34"
+hex = "0.4.3"
+hmac = "0.13.0"
+indexmap = { version = "2.14.2", features = ["serde"] }
+jiff = { version = "0.2.38", features = ["tzdb-bundle-always", "serde"] }
+nanoid = "0.5.0"
+percent-encoding = "2.3.2"
+rand = "0.10.3"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "http2", "charset", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["full"] }
+tower = "0.5.3"
+tower-http = { version = "0.7.1", features = ["fs", "trace", "set-header"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2.5.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+# Pedantic lints that fight this codebase's shape rather than help it.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

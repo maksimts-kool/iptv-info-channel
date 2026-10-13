@@ -13,3 +13,4 @@ frontend/dist/
 # time (or locally if you point the build output here). Never committed.
 src/public/admin/*
 !src/public/admin/.gitkeep
+rust/target/
