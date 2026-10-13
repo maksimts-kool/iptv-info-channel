@@ -1163,8 +1163,12 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
+ "png",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1212,8 +1216,10 @@ dependencies = [
  "fancy-regex",
  "form_urlencoded",
  "futures-util",
+ "harfrust",
  "hex",
  "hmac",
+ "image",
  "indexmap",
  "jiff",
  "nanoid",
@@ -1227,6 +1233,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
+ "skrifa",
  "sqlx",
  "tempfile",
  "thiserror",
