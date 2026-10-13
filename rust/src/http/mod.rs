@@ -1,9 +1,15 @@
 //! Every HTTP surface: the public playlist/stream routes, the FOSS guide, the
 //! email sign-up page and the admin API. Handlers share one [`AppState`].
 
+pub mod admin;
+pub mod api;
+pub mod auth;
+pub mod catalog;
 pub mod gateway;
 pub mod playlist;
+pub mod ratelimit;
 pub mod stream;
+pub mod subscribe;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -137,3 +143,6 @@ mod tests {
         assert_eq!(r.headers()[header::LOCATION], "http://p/a%20b/%D0%BA%D0%B0%D0%BD%D0%B0%D0%BB.ts");
     }
 }
+
+#[cfg(test)]
+mod route_tests;

@@ -21,6 +21,11 @@ impl MediaChannel {
         self.config.hls_dir.join("_media")
     }
 
+    /// Headline numbers for the admin's `/api/state`.
+    pub fn status_json(&self) -> serde_json::Value {
+        serde_json::json!({ "ready": self.public_loop_dir().join("index.m3u8").exists(), "total_articles": 0 })
+    }
+
     /// The loop one customer watches, or `None` when there is nothing to
     /// play for them (an empty channel would be a black screen).
     pub fn loop_dir_for(&self, _user: &DecoratedUser) -> Option<PathBuf> {

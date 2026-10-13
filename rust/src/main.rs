@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<AppState> {
+pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<AppState> {
     let http = reqwest::Client::builder()
         .user_agent("iptv-server")
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -143,7 +143,11 @@ pub fn app(state: AppState) -> Router {
     if state.config.epg.enabled && state.config.epg.foss.enabled {
         router = router.merge(http::stream::foss_router());
     }
-    router.merge(http::stream::router()).with_state(state)
+    router
+        .nest("/admin", http::admin::router(&state))
+        .merge(http::subscribe::router())
+        .merge(http::stream::router())
+        .with_state(state)
 }
 
 /// Sleep until the next 00:05 in the configured zone, forever, then rebuild.
