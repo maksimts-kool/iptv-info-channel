@@ -366,6 +366,7 @@ pub fn router(st: &AppState) -> Router<AppState> {
         .route("/newsletters/{id}", axum::routing::delete(delete_newsletter))
         .route("/regenerate-all", post(regenerate_all))
         .merge(super::catalog::router())
+        .merge(super::media::router(st))
         .layer(axum::middleware::from_fn_with_state(st.clone(), require_admin));
 
     Router::new()
@@ -523,6 +524,7 @@ async fn create_user(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiR
     let u = st.store.create_user(username, plan_id.clone(), expires, active, None).await?;
     tracing::info!(target: "admin", user_id = u.id, username = %u.username, %plan_id, "user created");
     spawn_regen(&st.channels, u.id, "admin user created");
+    st.media.schedule_build_for_clients("client created");
     created(decorate_user(&st, &u))
 }
 
@@ -548,6 +550,10 @@ async fn update_user(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, b: O
     let u = st.store.update_user(id, patch).await?.ok_or_else(ApiError::not_found)?;
     tracing::info!(target: "admin", user_id = u.id, username = %u.username, "user updated");
     spawn_regen(&st.channels, u.id, "admin user updated");
+    // A plan change can move the customer into or out of a private audience.
+    if plan_id.as_ref().is_some_and(|p| *p != before.plan_id) {
+        st.media.schedule_build_for_clients("client plan changed");
+    }
     // Renewal: the expiry moved later — mandatory notice.
     if renewed_field && before.expires_at.is_some() && u.expires_at.is_some() && u.expires_at > before.expires_at {
         spawn_renewal(&st, u.clone());
@@ -650,6 +656,7 @@ async fn delete_user(State(st): State<AppState>, UrlPath(id): UrlPath<i64>) -> A
     st.channels.remove_user_hls(id);
     st.gateway.forget(id);
     tracing::info!(target: "admin", user_id = id, "user deleted");
+    st.media.schedule_build_for_clients("client deleted");
     ok(json!({ "ok": true }))
 }
 

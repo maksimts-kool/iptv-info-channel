@@ -92,7 +92,7 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
     let store = Arc::new(Store::open(pool.clone()).await?);
     let catalog = Arc::new(
         Catalog::open(
-            pool,
+            pool.clone(),
             CatalogSettings {
                 info_category_name: config.catalog.info_category_name.clone(),
                 default_interval_hours: config.catalog.default_interval_hours,
@@ -121,7 +121,10 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
         Arc::clone(&notifier),
         raster,
     ));
-    let media = Arc::new(media::build::MediaChannel::new(Arc::clone(&config)));
+    let media_store = Arc::new(
+        media::store::MediaStore::open(pool, media::store::MediaDirs::new(&config.media_dir, &config.hls_dir)).await?,
+    );
+    let media = Arc::new(media::build::MediaChannel::new(Arc::clone(&config), media_store, Arc::clone(&store), Arc::clone(&channels)));
     let gateway = Arc::new(http::gateway::Gateway::new(config.gateway.device_idle_seconds));
     Ok(AppState { config, store, catalog, http, news, notifier, channels, media, gateway })
 }
@@ -228,6 +231,16 @@ async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
             tracing::error!(target: "startup", error = %e, "background music unavailable");
         }
         pregen.channels.generate_all("startup pre-generation").await;
+        // The media channel: clear half-received uploads and unreferenced
+        // files, then make sure the loops match the articles.
+        match pregen.media.store.sweep_orphans().await {
+            Ok(n) if n > 0 => tracing::info!(target: "media", files = n, "removed unreferenced media files"),
+            Ok(_) => {}
+            Err(e) => tracing::error!(target: "startup", error = %e, "media sweep failed"),
+        }
+        if let Err(e) = pregen.media.build("startup", false).await {
+            tracing::error!(target: "startup", error = %e, "media channel build issue");
+        }
         start_background(&pregen);
         tracing::info!(target: "startup", "ready");
     });
