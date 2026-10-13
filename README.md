@@ -47,6 +47,8 @@ docker compose exec m3u-info iptv-server seed
 
 The bind-mounted `./data` directory must be writable by uid 1000. PostgreSQL holds metadata; `data/` holds media uploads, article clips, previews and HLS output. Back up both PostgreSQL and this directory.
 
+For a Portainer Git stack, select `refs/heads/rust-port` and `docker-compose.yml`, copy the production environment settings, and set `DATA_VOLUME` to the absolute host path of the existing data directory. This keeps media files independent of Portainer's Git checkout directory. Set `DATABASE_URL` to the existing `iptv` database on `shared-db`, and enable Git polling if pushes should deploy automatically. Stop the previous stack before deploying the replacement: only one server instance may use this database and port.
+
 ## Migrate from the Node backend
 
 Keep the old image, Compose configuration and a complete data backup for rollback. Stop the old application before taking the final JSON snapshot so no edits race the import. Use the same data volume for the Rust service: uploaded media and cached HLS files are not stored in PostgreSQL.

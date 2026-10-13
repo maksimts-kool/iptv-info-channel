@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-9222}:${PORT:-9222}"
-    # Grouped to mirror .env.example. Each var falls back to its default, so an
+    # Grouped to mirror .env.example. Each var falls back to its default.
     # DATABASE_URL is required. Override vars by exporting them or editing .env.
     environment:
       # --- 1. Networking & access ---
@@ -101,7 +101,7 @@ services:
       # PostgreSQL. The container runs as uid 1000; if this bind-mounted dir isn't
       # writable by uid 1000, run `sudo chown -R 1000:1000 ./data` once (or use a
       # named volume, which inherits the correct owner automatically).
-      - ./data:/app/data
+      - ${DATA_VOLUME:-./data}:/app/data
     networks:
       - default
       - shared-db
