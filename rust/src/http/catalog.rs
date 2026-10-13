@@ -740,7 +740,7 @@ mod tests {
         let plan: HashSet<String> = ["sport".to_owned()].into();
         let (sport, kids) = (cat("sport", "Спорт"), cat("kids", "Дети"));
         let empty = UserOverrides::default();
-        let mut pin = |id: &str, v: bool| {
+        let pin = |id: &str, v: bool| {
             let mut o = UserOverrides::default();
             o.categories.insert(id.into(), v);
             o
