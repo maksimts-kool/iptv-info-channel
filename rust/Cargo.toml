@@ -16,9 +16,11 @@ indexmap = { version = "2.14.2", features = ["serde"] }
 jiff = { version = "0.2.38", features = ["tzdb-bundle-always", "serde"] }
 nanoid = "0.5.0"
 percent-encoding = "2.3.2"
+qrcode = "0.14.1"
 rand = "0.10.3"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "http2", "charset", "json"] }
+resvg = "0.48.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1 = "0.11.0"
