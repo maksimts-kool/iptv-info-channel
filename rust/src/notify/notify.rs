@@ -521,9 +521,9 @@ impl Notifier {
         Ok(())
     }
 
-    fn log(&self, user_id: Option<i64>, email: &str, kind: &str, error: Option<String>) {
+    async fn log(&self, user_id: Option<i64>, email: &str, kind: &str, error: Option<String>) {
         let entry = NotifyLogEntry { at: String::new(), user_id, email: email.to_owned(), kind: kind.to_owned(), ok: error.is_none(), error };
-        if let Err(e) = self.store.notify_log_add(entry) {
+        if let Err(e) = self.store.notify_log_add(entry).await {
             tracing::error!(target: "notify", error = %e, "notify log write failed");
         }
     }
@@ -532,12 +532,12 @@ impl Notifier {
     async fn dispatch(&self, kind: &str, user_id: i64, to: &str, m: &Message) -> bool {
         match self.send_email(to, m).await {
             Ok(()) => {
-                self.log(Some(user_id), to, kind, None);
+                self.log(Some(user_id), to, kind, None).await;
                 true
             }
             Err(e) => {
                 tracing::error!(target: "notify", %kind, %to, error = %e, "email send failed");
-                self.log(Some(user_id), to, kind, Some(e.to_string()));
+                self.log(Some(user_id), to, kind, Some(e.to_string())).await;
                 false
             }
         }
@@ -603,7 +603,7 @@ impl Notifier {
         let mut m = templates::newsletter(&self.brand(), &draft.subject, &draft.body, draft.important);
         m.subject = format!("[Тест] {}", m.subject);
         let result = self.send_email(&email, &m).await;
-        self.log(None, &email, "news_test", result.as_ref().err().map(ToString::to_string));
+        self.log(None, &email, "news_test", result.as_ref().err().map(ToString::to_string)).await;
         result
     }
 
@@ -635,7 +635,7 @@ impl Notifier {
             }
             let m = templates::expiry(&brand, &user.username, user.expires_at.as_deref(), now, tz);
             if self.dispatch("expiry", sub.user_id, &sub.email, &m).await {
-                if let Err(e) = self.store.set_expiry_notice(sub.user_id, user.expires_at.clone()) {
+                if let Err(e) = self.store.set_expiry_notice(sub.user_id, user.expires_at.clone()).await {
                     tracing::error!(target: "notify", error = %e, "saving expiry marker failed");
                 }
                 sent += 1;
@@ -651,7 +651,7 @@ impl Notifier {
             return Err(SendError::BadAddress);
         }
         let result = self.send_email(&email, &templates::test(&self.brand())).await;
-        self.log(None, &email, "test", result.as_ref().err().map(ToString::to_string));
+        self.log(None, &email, "test", result.as_ref().err().map(ToString::to_string)).await;
         result
     }
 }

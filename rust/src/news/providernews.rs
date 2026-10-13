@@ -100,10 +100,10 @@ impl ProviderNews {
         self.store.setting(SETTINGS_KEY).and_then(|v| v.as_object().cloned()).unwrap_or_default()
     }
 
-    fn save(&self, patch: Map<String, Value>) {
+    async fn save(&self, patch: Map<String, Value>) {
         let mut s = self.stored();
         s.extend(patch);
-        if let Err(e) = self.store.set_setting(SETTINGS_KEY, Value::Object(s)) {
+        if let Err(e) = self.store.set_setting(SETTINGS_KEY, Value::Object(s)).await {
             tracing::error!(target: "provider-news", error = %e, "saving settings failed");
         }
     }
@@ -126,7 +126,7 @@ impl ProviderNews {
         }
     }
 
-    pub fn update_settings(&self, patch: NewsPatch) {
+    pub async fn update_settings(&self, patch: NewsPatch) {
         let mut out = Map::new();
         if let Some(v) = patch.enabled {
             out.insert("enabled".into(), json!(v));
@@ -148,7 +148,7 @@ impl ProviderNews {
             out.insert("ai_key".into(), json!(key));
             self.runtime().ai_error = None;
         }
-        self.save(out);
+        self.save(out).await;
     }
 
     /// What the status slide shows right now (empty when the feature is off).
@@ -227,7 +227,7 @@ impl ProviderNews {
         if cookie != s.cookie {
             let mut patch = Map::new();
             patch.insert("cookie".into(), json!(cookie));
-            self.save(patch);
+            self.save(patch).await;
         }
         if is_auth(&res) {
             return Err(FetchFailure::Auth(res.status().as_u16()));
@@ -257,7 +257,7 @@ impl ProviderNews {
         if out.cache != s.summaries {
             let mut patch = Map::new();
             patch.insert("summaries".into(), json!(out.cache));
-            self.save(patch);
+            self.save(patch).await;
         }
         if let Some(e) = &out.error {
             tracing::warn!(target: "provider-news", error = %e, "AI summary failed");
@@ -277,7 +277,7 @@ impl ProviderNews {
                     tracing::info!(target: "provider-news", notices = notices.len(), newest = ?notices.first().map(|n| &n.headline), "service notices updated");
                     let mut patch = Map::new();
                     patch.insert("notices".into(), json!(notices));
-                    self.save(patch);
+                    self.save(patch).await;
                 }
                 Ok(())
             }
@@ -361,6 +361,7 @@ mod tests {
     use axum::http::{HeaderMap as AxHeaders, StatusCode};
     use axum::response::{AppendHeaders, IntoResponse};
     use axum::routing::{get, post};
+    use crate::data::db::testing::TestDb;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const FEED: &str = r#"{"data":{"items":[
@@ -374,11 +375,12 @@ mod tests {
         format!("http://{addr}")
     }
 
-    fn news(dir: &std::path::Path, ai_url: String) -> ProviderNews {
-        let mut config = Config::load(dir.to_path_buf());
+    async fn news(t: &TestDb, ai_url: String) -> ProviderNews {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config::load(dir.path().to_path_buf());
         config.provider_news.ai_key = String::new();
         config.provider_news.max_age_hours = 1e9;
-        let store = Arc::new(Store::open(dir).unwrap());
+        let store = Arc::new(Store::open(t.pool.clone()).await.unwrap());
         ProviderNews::with_ai_url(Arc::new(config), store, reqwest::Client::new(), ai_url)
     }
 
@@ -407,11 +409,11 @@ mod tests {
                 post(|| async { (AppendHeaders([("set-cookie", "access=new; Path=/"), ("set-cookie", "refresh=r2; Path=/")]), "{}") }),
             );
         let base = serve(app).await;
-        let dir = tempfile::tempdir().unwrap();
-        let n = news(dir.path(), String::new());
+        let t = TestDb::new().await;
+        let n = news(&t, String::new()).await;
         n.store
             .set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news?page=1"), "cookie": "access=old; refresh=r1"}))
-            .unwrap();
+            .await.unwrap();
         assert_eq!(n.refresh().await, None);
         assert_eq!(n.settings().cookie, "access=new; refresh=r2");
         assert_eq!(n.current_notices().iter().map(|x| x.headline.as_str()).collect::<Vec<_>>(), ["Технические работы"]);
@@ -425,15 +427,15 @@ mod tests {
     async fn failure_keeps_notices_and_disabling_hides_them() {
         let app = Router::new().route("/v3/news", get(|| async { (StatusCode::BAD_GATEWAY, "oops") }));
         let base = serve(app).await;
-        let dir = tempfile::tempdir().unwrap();
-        let n = news(dir.path(), String::new());
+        let t = TestDb::new().await;
+        let n = news(&t, String::new()).await;
         let notice = ProviderNotice { id: "1".into(), published_at: iso_now(), headline: "x".into(), ..ProviderNotice::default() };
-        n.store.set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news"), "notices": [notice]})).unwrap();
+        n.store.set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news"), "notices": [notice]})).await.unwrap();
         assert!(n.refresh().await.unwrap().contains("502"));
         assert_eq!(n.current_notices().len(), 1);
-        n.update_settings(NewsPatch { enabled: Some(false), ..NewsPatch::default() });
+        n.update_settings(NewsPatch { enabled: Some(false), ..NewsPatch::default() }).await;
         assert!(n.current_notices().is_empty());
-        n.update_settings(NewsPatch { enabled: Some(true), url: Some("https://other.example/news".into()), ..NewsPatch::default() });
+        n.update_settings(NewsPatch { enabled: Some(true), url: Some("https://other.example/news".into()), ..NewsPatch::default() }).await;
         assert!(n.settings().notices.is_empty());
     }
 
@@ -451,11 +453,10 @@ mod tests {
                 }),
             );
         let base = serve(app).await;
-        let dir = tempfile::tempdir().unwrap();
-        let n = news(dir.path(), format!("{base}/ai"));
+        let t = TestDb::new().await;
+        let n = news(&t, format!("{base}/ai")).await;
         n.store
-            .set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news"), "cookie": "a=1", "ai_key": "sk-or-test"}))
-            .unwrap();
+            .set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news"), "cookie": "a=1", "ai_key": "sk-or-test"})).await.unwrap();
         assert_eq!(n.refresh().await, None);
         let shown = n.current_notices();
         assert_eq!(shown[0].body, "Часть каналов временно недоступна.");
