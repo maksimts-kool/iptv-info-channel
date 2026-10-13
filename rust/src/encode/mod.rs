@@ -4,3 +4,4 @@ pub mod channel;
 pub mod channel_args;
 pub mod ffmpeg;
 pub mod liveloop;
+pub mod media;
