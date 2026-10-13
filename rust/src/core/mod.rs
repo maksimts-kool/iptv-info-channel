@@ -15,3 +15,15 @@ macro_rules! regex {
         &*RE
     }};
 }
+
+/// [`regex!`] for patterns that need look-around (`fancy_regex`).
+#[macro_export]
+macro_rules! fancy_regex {
+    ($re:literal $(,)?) => {{
+        static RE: std::sync::LazyLock<fancy_regex::Regex> = std::sync::LazyLock::new(|| {
+            #[allow(clippy::expect_used)]
+            fancy_regex::Regex::new($re).expect("static regex")
+        });
+        &*RE
+    }};
+}
