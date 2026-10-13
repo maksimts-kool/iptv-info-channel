@@ -1,6 +1,7 @@
 //! Cross-cutting primitives shared by every concern.
 
 pub mod audience;
+pub mod fetch;
 pub mod util;
 
 /// A lazily compiled, process-wide regex for a literal pattern. A typo in the

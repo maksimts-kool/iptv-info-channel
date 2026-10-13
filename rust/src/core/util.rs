@@ -283,6 +283,12 @@ pub fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         .then_with(|| a.cmp(b))
 }
 
+/// URL-safe random token without ambiguous characters (no 0/1/i/l/o).
+pub fn make_token(len: usize) -> String {
+    const ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+    (0..len).map(|_| ALPHABET[rand::random_range(0..ALPHABET.len())] as char).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
