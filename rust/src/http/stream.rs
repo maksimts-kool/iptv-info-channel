@@ -17,7 +17,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use super::gateway::{GateRequest, gate, is_locked};
-use super::playlist::{PlaylistCfg, build_user_playlist, foss_logo_url, foss_provider_base_url, playlist_disposition, user_epg_url, user_stream_url};
+use super::playlist::{
+    PlaylistCfg, build_user_playlist, foss_logo_url, foss_provider_base_url, playlist_disposition, user_epg_url,
+    user_stream_url,
+};
 use super::{AppState, client_ip, manifest, no_store, redirect, text, user_agent};
 use crate::data::model::DecoratedUser;
 use crate::data::store::setting_str;
@@ -25,7 +28,8 @@ use crate::encode::liveloop::build_live_playlist;
 use crate::epg::epg::{EpgOptions, build_epg_xml};
 use crate::epg::foss::{
     MatchHit, build_foss_channels_json, build_foss_epg_json, build_foss_logo_svg, build_match_channels_response,
-    empty_logo_match_response, foss_id_hash, merge_match_channels_responses, normalize_foss_provider_id, parse_match_request,
+    empty_logo_match_response, foss_id_hash, merge_match_channels_responses, normalize_foss_provider_id,
+    parse_match_request,
 };
 use crate::playlist::devices::device_tag;
 use crate::playlist::model::{INFO_MEDIA_CHANNEL_ID, Resolve, resolve_channel_access, resolve_user_channels};
@@ -49,13 +53,19 @@ pub fn foss_router() -> Router<AppState> {
     Router::new()
         .route("/m3u/match-channels", post(match_channels).options(cors_preflight))
         .route("/m3u/match-logos", post(match_logos).options(cors_preflight))
-        .route("/foss-epg/u/{token}/channels.json", get(foss_channels).options(cors_preflight))
+        .route(
+            "/foss-epg/u/{token}/channels.json",
+            get(foss_channels).options(cors_preflight),
+        )
         .route("/foss-epg/u/{token}/epg/{file}", get(foss_epg).options(cors_preflight))
         .route("/foss-epg/u/{token}/logo.svg", get(foss_logo).options(cors_preflight))
 }
 
 fn brand(st: &AppState) -> String {
-    setting_str(&st.store.settings(), "brand_name").filter(|b| !b.is_empty()).unwrap_or("Мой IPTV-сервис").to_owned()
+    setting_str(&st.store.settings(), "brand_name")
+        .filter(|b| !b.is_empty())
+        .unwrap_or("Мой IPTV-сервис")
+        .to_owned()
 }
 
 pub fn playlist_cfg(st: &AppState) -> PlaylistCfg<'_> {
@@ -76,14 +86,34 @@ pub fn render_user_playlist(st: &AppState, user: &DecoratedUser, tag: &str) -> S
     let overrides = st.catalog.overrides(user.id);
     let plan = user.plan_category_set();
     let has_media = st.media.loop_dir_for(user).is_some();
-    let entries: Vec<_> = resolve_user_channels(&catalog, Resolve { overrides: Some(&overrides), locked: is_locked(st, user), plan: Some(&plan) })
-        .into_iter()
-        .filter(|e| e.channel.id != INFO_MEDIA_CHANNEL_ID || has_media)
+    let entries: Vec<_> = resolve_user_channels(
+        &catalog,
+        Resolve {
+            overrides: Some(&overrides),
+            locked: is_locked(st, user),
+            plan: Some(&plan),
+        },
+    )
+    .into_iter()
+    .filter(|e| e.channel.id != INFO_MEDIA_CHANNEL_ID || has_media)
+    .collect();
+    let sources_used: std::collections::HashSet<&str> =
+        entries.iter().filter_map(|e| e.channel.source_id.as_deref()).collect();
+    let epg_urls: Vec<String> = catalog
+        .sources
+        .iter()
+        .filter(|s| !s.epg_url.is_empty() && sources_used.contains(s.id.as_str()))
+        .map(|s| s.epg_url.clone())
         .collect();
-    let used: std::collections::HashSet<&str> = entries.iter().filter_map(|e| e.channel.source_id.as_deref()).collect();
-    let epg_urls: Vec<String> =
-        catalog.sources.iter().filter(|s| !s.epg_url.is_empty() && used.contains(s.id.as_str())).map(|s| s.epg_url.clone()).collect();
-    build_user_playlist(&user.token, &user.username, &brand(st), &playlist_cfg(st), &entries, &epg_urls, tag)
+    build_user_playlist(
+        &user.token,
+        &user.username,
+        &brand(st),
+        &playlist_cfg(st),
+        &entries,
+        &epg_urls,
+        tag,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +148,12 @@ async fn playlist_path(State(st): State<AppState>, headers: HeaderMap, UrlPath(t
     send_playlist(&st, &headers, &token)
 }
 
-fn epg_options<'a>(st: &'a AppState, brand: &'a str, incidents: &'a [crate::data::model::Incident], ahead: i64) -> EpgOptions<'a> {
+fn epg_options<'a>(
+    st: &'a AppState,
+    brand: &'a str,
+    incidents: &'a [crate::data::model::Incident],
+    ahead: i64,
+) -> EpgOptions<'a> {
     EpgOptions {
         brand,
         incidents,
@@ -236,7 +271,12 @@ fn safe_file(file: &str) -> bool {
             .is_some_and(|n| n.len() >= 3 && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-async fn hls_file(State(st): State<AppState>, method: Method, headers: HeaderMap, UrlPath((token, file)): UrlPath<(String, String)>) -> Response {
+async fn hls_file(
+    State(st): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    UrlPath((token, file)): UrlPath<(String, String)>,
+) -> Response {
     if !safe_file(&file) {
         return text(StatusCode::BAD_REQUEST, "Bad file");
     }
@@ -252,7 +292,12 @@ async fn hls_file(State(st): State<AppState>, method: Method, headers: HeaderMap
 }
 
 /// The global device-limit notice loop (no token: it carries only the brand).
-async fn notice_file(State(st): State<AppState>, method: Method, headers: HeaderMap, UrlPath(file): UrlPath<String>) -> Response {
+async fn notice_file(
+    State(st): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    UrlPath(file): UrlPath<String>,
+) -> Response {
     if !safe_file(&file) {
         return text(StatusCode::BAD_REQUEST, "Bad file");
     }
@@ -269,7 +314,12 @@ async fn notice_file(State(st): State<AppState>, method: Method, headers: Header
 /// The media channel. The playlist is re-checked against the customer's
 /// access on every refresh, so switching the channel off ends playback by
 /// sending the player to their own info card.
-async fn media_file(State(st): State<AppState>, method: Method, headers: HeaderMap, UrlPath((token, file)): UrlPath<(String, String)>) -> Response {
+async fn media_file(
+    State(st): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    UrlPath((token, file)): UrlPath<(String, String)>,
+) -> Response {
     if !safe_file(&file) {
         return text(StatusCode::BAD_REQUEST, "Bad file");
     }
@@ -283,14 +333,24 @@ async fn media_file(State(st): State<AppState>, method: Method, headers: HeaderM
             let catalog = st.catalog.read();
             let overrides = st.catalog.overrides(user.id);
             let plan = user.plan_category_set();
-            resolve_channel_access(&catalog, INFO_MEDIA_CHANNEL_ID, Resolve { overrides: Some(&overrides), locked: is_locked(&st, &user), plan: Some(&plan) })
-                .allowed
+            resolve_channel_access(
+                &catalog,
+                INFO_MEDIA_CHANNEL_ID,
+                Resolve {
+                    overrides: Some(&overrides),
+                    locked: is_locked(&st, &user),
+                    plan: Some(&plan),
+                },
+            )
+            .allowed
         };
         if !allowed || dir.is_none() {
             return redirect(&user_stream_url(&user.token, &st.config.public_base_url));
         }
     }
-    let Some(dir) = dir else { return text(StatusCode::NOT_FOUND, "Not found") };
+    let Some(dir) = dir else {
+        return text(StatusCode::NOT_FOUND, "Not found");
+    };
     serve_loop_file(&st, &method, &headers, &dir, &file).await
 }
 
@@ -299,13 +359,23 @@ async fn media_file(State(st): State<AppState>, method: Method, headers: HeaderM
 async fn serve_loop_file(st: &AppState, method: &Method, headers: &HeaderMap, dir: &Path, file: &str) -> Response {
     if file == "index.m3u8" && st.config.channel.live_loop {
         let d = dir.to_path_buf();
-        let playlist = tokio::task::spawn_blocking(move || build_live_playlist(&d, crate::core::util::now_ms())).await.ok().flatten();
+        let playlist = tokio::task::spawn_blocking(move || build_live_playlist(&d, crate::core::util::now_ms()))
+            .await
+            .ok()
+            .flatten();
         if let Some(p) = playlist {
             return manifest(p);
         }
     }
     let path = dir.join(file);
-    let content_type = if file.ends_with(".m3u8") { "application/vnd.apple.mpegurl" } else { "video/mp2t" };
+    let content_type = if Path::new(file)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("m3u8"))
+    {
+        "application/vnd.apple.mpegurl"
+    } else {
+        "video/mp2t"
+    };
     send_file_with_range(method, headers, &path, content_type).await
 }
 
@@ -313,7 +383,13 @@ async fn serve_loop_file(st: &AppState, method: &Method, headers: &HeaderMap, di
 pub fn parse_range(header: &str, total: u64) -> Option<Result<(u64, u64), ()>> {
     let spec = header.trim().strip_prefix("bytes=")?;
     let (a, b) = spec.split_once('-')?;
-    let num = |s: &str| if s.is_empty() { Some(None) } else { s.parse::<u64>().ok().map(Some) };
+    let num = |s: &str| {
+        if s.is_empty() {
+            Some(None)
+        } else {
+            s.parse::<u64>().ok().map(Some)
+        }
+    };
     let (a, b) = (num(a)?, num(b)?);
     let (start, end) = match (a, b) {
         (None, None) => return None,
@@ -330,13 +406,21 @@ pub fn parse_range(header: &str, total: u64) -> Option<Result<(u64, u64), ()>> {
 
 /// Strict players (ExoPlayer/IJK) probe segments with `Range:` and stall on
 /// a plain 200 that ignores it, so honour it with a 206.
-pub async fn send_file_with_range(method: &Method, headers: &HeaderMap, path: &Path, content_type: &'static str) -> Response {
+pub async fn send_file_with_range(
+    method: &Method,
+    headers: &HeaderMap,
+    path: &Path,
+    content_type: &'static str,
+) -> Response {
     let Ok(mut file) = tokio::fs::File::open(path).await else {
         tracing::warn!(target: "stream", path = %path.display(), "requested HLS file is missing");
         return text(StatusCode::NOT_FOUND, "Not found");
     };
-    let total = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(|h| parse_range(h, total));
+    let total = file.metadata().await.map_or(0, |m| m.len());
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| parse_range(h, total));
     let (status, start, len) = match range {
         Some(Err(())) => {
             let mut res = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
@@ -385,8 +469,14 @@ fn public(mut res: Response) -> Response {
 async fn cors_preflight() -> Response {
     let mut res = public(StatusCode::NO_CONTENT.into_response());
     let h = res.headers_mut();
-    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, OPTIONS"));
-    h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Content-Type"));
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type"),
+    );
     res
 }
 
@@ -398,17 +488,26 @@ fn plain(status: StatusCode, body: String) -> Response {
 /// this server works as a drop-in `!epg-server` in a combined playlist.
 async fn match_channels(State(st): State<AppState>, body: Bytes) -> Response {
     let request = String::from_utf8_lossy(&body[..body.len().min(1 << 20)]).into_owned();
-    let Some(parsed) = parse_match_request(&request) else { return plain(StatusCode::BAD_REQUEST, "Bad Request".into()) };
+    let Some(parsed) = parse_match_request(&request) else {
+        return plain(StatusCode::BAD_REQUEST, "Bad Request".into());
+    };
     let base = st.config.public_base_url.clone();
-    let by_hash: std::collections::HashMap<u32, String> =
-        st.store.users().into_iter().map(|u| (foss_id_hash(&u.token), u.token.clone())).collect();
+    let by_hash: std::collections::HashMap<u32, String> = st
+        .store
+        .users()
+        .into_iter()
+        .map(|u| (foss_id_hash(&u.token), u.token.clone()))
+        .collect();
     let provider = normalize_foss_provider_id(&st.config.epg.foss.provider_id);
     let local = build_match_channels_response(
         &parsed.channels,
         |c| {
             let hash: u32 = c.tvg_id_hash.parse().ok()?;
             let token = by_hash.get(&hash)?;
-            Some(MatchHit { id_hash: hash.to_string(), provider_url: foss_provider_base_url(token, &base) })
+            Some(MatchHit {
+                id_hash: hash.to_string(),
+                provider_url: foss_provider_base_url(token, &base),
+            })
         },
         &provider,
     );
@@ -429,7 +528,9 @@ async fn match_channels(State(st): State<AppState>, body: Bytes) -> Response {
                     out = merge_match_channels_responses(&local, &t);
                 }
             }
-            Ok(r) => tracing::warn!(target: "foss-epg", status = r.status().as_u16(), "upstream match server returned an error"),
+            Ok(r) => {
+                tracing::warn!(target: "foss-epg", status = r.status().as_u16(), "upstream match server returned an error");
+            }
             Err(e) => tracing::warn!(target: "foss-epg", error = %e, "upstream match server unavailable"),
         }
     }
@@ -441,22 +542,39 @@ async fn match_logos() -> Response {
 }
 
 async fn foss_channels(State(st): State<AppState>, UrlPath(token): UrlPath<String>) -> Response {
-    let Some(user) = st.store.user_by_token(&token) else { return plain(StatusCode::NOT_FOUND, "Unknown token".into()) };
+    let Some(user) = st.store.user_by_token(&token) else {
+        return plain(StatusCode::NOT_FOUND, "Unknown token".into());
+    };
     let (brand, incidents) = (brand(&st), st.store.incidents());
     // channels.json matching needs the newest programme start in the future.
     let opts = epg_options(&st, &brand, &incidents, st.config.epg.days_ahead.max(1));
     let base = &st.config.public_base_url;
     // Exactly the url-tvg this customer's .m3u advertises.
-    let epg_urls = if st.config.epg.enabled { vec![user_epg_url(&user.token, base)] } else { vec![] };
-    let json = build_foss_channels_json(&user, &opts, &st.config.epg.foss.provider_id, &epg_urls, &foss_logo_url(&user.token, base));
+    let epg_urls = if st.config.epg.enabled {
+        vec![user_epg_url(&user.token, base)]
+    } else {
+        vec![]
+    };
+    let json = build_foss_channels_json(
+        &user,
+        &opts,
+        &st.config.epg.foss.provider_id,
+        &epg_urls,
+        &foss_logo_url(&user.token, base),
+    );
     public(axum::Json(json).into_response())
 }
 
 async fn foss_epg(State(st): State<AppState>, UrlPath((token, file)): UrlPath<(String, String)>) -> Response {
-    let Some(hash) = file.strip_suffix(".json").filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit())) else {
+    let Some(hash) = file
+        .strip_suffix(".json")
+        .filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_digit()))
+    else {
         return plain(StatusCode::BAD_REQUEST, "Bad file".into());
     };
-    let Some(user) = st.store.user_by_token(&token) else { return plain(StatusCode::NOT_FOUND, "Unknown token".into()) };
+    let Some(user) = st.store.user_by_token(&token) else {
+        return plain(StatusCode::NOT_FOUND, "Unknown token".into());
+    };
     if hash.parse::<u64>().ok() != Some(u64::from(foss_id_hash(&user.token))) {
         tracing::warn!(target: "foss-epg", "EPG requested with mismatched hash");
         return plain(StatusCode::NOT_FOUND, "Not found".into());
@@ -471,7 +589,13 @@ async fn foss_logo(State(st): State<AppState>, UrlPath(token): UrlPath<String>) 
         return plain(StatusCode::NOT_FOUND, "Unknown token".into());
     }
     let brand = setting_str(&st.store.settings(), "brand_name").unwrap_or("").to_owned();
-    public(([(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")], build_foss_logo_svg(&brand)).into_response())
+    public(
+        (
+            [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+            build_foss_logo_svg(&brand),
+        )
+            .into_response(),
+    )
 }
 
 #[cfg(test)]

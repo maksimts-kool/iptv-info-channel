@@ -48,21 +48,31 @@ pub fn articles_for(articles: &[Article], viewer: Viewer<'_>) -> Vec<Entry> {
     let see = |a: &Audience| viewer.can_see(a);
     articles
         .iter()
-        .filter(|a| a.audience.as_ref().is_none_or(|aud| see(aud)))
+        .filter(|a| a.audience.as_ref().is_none_or(see))
         .filter_map(|a| {
             let doc = filter_private(&a.doc, &see);
             if !doc_has_content(&doc) {
                 return None;
             }
-            let mask = private_sections(&a.doc).into_iter().map(|aud| if see(aud) { '1' } else { '0' }).collect();
-            Some(Entry { article: Article { doc, ..a.clone() }, mask })
+            let mask = private_sections(&a.doc)
+                .into_iter()
+                .map(|aud| if see(aud) { '1' } else { '0' })
+                .collect();
+            Some(Entry {
+                article: Article { doc, ..a.clone() },
+                mask,
+            })
         })
         .collect()
 }
 
 /// A stable name for "what this viewer sees". Equal keys = identical channel.
 pub fn variant_key(entries: &[Entry]) -> String {
-    entries.iter().map(|e| format!("{}:{}", e.article.id, e.mask)).collect::<Vec<_>>().join(",")
+    entries
+        .iter()
+        .map(|e| format!("{}:{}", e.article.id, e.mask))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[derive(Debug, Clone)]
@@ -78,11 +88,26 @@ pub fn media_variants(articles: &[Article], users: &[DecoratedUser]) -> (String,
     let mut variants = IndexMap::new();
     let public_entries = articles_for(articles, Viewer::Public);
     let public_key = variant_key(&public_entries);
-    variants.insert(public_key.clone(), Variant { entries: public_entries, user_ids: vec![], public: true });
+    variants.insert(
+        public_key.clone(),
+        Variant {
+            entries: public_entries,
+            user_ids: vec![],
+            public: true,
+        },
+    );
     for user in users {
         let entries = articles_for(articles, Viewer::Customer(user));
         let key = variant_key(&entries);
-        variants.entry(key).or_insert_with(|| Variant { entries, user_ids: vec![], public: false }).user_ids.push(user.id);
+        variants
+            .entry(key)
+            .or_insert_with(|| Variant {
+                entries,
+                user_ids: vec![],
+                public: false,
+            })
+            .user_ids
+            .push(user.id);
     }
     (public_key, variants)
 }
@@ -90,7 +115,9 @@ pub fn media_variants(articles: &[Article], users: &[DecoratedUser]) -> (String,
 /// Whether any article holds private content at all — when none does,
 /// customer changes need no media rebuild.
 pub fn has_private_content(articles: &[Article]) -> bool {
-    articles.iter().any(|a| a.audience.is_some() || !private_sections(&a.doc).is_empty())
+    articles
+        .iter()
+        .any(|a| a.audience.is_some() || !private_sections(&a.doc).is_empty())
 }
 
 #[cfg(test)]
@@ -101,7 +128,12 @@ mod tests {
     use serde_json::json;
 
     fn article(id: &str, doc: serde_json::Value, audience: Option<Audience>) -> Article {
-        Article { id: id.into(), doc: sanitize_doc(&doc).unwrap(), audience, ..Article::default() }
+        Article {
+            id: id.into(),
+            doc: sanitize_doc(&doc).unwrap(),
+            audience,
+            ..Article::default()
+        }
     }
     fn p(t: &str) -> serde_json::Value {
         json!({"type": "paragraph", "content": [{"type": "text", "text": t}]})
@@ -116,9 +148,24 @@ mod tests {
     fn fixture() -> Vec<Article> {
         vec![
             article("news", json!({"type": "doc", "content": [p("всем")]}), None),
-            article("vip", json!({"type": "doc", "content": [p("только про")]}), Some(Audience { users: vec![], plans: vec!["pro".into()] })),
-            article("mixed", json!({"type": "doc", "content": [p("общая часть"), {"type": "privateSection", "attrs": {"audience": {"users": [2], "plans": []}}, "content": [p("для Боба")]}]}), None),
-            article("empty-for-public", json!({"type": "doc", "content": [{"type": "privateSection", "attrs": {"audience": {"users": [3], "plans": []}}, "content": [p("для Кэрол")]}]}), None),
+            article(
+                "vip",
+                json!({"type": "doc", "content": [p("только про")]}),
+                Some(Audience {
+                    users: vec![],
+                    plans: vec!["pro".into()],
+                }),
+            ),
+            article(
+                "mixed",
+                json!({"type": "doc", "content": [p("общая часть"), {"type": "privateSection", "attrs": {"audience": {"users": [2], "plans": []}}, "content": [p("для Боба")]}]}),
+                None,
+            ),
+            article(
+                "empty-for-public",
+                json!({"type": "doc", "content": [{"type": "privateSection", "attrs": {"audience": {"users": [3], "plans": []}}, "content": [p("для Кэрол")]}]}),
+                None,
+            ),
         ]
     }
 
@@ -126,7 +173,18 @@ mod tests {
     fn each_viewer_sees_their_share() {
         let arts = fixture();
         let (alice, bob, carol) = (customer(1, "pro"), customer(2, "std"), customer(3, "std"));
-        let ids = |v: Viewer<'_>| articles_for(&arts, v).iter().map(|e| if e.mask.is_empty() { e.article.id.clone() } else { format!("{}:{}", e.article.id, e.mask) }).collect::<Vec<_>>();
+        let ids = |v: Viewer<'_>| {
+            articles_for(&arts, v)
+                .iter()
+                .map(|e| {
+                    if e.mask.is_empty() {
+                        e.article.id.clone()
+                    } else {
+                        format!("{}:{}", e.article.id, e.mask)
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(Viewer::Public), ["news", "mixed:0"]);
         assert_eq!(ids(Viewer::Customer(&alice)), ["news", "vip", "mixed:0"]);
         assert_eq!(ids(Viewer::Customer(&bob)), ["news", "mixed:1"]);
@@ -139,7 +197,12 @@ mod tests {
     #[test]
     fn same_view_same_variant() {
         let arts = fixture();
-        let users = [customer(1, "pro"), customer(2, "std"), customer(3, "std"), customer(4, "free")];
+        let users = [
+            customer(1, "pro"),
+            customer(2, "std"),
+            customer(3, "std"),
+            customer(4, "free"),
+        ];
         let (public, variants) = media_variants(&arts, &users);
         assert_eq!(variants.len(), 4);
         assert_eq!(variants[&public].user_ids, [4]);

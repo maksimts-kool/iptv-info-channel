@@ -13,8 +13,8 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ToSpan};
 
 use crate::core::util::{
-    AccountStatus, account_status, days_left, format_date, format_price, local_time_to_timestamp,
-    period_label, plural_days, xml_escape,
+    AccountStatus, account_status, days_left, format_date, format_price, local_time_to_timestamp, period_label,
+    plural_days, xml_escape,
 };
 use crate::data::model::{DecoratedUser, Incident, Severity};
 use crate::render::status::{format_uptime, severity_for_day, status_summary, summary_today};
@@ -108,13 +108,7 @@ pub struct AccountLine {
 
 fn account_short(user: &DecoratedUser, instant: Timestamp, opts: &EpgOptions<'_>) -> AccountLine {
     let expires = user.expires_at.as_deref();
-    let status = account_status(
-        user.active,
-        expires,
-        opts.expiring_threshold_days,
-        instant,
-        opts.tz,
-    );
+    let status = account_status(user.active, expires, opts.expiring_threshold_days, instant, opts.tz);
     let left = days_left(expires, instant, opts.tz);
     let (icon, text) = account_title(status);
     // An expired or deactivated account says all it needs to in the label.
@@ -167,8 +161,6 @@ fn expiry_line(user: &DecoratedUser, account: &AccountLine) -> String {
 pub struct EpgDay {
     pub date: Date,
     pub next: Date,
-    pub severity: Severity,
-    pub account: AccountLine,
     pub title: String,
     pub expiry: String,
     pub desc: String,
@@ -195,10 +187,7 @@ pub fn each_epg_day(user: &DecoratedUser, opts: &EpgOptions<'_>) -> Vec<EpgDay> 
         return Vec::new();
     };
     let today_str = today.to_string();
-    let uptime = format!(
-        "Доступность за 90 дней: {}",
-        format_uptime(summary.uptime_pct)
-    );
+    let uptime = format!("Доступность за 90 дней: {}", format_uptime(summary.uptime_pct));
     let plan = plan_line(user);
 
     (-opts.days_behind..=opts.days_ahead)
@@ -214,13 +203,8 @@ pub fn each_epg_day(user: &DecoratedUser, opts: &EpgOptions<'_>) -> Vec<EpgDay> 
             let incident_lines = opts.incidents.iter().filter_map(|inc| {
                 let sev = inc.severity()?;
                 let start = inc.starts_on.as_deref().filter(|s| !s.is_empty())?;
-                let end = inc
-                    .ends_on
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(&today_str);
-                (start <= date_str.as_str() && date_str.as_str() <= end)
-                    .then(|| incident_line(inc, sev))
+                let end = inc.ends_on.as_deref().filter(|s| !s.is_empty()).unwrap_or(&today_str);
+                (start <= date_str.as_str() && date_str.as_str() <= end).then(|| incident_line(inc, sev))
             });
 
             let title = if severity == Severity::Operational {
@@ -242,8 +226,6 @@ pub fn each_epg_day(user: &DecoratedUser, opts: &EpgOptions<'_>) -> Vec<EpgDay> 
             Some(EpgDay {
                 date,
                 next,
-                severity,
-                account,
                 title,
                 expiry,
                 desc,
@@ -260,14 +242,8 @@ pub fn build_epg_xml(user: &DecoratedUser, opts: &EpgOptions<'_>) -> String {
         r#"<?xml version="1.0" encoding="UTF-8"?>"#.to_owned(),
         r#"<tv generator-info-name="iptv-info-channel">"#.to_owned(),
         format!(r#"  <channel id="{channel_id}">"#),
-        format!(
-            "    <display-name>{}</display-name>",
-            xml_escape(&channel_name)
-        ),
-        format!(
-            "    <display-name>{}</display-name>",
-            xml_escape(opts.brand)
-        ),
+        format!("    <display-name>{}</display-name>", xml_escape(&channel_name)),
+        format!("    <display-name>{}</display-name>", xml_escape(opts.brand)),
         "  </channel>".to_owned(),
     ];
     for day in each_epg_day(user, opts) {
@@ -276,18 +252,12 @@ pub fn build_epg_xml(user: &DecoratedUser, opts: &EpgOptions<'_>) -> String {
             day_start_xmltv(day.date, opts.tz),
             day_start_xmltv(day.next, opts.tz)
         ));
-        lines.push(format!(
-            r#"    <title lang="ru">{}</title>"#,
-            xml_escape(&day.title)
-        ));
+        lines.push(format!(r#"    <title lang="ru">{}</title>"#, xml_escape(&day.title)));
         lines.push(format!(
             r#"    <sub-title lang="ru">{}</sub-title>"#,
             xml_escape(&day.expiry)
         ));
-        lines.push(format!(
-            r#"    <desc lang="ru">{}</desc>"#,
-            xml_escape(&day.desc)
-        ));
+        lines.push(format!(r#"    <desc lang="ru">{}</desc>"#, xml_escape(&day.desc)));
         lines.push(r#"    <category lang="ru">Статус подписки</category>"#.to_owned());
         lines.push("  </programme>".to_owned());
     }
@@ -310,23 +280,13 @@ pub(crate) mod tests {
         "2026-06-13T12:00:00Z".parse().unwrap()
     }
 
-    pub fn user(
-        token: &str,
-        username: &str,
-        expires: Option<&str>,
-        active: bool,
-        with_plan: bool,
-    ) -> DecoratedUser {
+    pub fn user(token: &str, username: &str, expires: Option<&str>, active: bool, with_plan: bool) -> DecoratedUser {
         let u = User {
             id: 1,
             username: username.into(),
             token: token.into(),
             notify_token: String::new(),
-            plan_id: if with_plan {
-                "basic".into()
-            } else {
-                String::new()
-            },
+            plan_id: if with_plan { "basic".into() } else { String::new() },
             expires_at: expires.map(Into::into),
             active,
             max_devices: None,
@@ -352,12 +312,7 @@ pub(crate) mod tests {
         user("abc123", "ivan", Some("2026-06-30"), true, true)
     }
 
-    pub fn opts<'a>(
-        tz: &'a TimeZone,
-        incidents: &'a [Incident],
-        ahead: i64,
-        behind: i64,
-    ) -> EpgOptions<'a> {
+    pub fn opts<'a>(tz: &'a TimeZone, incidents: &'a [Incident], ahead: i64, behind: i64) -> EpgOptions<'a> {
         EpgOptions {
             brand: "TestIPTV",
             incidents,
@@ -396,17 +351,12 @@ pub(crate) mod tests {
         let t = titles(&xml);
         assert_eq!(t.len(), 4);
         let re = crate::regex!(r"^✓ Подписка активна · ещё (\d+) дн[а-я]+$");
-        let left: Vec<i64> = t
-            .iter()
-            .map(|s| re.captures(s).unwrap()[1].parse().unwrap())
-            .collect();
+        let left: Vec<i64> = t.iter().map(|s| re.captures(s).unwrap()[1].parse().unwrap()).collect();
         assert_eq!(left[0], left[1] + 1);
         assert!(xml.contains("Статус сервиса: ✓ Все сервисы работают"));
         assert!(
-            crate::regex!(
-                r#"<sub-title lang="ru">Действует до 30 июн 2026 · ещё \d+ дн[а-я]+</sub-title>"#
-            )
-            .is_match(&xml)
+            crate::regex!(r#"<sub-title lang="ru">Действует до 30 июн 2026 · ещё \d+ дн[а-я]+</sub-title>"#)
+                .is_match(&xml)
         );
         assert!(xml.contains("Тариф: Базовый · 4,99 €/мес."));
     }
@@ -424,16 +374,11 @@ pub(crate) mod tests {
         }];
         let xml = build_epg_xml(&ivan(), &opts(&tz, &incs, 2, 1));
         assert!(
-            crate::regex!(
-                r#"<title lang="ru">✕ Сбой сервиса · Подписка активна · ещё \d+ дн[а-я]+</title>"#
-            )
-            .is_match(&xml)
-        );
-        assert!(xml.contains("Сбой (с 13 июн 2026, сейчас): Сбой CDN — чиним"));
-        assert!(
-            crate::regex!(r#"<title lang="ru">✓ Подписка активна · ещё \d+ дн[а-я]+</title>"#)
+            crate::regex!(r#"<title lang="ru">✕ Сбой сервиса · Подписка активна · ещё \d+ дн[а-я]+</title>"#)
                 .is_match(&xml)
         );
+        assert!(xml.contains("Сбой (с 13 июн 2026, сейчас): Сбой CDN — чиним"));
+        assert!(crate::regex!(r#"<title lang="ru">✓ Подписка активна · ещё \d+ дн[а-я]+</title>"#).is_match(&xml));
     }
 
     #[test]
@@ -450,9 +395,7 @@ pub(crate) mod tests {
         assert!(!xml.contains("ещё "));
         let xml = build_epg_xml(&user("t", "u", Some("2026-06-10"), true, false), &o);
         assert!(xml.contains(r#"<title lang="ru">✕ Подписка истекла</title>"#));
-        assert!(xml.contains(
-            r#"<sub-title lang="ru">Действует до 10 июн 2026 · истекла 3 дня назад</sub-title>"#
-        ));
+        assert!(xml.contains(r#"<sub-title lang="ru">Действует до 10 июн 2026 · истекла 3 дня назад</sub-title>"#));
     }
 
     #[test]

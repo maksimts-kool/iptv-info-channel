@@ -57,7 +57,9 @@ pub fn media_width(size: MediaSize) -> f32 {
 /// The box a picture or video occupies: its size setting's width, its own
 /// aspect ratio, capped in height (a portrait one narrows instead).
 pub fn media_box(dims: Option<(u32, u32)>, size: MediaSize) -> (f32, f32) {
-    let aspect = dims.filter(|(w, h)| *w > 0 && *h > 0).map_or(9.0 / 16.0, |(w, h)| h as f32 / w as f32);
+    let aspect = dims
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .map_or(9.0 / 16.0, |(w, h)| h as f32 / w as f32);
     let mut w = media_width(size);
     let mut h = (w * aspect).round();
     if h > MAX_MEDIA_HEIGHT {
@@ -101,7 +103,14 @@ struct TextStyle {
 
 impl TextStyle {
     fn base() -> Self {
-        Self { size: BASE_FONT, weight: 400, italic: false, strike: false, color: theme::TEXT, line_height: LINE_HEIGHT }
+        Self {
+            size: BASE_FONT,
+            weight: 400,
+            italic: false,
+            strike: false,
+            color: theme::TEXT,
+            line_height: LINE_HEIGHT,
+        }
     }
     fn line(&self) -> f32 {
         self.size * self.line_height
@@ -136,12 +145,20 @@ impl Canvas<'_, '_> {
         if st.strike {
             let w = self.ctx.measure.width(visible, st.size, st.weight, st.italic);
             let y = baseline - st.size * 0.3;
-            let _ = write!(self.svg, r#"<rect x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{:.2}" fill="{}"/>"#, (st.size / 14.0).max(1.5), st.color);
+            let _ = write!(
+                self.svg,
+                r#"<rect x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{:.2}" fill="{}"/>"#,
+                (st.size / 14.0).max(1.5),
+                st.color
+            );
         }
     }
 
     fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, rx: f32, fill: &str) {
-        let _ = write!(self.svg, r#"<rect x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{h:.2}" rx="{rx}" fill="{fill}"/>"#);
+        let _ = write!(
+            self.svg,
+            r#"<rect x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{h:.2}" rx="{rx}" fill="{fill}"/>"#
+        );
     }
 
     fn image(&mut self, x: f32, y: f32, w: f32, h: f32, src: &str) {
@@ -300,7 +317,15 @@ fn centred_text(c: &mut Canvas<'_, '_>, text: &str, st: &TextStyle, x0: f32, y0:
 
 /// A picture (or a poster) with its caption, centred; returns height incl.
 /// margins. A video that can't play in place gets a ▶ before its caption.
-fn figure(c: &mut Canvas<'_, '_>, attrs: &MediaAttrs, video: bool, play: bool, x0: f32, y0: f32, width: f32) -> Option<f32> {
+fn figure(
+    c: &mut Canvas<'_, '_>,
+    attrs: &MediaAttrs,
+    video: bool,
+    play: bool,
+    x0: f32,
+    y0: f32,
+    width: f32,
+) -> Option<f32> {
     let pic = (c.ctx.picture)(&attrs.asset_id).filter(|p| p.video == video)?;
     let (w, h) = media_box(Some((pic.width, pic.height)), attrs.size);
     let top = y0 + MEDIA_MARGIN;
@@ -318,7 +343,12 @@ fn figure(c: &mut Canvas<'_, '_>, attrs: &MediaAttrs, video: bool, play: bool, x
     }
     let mut height = h;
     if !caption.is_empty() {
-        let st = TextStyle { size: CAPTION_SIZE, color: theme::MUTED, line_height: 1.3, ..TextStyle::base() };
+        let st = TextStyle {
+            size: CAPTION_SIZE,
+            color: theme::MUTED,
+            line_height: 1.3,
+            ..TextStyle::base()
+        };
         height += CAPTION_GAP + centred_text(c, &caption, &st, x0, top + h + CAPTION_GAP, width.min(CONTENT_WIDTH));
     }
     Some(height + 2.0 * MEDIA_MARGIN)
@@ -327,14 +357,47 @@ fn figure(c: &mut Canvas<'_, '_>, attrs: &MediaAttrs, video: bool, play: bool, x
 fn heading_style(level: u8) -> (TextStyle, f32) {
     let base = TextStyle::base();
     match level {
-        1 => (TextStyle { size: 60.0, weight: 700, color: theme::STRONG, ..base }, 22.0),
-        2 => (TextStyle { size: 46.0, weight: 700, color: theme::ACCENT, ..base }, 18.0),
-        _ => (TextStyle { size: 38.0, weight: 600, color: theme::ACCENT2, ..base }, 14.0),
+        1 => (
+            TextStyle {
+                size: 60.0,
+                weight: 700,
+                color: theme::STRONG,
+                ..base
+            },
+            22.0,
+        ),
+        2 => (
+            TextStyle {
+                size: 46.0,
+                weight: 700,
+                color: theme::ACCENT,
+                ..base
+            },
+            18.0,
+        ),
+        _ => (
+            TextStyle {
+                size: 38.0,
+                weight: 600,
+                color: theme::ACCENT2,
+                ..base
+            },
+            14.0,
+        ),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn list_block(c: &mut Canvas<'_, '_>, items: &[Node], ordered: Option<u32>, depth: usize, st: &TextStyle, x0: f32, y0: f32, width: f32) -> f32 {
+fn list_block(
+    c: &mut Canvas<'_, '_>,
+    items: &[Node],
+    ordered: Option<u32>,
+    depth: usize,
+    st: &TextStyle,
+    x0: f32,
+    y0: f32,
+    width: f32,
+) -> f32 {
     let mut y = y0;
     for (i, item) in items.iter().enumerate() {
         let marker = match ordered {
@@ -342,9 +405,22 @@ fn list_block(c: &mut Canvas<'_, '_>, items: &[Node], ordered: Option<u32>, dept
             None => (if depth % 2 == 1 { "◦" } else { "•" }).to_owned(),
         };
         let marker_w = if ordered.is_some() { 56.0 } else { 40.0 };
-        let mst = TextStyle { weight: 700, color: theme::ACCENT, ..*st };
+        let mst = TextStyle {
+            weight: 700,
+            color: theme::ACCENT,
+            ..*st
+        };
         c.text(x0, y, &marker, &mst);
-        let body = blocks(c, item.children(), depth + 1, true, st, x0 + marker_w, y, width - marker_w);
+        let body = blocks(
+            c,
+            item.children(),
+            depth + 1,
+            true,
+            st,
+            x0 + marker_w,
+            y,
+            width - marker_w,
+        );
         let body = if body > 0.0 { body } else { st.line() };
         y += body.max(st.line()) + 8.0;
     }
@@ -362,8 +438,25 @@ fn table_block(c: &mut Canvas<'_, '_>, rows: &[Node], st: &TextStyle, x0: f32, y
         let cell_w = width / n;
         let mut row_h: f32 = 0.0;
         for (i, cell) in cells.iter().enumerate() {
-            let cst = if matches!(cell, Node::TableHeader { .. }) { TextStyle { weight: 700, color: theme::STRONG, ..*st } } else { *st };
-            let h = blocks(c, cell.children(), 1, true, &cst, x0 + i as f32 * cell_w, y + 8.0, cell_w - 16.0);
+            let cst = if matches!(cell, Node::TableHeader { .. }) {
+                TextStyle {
+                    weight: 700,
+                    color: theme::STRONG,
+                    ..*st
+                }
+            } else {
+                *st
+            };
+            let h = blocks(
+                c,
+                cell.children(),
+                1,
+                true,
+                &cst,
+                x0 + i as f32 * cell_w,
+                y + 8.0,
+                cell_w - 16.0,
+            );
             row_h = row_h.max(if h > 0.0 { h } else { cst.line() });
         }
         let border = if r == 0 { 2.0 } else { 1.0 };
@@ -378,7 +471,16 @@ fn table_block(c: &mut Canvas<'_, '_>, rows: &[Node], st: &TextStyle, x0: f32, y
 }
 
 #[allow(clippy::too_many_arguments)]
-fn blocks(c: &mut Canvas<'_, '_>, nodes: &[Node], depth: usize, tight: bool, st: &TextStyle, x0: f32, y0: f32, width: f32) -> f32 {
+fn blocks(
+    c: &mut Canvas<'_, '_>,
+    nodes: &[Node],
+    depth: usize,
+    tight: bool,
+    st: &TextStyle,
+    x0: f32,
+    y0: f32,
+    width: f32,
+) -> f32 {
     let gap = if tight { 4.0 } else { GAP };
     let mut y = y0;
     for node in nodes {
@@ -389,9 +491,14 @@ fn blocks(c: &mut Canvas<'_, '_>, nodes: &[Node], depth: usize, tight: bool, st:
             }
             Node::Paragraph { content } => y += inline_row(c, content, st, x0, y, width) + gap,
             Node::BulletList { content } => y += list_block(c, content, None, depth, st, x0, y, width),
-            Node::OrderedList { attrs, content } => y += list_block(c, content, Some(attrs.start), depth, st, x0, y, width),
+            Node::OrderedList { attrs, content } => {
+                y += list_block(c, content, Some(attrs.start), depth, st, x0, y, width);
+            }
             Node::Blockquote { content } => {
-                let qst = TextStyle { color: theme::MUTED, ..*st };
+                let qst = TextStyle {
+                    color: theme::MUTED,
+                    ..*st
+                };
                 let h = blocks(c, content, depth + 1, true, &qst, x0 + 32.0, y, width - 32.0);
                 c.rect(x0, y, 6.0, h, 0.0, theme::ACCENT);
                 y += h + gap;
@@ -401,7 +508,16 @@ fn blocks(c: &mut Canvas<'_, '_>, nodes: &[Node], depth: usize, tight: bool, st:
                 y += 14.0 + 2.0 + 30.0;
             }
             Node::CodeBlock { content } => {
-                let text: String = content.iter().filter_map(|n| if let Node::Text { text, .. } = n { Some(text.as_str()) } else { None }).collect();
+                let text: String = content
+                    .iter()
+                    .filter_map(|n| {
+                        if let Node::Text { text, .. } = n {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let cst = TextStyle { size: 28.0, ..*st };
                 let lines: Vec<&str> = text.split('\n').collect();
                 let h = 32.0 + lines.len() as f32 * cst.line();
@@ -441,13 +557,19 @@ pub struct VideoBox {
 }
 
 fn piece_svg(body: &str, height: f32) -> String {
-    format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="{SLIDE_WIDTH}" height="{height:.2}" viewBox="0 0 {SLIDE_WIDTH} {height:.2}">{body}</svg>"#)
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{SLIDE_WIDTH}" height="{height:.2}" viewBox="0 0 {SLIDE_WIDTH} {height:.2}">{body}</svg>"#
+    )
 }
 
 /// A run of ordinary blocks as one page piece; `first`/`last` add the
 /// page's own top/bottom padding.
 pub fn flow_piece(ctx: &LayoutCtx<'_>, nodes: &[&Node], first: bool, last: bool) -> Piece {
-    let mut c = Canvas { svg: String::new(), ctx, clip: 0 };
+    let mut c = Canvas {
+        svg: String::new(),
+        ctx,
+        clip: 0,
+    };
     let top = if first { PAD_Y } else { 0.0 };
     let owned: Vec<Node> = nodes.iter().map(|n| (*n).clone()).collect();
     let mut h = blocks(&mut c, &owned, 0, false, &TextStyle::base(), PAD_X, top, CONTENT_WIDTH);
@@ -455,7 +577,11 @@ pub fn flow_piece(ctx: &LayoutCtx<'_>, nodes: &[&Node], first: bool, last: bool)
         h = TextStyle::base().line();
     }
     let height = top + h + if last { PAD_Y } else { 0.0 };
-    Piece { svg: piece_svg(&c.svg, height), height, video: None }
+    Piece {
+        svg: piece_svg(&c.svg, height),
+        height,
+        video: None,
+    }
 }
 
 /// A top-level video as its own piece: its poster where the video will play,
@@ -463,15 +589,29 @@ pub fn flow_piece(ctx: &LayoutCtx<'_>, nodes: &[&Node], first: bool, last: bool)
 pub fn video_piece(ctx: &LayoutCtx<'_>, attrs: &MediaAttrs, first: bool, last: bool) -> Option<Piece> {
     let pic = (ctx.picture)(&attrs.asset_id).filter(|p| p.video)?;
     let (w, h) = media_box(Some((pic.width, pic.height)), attrs.size);
-    let mut c = Canvas { svg: String::new(), ctx, clip: 0 };
+    let mut c = Canvas {
+        svg: String::new(),
+        ctx,
+        clip: 0,
+    };
     let top = if first { PAD_Y } else { 0.0 };
     let fig = figure(&mut c, attrs, true, true, PAD_X, top, CONTENT_WIDTH)?;
     let height = top + fig + if last { PAD_Y } else { 0.0 };
-    let focus = h + if attrs.caption.is_empty() { 0.0 } else { CAPTION_GAP + CAPTION_LINE };
+    let focus = h + if attrs.caption.is_empty() {
+        0.0
+    } else {
+        CAPTION_GAP + CAPTION_LINE
+    };
     Some(Piece {
         svg: piece_svg(&c.svg, height),
         height,
-        video: Some(VideoBox { x: ((SLIDE_WIDTH - w) / 2.0).round(), y: top + MEDIA_MARGIN, width: w, height: h, focus }),
+        video: Some(VideoBox {
+            x: ((SLIDE_WIDTH - w) / 2.0).round(),
+            y: top + MEDIA_MARGIN,
+            width: w,
+            height: h,
+            focus,
+        }),
     })
 }
 
@@ -483,14 +623,23 @@ pub fn indicator_text(index: usize, total: usize, title: &str) -> Option<String>
         parts.push(format!("{index}/{total}"));
     }
     if !name.is_empty() {
-        parts.push(if name.chars().count() > 48 { format!("{}…", name.chars().take(47).collect::<String>()) } else { name.to_owned() });
+        parts.push(if name.chars().count() > 48 {
+            format!("{}…", name.chars().take(47).collect::<String>())
+        } else {
+            name.to_owned()
+        });
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// The corner chip as a whole transparent 1280×720 frame.
 pub fn indicator_svg(measure: &TextMeasurer, text: &str) -> String {
-    let st = TextStyle { size: 26.0, color: theme::STRONG, line_height: 1.2, ..TextStyle::base() };
+    let st = TextStyle {
+        size: 26.0,
+        color: theme::STRONG,
+        line_height: 1.2,
+        ..TextStyle::base()
+    };
     let tw = measure.width(text, st.size, st.weight, false);
     let (w, h) = (tw + 36.0, st.line() + 20.0);
     let (x, y) = (SLIDE_WIDTH - 40.0 - w, SLIDE_HEIGHT - 34.0 - h);
@@ -520,8 +669,17 @@ mod tests {
 
     #[test]
     fn media_boxes_keep_aspect() {
-        assert_eq!(media_box(Some((1920, 1080)), MediaSize::Half), (media_width(MediaSize::Half), (media_width(MediaSize::Half) * 9.0 / 16.0).round()));
-        assert_eq!(media_box(Some((1920, 1080)), MediaSize::Full), ((MAX_MEDIA_HEIGHT * 16.0 / 9.0).round(), MAX_MEDIA_HEIGHT));
+        assert_eq!(
+            media_box(Some((1920, 1080)), MediaSize::Half),
+            (
+                media_width(MediaSize::Half),
+                (media_width(MediaSize::Half) * 9.0 / 16.0).round()
+            )
+        );
+        assert_eq!(
+            media_box(Some((1920, 1080)), MediaSize::Full),
+            ((MAX_MEDIA_HEIGHT * 16.0 / 9.0).round(), MAX_MEDIA_HEIGHT)
+        );
         let (w, h) = media_box(Some((1080, 1920)), MediaSize::Full);
         assert_eq!((w, h), ((MAX_MEDIA_HEIGHT * 1080.0 / 1920.0).round(), MAX_MEDIA_HEIGHT));
         assert_eq!(media_box(None, MediaSize::Small).0, 360.0);
@@ -529,7 +687,10 @@ mod tests {
 
     #[test]
     fn indicator() {
-        assert_eq!(indicator_text(1, 3, "Как настроить").as_deref(), Some("1/3 · Как настроить"));
+        assert_eq!(
+            indicator_text(1, 3, "Как настроить").as_deref(),
+            Some("1/3 · Как настроить")
+        );
         assert_eq!(indicator_text(2, 2, "").as_deref(), Some("2/2"));
         assert_eq!(indicator_text(1, 1, "Одна").as_deref(), Some("Одна"));
         assert_eq!(indicator_text(1, 1, ""), None);
@@ -542,7 +703,10 @@ mod tests {
         assert_eq!(split_words("Привет, мир  и всё"), ["Привет, ", "мир  ", "и ", "всё"]);
         let m = measurer();
         let pics = |_: &str| -> Option<&Picture> { None };
-        let ctx = LayoutCtx { measure: &m, picture: &pics };
+        let ctx = LayoutCtx {
+            measure: &m,
+            picture: &pics,
+        };
         let short = sanitize_doc(&json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Коротко"}]}]})).unwrap();
         let long = sanitize_doc(&json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "слово ".repeat(200)}]}]})).unwrap();
         let a = flow_piece(&ctx, &short.children().iter().collect::<Vec<_>>(), true, true);
@@ -554,18 +718,36 @@ mod tests {
     #[test]
     fn video_piece_reports_its_box() {
         let m = measurer();
-        let poster = Picture { src: "data:image/jpeg;base64,".into(), width: 1920, height: 1080, video: true };
+        let poster = Picture {
+            src: "data:image/jpeg;base64,".into(),
+            width: 1920,
+            height: 1080,
+            video: true,
+        };
         let pics = |id: &str| -> Option<&Picture> { (id == "vid111111").then_some(&poster) };
-        let ctx = LayoutCtx { measure: &m, picture: &pics };
-        let attrs = MediaAttrs { asset_id: "vid111111".into(), size: MediaSize::Full, caption: "Инструкция".into() };
+        let ctx = LayoutCtx {
+            measure: &m,
+            picture: &pics,
+        };
+        let attrs = MediaAttrs {
+            asset_id: "vid111111".into(),
+            size: MediaSize::Full,
+            caption: "Инструкция".into(),
+        };
         let first = video_piece(&ctx, &attrs, true, false).unwrap();
         let b = first.video.unwrap();
         assert_eq!(b.height, MAX_MEDIA_HEIGHT);
         assert_eq!(b.x, ((SLIDE_WIDTH - b.width) / 2.0).round());
         assert_eq!(b.y, PAD_Y + MEDIA_MARGIN);
         assert!(b.focus > b.height);
-        assert_eq!(video_piece(&ctx, &attrs, false, false).unwrap().video.unwrap().y, MEDIA_MARGIN);
-        let missing = MediaAttrs { asset_id: "vid222222".into(), ..attrs };
+        assert_eq!(
+            video_piece(&ctx, &attrs, false, false).unwrap().video.unwrap().y,
+            MEDIA_MARGIN
+        );
+        let missing = MediaAttrs {
+            asset_id: "vid222222".into(),
+            ..attrs
+        };
         assert!(video_piece(&ctx, &missing, true, true).is_none());
     }
 }

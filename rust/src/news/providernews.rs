@@ -97,7 +97,10 @@ impl ProviderNews {
     }
 
     fn stored(&self) -> Map<String, Value> {
-        self.store.setting(SETTINGS_KEY).and_then(|v| v.as_object().cloned()).unwrap_or_default()
+        self.store
+            .setting(SETTINGS_KEY)
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
     }
 
     async fn save(&self, patch: Map<String, Value>) {
@@ -120,9 +123,18 @@ impl ProviderNews {
             enabled: s.get("enabled").and_then(Value::as_bool).unwrap_or(env.enabled),
             url: text("url").filter(|u| !u.is_empty()).unwrap_or(&env.url).to_owned(),
             cookie: text("cookie").unwrap_or(&env.cookie).to_owned(),
-            ai_key: text("ai_key").filter(|k| !k.is_empty()).unwrap_or(&env.ai_key).to_owned(),
-            notices: s.get("notices").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
-            summaries: s.get("summaries").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            ai_key: text("ai_key")
+                .filter(|k| !k.is_empty())
+                .unwrap_or(&env.ai_key)
+                .to_owned(),
+            notices: s
+                .get("notices")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
+            summaries: s
+                .get("summaries")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default(),
         }
     }
 
@@ -134,7 +146,11 @@ impl ProviderNews {
         if let Some(url) = &patch.url {
             out.insert("url".into(), json!(url));
             // A different feed makes the stored notices meaningless.
-            let effective = if url.is_empty() { &self.config.provider_news.url } else { url };
+            let effective = if url.is_empty() {
+                &self.config.provider_news.url
+            } else {
+                url
+            };
             if *effective != self.settings().url {
                 out.insert("notices".into(), json!([]));
                 out.insert("summaries".into(), json!({}));
@@ -157,14 +173,22 @@ impl ProviderNews {
         if !s.enabled {
             return Vec::new();
         }
-        active_notices(&s.notices, jiff::Timestamp::now(), self.config.provider_news.max_age_hours)
+        active_notices(
+            &s.notices,
+            jiff::Timestamp::now(),
+            self.config.provider_news.max_age_hours,
+        )
     }
 
     /// The status slide is global, so any change to what it shows means a
     /// rebuild of every stream. The first caller to see a change gets `true`.
     pub fn consume_shown_change(&self) -> bool {
         let key = serde_json::to_string(
-            &self.current_notices().iter().map(|n| (&n.id, &n.headline, &n.body)).collect::<Vec<_>>(),
+            &self
+                .current_notices()
+                .iter()
+                .map(|n| (&n.id, &n.headline, &n.body))
+                .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
         let mut last = self.last_shown.lock().unwrap_or_else(PoisonError::into_inner);
@@ -174,7 +198,10 @@ impl ProviderNews {
     }
 
     async fn request(&self, url: &str, post: bool, cookie: &str) -> Result<reqwest::Response, String> {
-        let origin = url::Url::parse(url).map_err(|e| e.to_string())?.origin().ascii_serialization();
+        let origin = url::Url::parse(url)
+            .map_err(|e| e.to_string())?
+            .origin()
+            .ascii_serialization();
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(BROWSER_UA));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
@@ -200,26 +227,42 @@ impl ProviderNews {
     }
 
     fn set_cookies(res: &reqwest::Response) -> Vec<String> {
-        res.headers().get_all(SET_COOKIE).iter().filter_map(|v| v.to_str().ok().map(str::to_owned)).collect()
+        res.headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_owned))
+            .collect()
     }
 
     async fn fetch_notices(&self) -> Result<Vec<ProviderNotice>, FetchFailure> {
         let s = self.settings();
         let mut cookie = s.cookie.clone();
-        let mut res = self.request(&s.url, false, &cookie).await.map_err(FetchFailure::Other)?;
+        let mut res = self
+            .request(&s.url, false, &cookie)
+            .await
+            .map_err(FetchFailure::Other)?;
         cookie = apply_set_cookies(&cookie, &Self::set_cookies(&res), now_ms());
         let is_auth = |r: &reqwest::Response| matches!(r.status().as_u16(), 401 | 403);
 
         if is_auth(&res) && !cookie.is_empty() {
             let refresh_url = if self.config.provider_news.refresh_url.is_empty() {
-                url::Url::parse(&s.url).and_then(|u| u.join("/v3/auth/refresh")).map(String::from).unwrap_or_default()
+                url::Url::parse(&s.url)
+                    .and_then(|u| u.join("/v3/auth/refresh"))
+                    .map(String::from)
+                    .unwrap_or_default()
             } else {
                 self.config.provider_news.refresh_url.clone()
             };
-            let refreshed = self.request(&refresh_url, true, &cookie).await.map_err(FetchFailure::Other)?;
+            let refreshed = self
+                .request(&refresh_url, true, &cookie)
+                .await
+                .map_err(FetchFailure::Other)?;
             cookie = apply_set_cookies(&cookie, &Self::set_cookies(&refreshed), now_ms());
             if refreshed.status().is_success() {
-                res = self.request(&s.url, false, &cookie).await.map_err(FetchFailure::Other)?;
+                res = self
+                    .request(&s.url, false, &cookie)
+                    .await
+                    .map_err(FetchFailure::Other)?;
                 cookie = apply_set_cookies(&cookie, &Self::set_cookies(&res), now_ms());
             }
         }
@@ -233,13 +276,16 @@ impl ProviderNews {
             return Err(FetchFailure::Auth(res.status().as_u16()));
         }
         if !res.status().is_success() {
-            return Err(FetchFailure::Other(format!("provider responded {}", res.status().as_u16())));
+            return Err(FetchFailure::Other(format!(
+                "provider responded {}",
+                res.status().as_u16()
+            )));
         }
         let body = read_bounded(res, MAX_BYTES, false)
             .await
             .map_err(|e| FetchFailure::Other(format!("news response: {e}")))?;
-        let json: Value =
-            serde_json::from_slice(&body.body).map_err(|_| FetchFailure::Other("news response is not JSON".to_owned()))?;
+        let json: Value = serde_json::from_slice(&body.body)
+            .map_err(|_| FetchFailure::Other("news response is not JSON".to_owned()))?;
         Ok(extract_service_notices(&json, &self.config.tz, "RU", 5))
     }
 
@@ -357,11 +403,11 @@ impl ProviderNews {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::db::testing::TestDb;
     use axum::Router;
     use axum::http::{HeaderMap as AxHeaders, StatusCode};
     use axum::response::{AppendHeaders, IntoResponse};
     use axum::routing::{get, post};
-    use crate::data::db::testing::TestDb;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const FEED: &str = r#"{"data":{"items":[
@@ -394,7 +440,11 @@ mod tests {
                 get(move |headers: AxHeaders| {
                     let n = h.fetch_add(1, Ordering::SeqCst);
                     async move {
-                        let cookie = headers.get("cookie").and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
+                        let cookie = headers
+                            .get("cookie")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_owned();
                         if n == 0 {
                             assert_eq!(cookie, "access=old; refresh=r1");
                             return (StatusCode::UNAUTHORIZED, "{}").into_response();
@@ -406,17 +456,35 @@ mod tests {
             )
             .route(
                 "/v3/auth/refresh",
-                post(|| async { (AppendHeaders([("set-cookie", "access=new; Path=/"), ("set-cookie", "refresh=r2; Path=/")]), "{}") }),
+                post(|| async {
+                    (
+                        AppendHeaders([
+                            ("set-cookie", "access=new; Path=/"),
+                            ("set-cookie", "refresh=r2; Path=/"),
+                        ]),
+                        "{}",
+                    )
+                }),
             );
         let base = serve(app).await;
         let t = TestDb::new().await;
         let n = news(&t, String::new()).await;
         n.store
-            .set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news?page=1"), "cookie": "access=old; refresh=r1"}))
-            .await.unwrap();
+            .set_setting(
+                SETTINGS_KEY,
+                json!({"enabled": true, "url": format!("{base}/v3/news?page=1"), "cookie": "access=old; refresh=r1"}),
+            )
+            .await
+            .unwrap();
         assert_eq!(n.refresh().await, None);
         assert_eq!(n.settings().cookie, "access=new; refresh=r2");
-        assert_eq!(n.current_notices().iter().map(|x| x.headline.as_str()).collect::<Vec<_>>(), ["Технические работы"]);
+        assert_eq!(
+            n.current_notices()
+                .iter()
+                .map(|x| x.headline.as_str())
+                .collect::<Vec<_>>(),
+            ["Технические работы"]
+        );
         let view = n.view();
         assert_eq!(view["cookie_set"], true);
         assert!(view.get("cookie").is_none());
@@ -429,13 +497,33 @@ mod tests {
         let base = serve(app).await;
         let t = TestDb::new().await;
         let n = news(&t, String::new()).await;
-        let notice = ProviderNotice { id: "1".into(), published_at: iso_now(), headline: "x".into(), ..ProviderNotice::default() };
-        n.store.set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news"), "notices": [notice]})).await.unwrap();
+        let notice = ProviderNotice {
+            id: "1".into(),
+            published_at: iso_now(),
+            headline: "x".into(),
+            ..ProviderNotice::default()
+        };
+        n.store
+            .set_setting(
+                SETTINGS_KEY,
+                json!({"enabled": true, "url": format!("{base}/v3/news"), "notices": [notice]}),
+            )
+            .await
+            .unwrap();
         assert!(n.refresh().await.unwrap().contains("502"));
         assert_eq!(n.current_notices().len(), 1);
-        n.update_settings(NewsPatch { enabled: Some(false), ..NewsPatch::default() }).await;
+        n.update_settings(NewsPatch {
+            enabled: Some(false),
+            ..NewsPatch::default()
+        })
+        .await;
         assert!(n.current_notices().is_empty());
-        n.update_settings(NewsPatch { enabled: Some(true), url: Some("https://other.example/news".into()), ..NewsPatch::default() }).await;
+        n.update_settings(NewsPatch {
+            enabled: Some(true),
+            url: Some("https://other.example/news".into()),
+            ..NewsPatch::default()
+        })
+        .await;
         assert!(n.settings().notices.is_empty());
     }
 
@@ -444,19 +532,29 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = Arc::clone(&calls);
         let app = Router::new()
-            .route("/v3/news", get(|| async { ([("content-type", "application/json")], FEED) }))
+            .route(
+                "/v3/news",
+                get(|| async { ([("content-type", "application/json")], FEED) }),
+            )
             .route(
                 "/ai",
                 post(move || {
                     c.fetch_add(1, Ordering::SeqCst);
-                    async { axum::Json(json!({"choices":[{"message":{"content":"Часть каналов временно недоступна."}}]})) }
+                    async {
+                        axum::Json(json!({"choices":[{"message":{"content":"Часть каналов временно недоступна."}}]}))
+                    }
                 }),
             );
         let base = serve(app).await;
         let t = TestDb::new().await;
         let n = news(&t, format!("{base}/ai")).await;
         n.store
-            .set_setting(SETTINGS_KEY, json!({"enabled": true, "url": format!("{base}/v3/news"), "cookie": "a=1", "ai_key": "sk-or-test"})).await.unwrap();
+            .set_setting(
+                SETTINGS_KEY,
+                json!({"enabled": true, "url": format!("{base}/v3/news"), "cookie": "a=1", "ai_key": "sk-or-test"}),
+            )
+            .await
+            .unwrap();
         assert_eq!(n.refresh().await, None);
         let shown = n.current_notices();
         assert_eq!(shown[0].body, "Часть каналов временно недоступна.");

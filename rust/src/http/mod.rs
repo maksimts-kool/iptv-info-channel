@@ -42,13 +42,21 @@ pub struct AppState {
 
 /// `text/plain` response with a status.
 pub fn text(status: StatusCode, body: impl Into<String>) -> Response {
-    (status, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body.into()).into_response()
+    (
+        status,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        body.into(),
+    )
+        .into_response()
 }
 
 /// The no-store header trio every playlist/manifest carries: players cache
 /// aggressively, and a cached answer would outlive a revocation.
 pub fn no_store(headers: &mut HeaderMap) {
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store, no-cache, must-revalidate"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
     headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
 }
 
@@ -79,8 +87,17 @@ pub fn redirect(url: &str) -> Response {
 }
 
 /// What `encodeurl` escapes: controls, space, non-ASCII and a few delimiters.
-const LOCATION_ENCODE: percent_encoding::AsciiSet =
-    percent_encoding::CONTROLS.add(b' ').add(b'"').add(b'<').add(b'>').add(b'\\').add(b'^').add(b'`').add(b'{').add(b'|').add(b'}');
+const LOCATION_ENCODE: percent_encoding::AsciiSet = percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'\\')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
 
 /// `encodeURIComponent`.
 pub fn enc(s: &str) -> String {
@@ -116,7 +133,11 @@ pub fn client_ip(headers: &HeaderMap, peer: SocketAddr, trust: TrustProxy) -> St
 
 /// The request's User-Agent ('' when absent).
 pub fn user_agent(headers: &HeaderMap) -> String {
-    headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").to_owned()
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -141,7 +162,10 @@ mod tests {
         assert_eq!(r.status(), StatusCode::FOUND);
         assert_eq!(r.headers()[header::LOCATION], "http://p/1.ts|User-Agent=VLC");
         let r = redirect("http://p/a b/канал.ts");
-        assert_eq!(r.headers()[header::LOCATION], "http://p/a%20b/%D0%BA%D0%B0%D0%BD%D0%B0%D0%BB.ts");
+        assert_eq!(
+            r.headers()[header::LOCATION],
+            "http://p/a%20b/%D0%BA%D0%B0%D0%BD%D0%B0%D0%BB.ts"
+        );
     }
 }
 

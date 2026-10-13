@@ -33,8 +33,8 @@ use crate::encode::channel::{ChannelEncoder, make_build_dir, next_loop_start, re
 use crate::encode::ffmpeg::{RunError, ffprobe_path, run};
 use crate::encode::liveloop::{Position, current_loop_position, write_loop_state};
 use crate::encode::media::{
-    ClipInputs, ClipVideo, MediaParams, Probe, Timeline, TimelineVideo, article_clip_args, article_timeline, concat_list, loop_args,
-    loop_repeats, probe_media, video_normalize_args, video_poster_args,
+    ClipInputs, ClipVideo, MediaParams, Probe, Timeline, TimelineVideo, article_clip_args, article_timeline,
+    concat_list, loop_args, loop_repeats, probe_media, video_normalize_args, video_poster_args,
 };
 use crate::render::article::SLIDE_WIDTH;
 use crate::render::media::{PageMedia, PlacedVideo, render_article_layer, render_indicator_png};
@@ -58,7 +58,9 @@ fn hash(v: &Value) -> String {
 }
 
 fn read_sig(dir: &Path) -> Option<String> {
-    std::fs::read_to_string(dir.join(SIG_FILE)).ok().map(|s| s.trim().to_owned())
+    std::fs::read_to_string(dir.join(SIG_FILE))
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 fn loop_ready(dir: &Path) -> bool {
@@ -128,7 +130,10 @@ impl MediaChannel {
             channels,
             raster,
             measure,
-            status: Mutex::new(BuildStatus { state: "idle", ..BuildStatus::default() }),
+            status: Mutex::new(BuildStatus {
+                state: "idle",
+                ..BuildStatus::default()
+            }),
             pending: Mutex::default(),
             current: Mutex::default(),
             build_lock: AsyncMutex::new(()),
@@ -167,7 +172,13 @@ impl MediaChannel {
 
     pub fn status_json(&self) -> Value {
         let mut v = json!(*self.status_mut());
-        v["pending"] = json!(self.pending.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|h| !h.is_finished()));
+        v["pending"] = json!(
+            self.pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|h| !h.is_finished())
+        );
         v["ready"] = json!(self.ready());
         v["total_articles"] = json!(self.store.read().articles.len());
         v
@@ -212,7 +223,12 @@ impl MediaChannel {
                 tracing::warn!(target: "media", error = %e, "scheduled media build failed");
             }
         });
-        if let Some(old) = self.pending.lock().unwrap_or_else(PoisonError::into_inner).replace(handle) {
+        if let Some(old) = self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(handle)
+        {
             old.abort();
         }
     }
@@ -220,7 +236,12 @@ impl MediaChannel {
     /// Build now; a newer build cancels this one.
     pub async fn build(&self, reason: &str, force: bool) -> anyhow::Result<()> {
         let cancel = CancellationToken::new();
-        if let Some(old) = self.current.lock().unwrap_or_else(PoisonError::into_inner).replace(cancel.clone()) {
+        if let Some(old) = self
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(cancel.clone())
+        {
             old.cancel();
         }
         let _guard = self.build_lock.lock().await;
@@ -229,7 +250,9 @@ impl MediaChannel {
         }
         let result = self.do_build(reason, force, &cancel).await;
         match &result {
-            Err(e) if matches!(e.downcast_ref::<RunError>(), Some(RunError::Aborted)) => self.status_mut().state = "idle",
+            Err(e) if matches!(e.downcast_ref::<RunError>(), Some(RunError::Aborted)) => {
+                self.status_mut().state = "idle";
+            }
             Err(e) => {
                 tracing::error!(target: "media", error = %e, "media loop build failed");
                 let mut s = self.status_mut();
@@ -247,37 +270,65 @@ impl MediaChannel {
     /// encode. `raw` is deleted afterwards.
     pub fn queue_video(self: &Arc<Self>, asset_id: String, raw: PathBuf, probe: Probe) {
         let cancel = CancellationToken::new();
-        self.video_jobs.lock().unwrap_or_else(PoisonError::into_inner).insert(asset_id.clone(), cancel.clone());
+        self.video_jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(asset_id.clone(), cancel.clone());
         let me = Arc::clone(self);
         tokio::spawn(async move {
             let _one_at_a_time = me.video_lock.lock().await;
             me.process_video(&asset_id, &raw, probe, &cancel).await;
             let _ = std::fs::remove_file(&raw);
-            me.video_jobs.lock().unwrap_or_else(PoisonError::into_inner).remove(&asset_id);
+            me.video_jobs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&asset_id);
         });
     }
 
     /// Stop a video's encode (its article was deleted mid-way).
     pub fn cancel_video(&self, asset_id: &str) {
-        if let Some(c) = self.video_jobs.lock().unwrap_or_else(PoisonError::into_inner).get(asset_id) {
+        if let Some(c) = self
+            .video_jobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(asset_id)
+        {
             c.cancel();
         }
     }
 
-    async fn encode_video_copy(&self, asset_id: &str, input: &Path, has_audio: bool, cancel: Option<&CancellationToken>) -> anyhow::Result<Asset> {
+    async fn encode_video_copy(
+        &self,
+        asset_id: &str,
+        input: &Path,
+        has_audio: bool,
+        cancel: Option<&CancellationToken>,
+    ) -> anyhow::Result<Asset> {
         let dirs = &self.store.dirs;
         let out = dirs.files.join(format!("{asset_id}.mp4"));
         let tmp = dirs.files.join(format!("{asset_id}.tmp.mp4"));
         let poster = dirs.thumbs.join(format!("{asset_id}.jpg"));
         let ffmpeg = &self.config.ffmpeg_path;
-        let args = video_normalize_args(&self.params(), &input.to_string_lossy(), has_audio, &tmp.to_string_lossy());
+        let args = video_normalize_args(
+            &self.params(),
+            &input.to_string_lossy(),
+            has_audio,
+            &tmp.to_string_lossy(),
+        );
         let encoded = run(ffmpeg, &args, &format!("media video encode {asset_id}"), cancel).await;
         if encoded.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
         encoded?;
         std::fs::rename(&tmp, &out)?;
-        run(ffmpeg, &video_poster_args(&out.to_string_lossy(), &poster.to_string_lossy()), &format!("media poster {asset_id}"), None).await?;
+        run(
+            ffmpeg,
+            &video_poster_args(&out.to_string_lossy(), &poster.to_string_lossy()),
+            &format!("media poster {asset_id}"),
+            None,
+        )
+        .await?;
         let info = probe_media(&ffprobe_path(ffmpeg), &out.to_string_lossy()).await?;
         let mut a = self.store.asset(asset_id).ok_or(RunError::Aborted)?;
         a.file = Some(format!("{asset_id}.mp4"));
@@ -286,7 +337,7 @@ impl MediaChannel {
         a.height = info.height;
         a.duration = (info.duration * 1000.0).round() / 1000.0;
         a.has_audio = info.has_audio;
-        a.size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        a.size = std::fs::metadata(&out).map_or(0, |m| m.len());
         a.enc = Some(self.encode_key());
         Ok(a)
     }
@@ -296,12 +347,19 @@ impl MediaChannel {
         if cancel.is_cancelled() || self.store.asset(asset_id).is_none() {
             return;
         }
-        match self.encode_video_copy(asset_id, raw, probe.has_audio, Some(cancel)).await {
+        match self
+            .encode_video_copy(asset_id, raw, probe.has_audio, Some(cancel))
+            .await
+        {
             Ok(fields) => {
                 let saved = self
                     .store
                     .update_asset(asset_id, |a| {
-                        *a = Asset { status: AssetStatus::Ready, error: None, ..fields.clone() };
+                        *a = Asset {
+                            status: AssetStatus::Ready,
+                            error: None,
+                            ..fields.clone()
+                        };
                     })
                     .await;
                 if matches!(saved, Ok(Some(_))) {
@@ -319,10 +377,13 @@ impl MediaChannel {
                 } else if !matches!(e.downcast_ref::<RunError>(), Some(RunError::Aborted)) {
                     tracing::error!(target: "media", %asset_id, error = %e, "video processing failed");
                     let msg: String = e.to_string().chars().take(200).collect();
-                    let _ = self.store.update_asset(asset_id, |a| {
-                        a.status = AssetStatus::Error;
-                        a.error = Some(msg);
-                    }).await;
+                    let _ = self
+                        .store
+                        .update_asset(asset_id, |a| {
+                            a.status = AssetStatus::Error;
+                            a.error = Some(msg);
+                        })
+                        .await;
                 }
             }
         }
@@ -331,14 +392,26 @@ impl MediaChannel {
     /// A ready video whose copy was made under other encode settings: re-
     /// encoded from that copy (lossy, but only on a settings change).
     async fn refresh_video_copy(&self, asset: &Asset, cancel: &CancellationToken) -> anyhow::Result<()> {
-        let Some(file) = self.store.dirs.asset_file(asset) else { return Ok(()) };
+        let Some(file) = self.store.dirs.asset_file(asset) else {
+            return Ok(());
+        };
         let input = self.store.dirs.files.join(format!("{}.src.mp4", asset.id));
         std::fs::rename(&file, &input)?;
-        let result = self.encode_video_copy(&asset.id, &input, asset.has_audio, Some(cancel)).await;
+        let result = self
+            .encode_video_copy(&asset.id, &input, asset.has_audio, Some(cancel))
+            .await;
         match result {
             Ok(fields) => {
                 let _ = std::fs::remove_file(&input);
-                self.store.update_asset(&asset.id, |a| *a = Asset { status: a.status, error: a.error.clone(), ..fields }).await?;
+                self.store
+                    .update_asset(&asset.id, |a| {
+                        *a = Asset {
+                            status: a.status,
+                            error: a.error.clone(),
+                            ..fields
+                        }
+                    })
+                    .await?;
                 Ok(())
             }
             Err(e) => {
@@ -365,17 +438,42 @@ impl MediaChannel {
         let page_media: Vec<PageMedia> = media
             .iter()
             .filter_map(|a| {
-                let picture = if a.kind == AssetKind::Video { self.store.dirs.asset_thumb(a) } else { self.store.dirs.asset_file(a) }?;
-                Some(PageMedia { id: a.id.clone(), kind: a.kind, width: a.width, height: a.height, picture })
+                let picture = if a.kind == AssetKind::Video {
+                    self.store.dirs.asset_thumb(a)
+                } else {
+                    self.store.dirs.asset_file(a)
+                }?;
+                Some(PageMedia {
+                    id: a.id.clone(),
+                    kind: a.kind,
+                    width: a.width,
+                    height: a.height,
+                    picture,
+                })
             })
             .collect();
         let (w, h) = (self.config.channel.width, self.config.channel.height);
-        let Some(layer) = render_article_layer(&self.raster, &self.measure, &article.doc, &page_media, w, h)? else { return Ok(None) };
-        let videos: Vec<(PlacedVideo, Asset)> =
-            layer.videos.iter().filter_map(|v| media.iter().find(|m| m.id == v.asset_id).map(|m| (v.clone(), m.clone()))).collect();
+        let Some(layer) = render_article_layer(&self.raster, &self.measure, &article.doc, &page_media, w, h)? else {
+            return Ok(None);
+        };
+        let videos: Vec<(PlacedVideo, Asset)> = layer
+            .videos
+            .iter()
+            .filter_map(|v| {
+                media
+                    .iter()
+                    .find(|m| m.id == v.asset_id)
+                    .map(|m| (v.clone(), m.clone()))
+            })
+            .collect();
         let tv: Vec<TimelineVideo> = videos
             .iter()
-            .map(|(v, a)| TimelineVideo { y: v.y as f64, height: v.height as f64, focus: Some(v.focus as f64), duration: a.duration })
+            .map(|(v, a)| TimelineVideo {
+                y: v.y as f64,
+                height: v.height as f64,
+                focus: Some(v.focus as f64),
+                duration: a.duration,
+            })
             .collect();
         let scale = f64::from(w) / f64::from(SLIDE_WIDTH);
         let timeline = article_timeline(
@@ -386,7 +484,12 @@ impl MediaChannel {
             article.seconds as f64,
             f64::from(self.config.channel.hls_time),
         );
-        Ok(Some(Laid { layer_png: layer.png, layer_height: layer.height, timeline, videos }))
+        Ok(Some(Laid {
+            layer_png: layer.png,
+            layer_height: layer.height,
+            timeline,
+            videos,
+        }))
     }
 
     fn clip_paths(&self, key: &str) -> (PathBuf, PathBuf) {
@@ -399,15 +502,28 @@ impl MediaChannel {
         if !clip.exists() {
             return None;
         }
-        let seconds = serde_json::from_slice::<Value>(&std::fs::read(meta).ok()?).ok()?.get("seconds")?.as_f64()?;
+        let seconds = serde_json::from_slice::<Value>(&std::fs::read(meta).ok()?)
+            .ok()?
+            .get("seconds")?
+            .as_f64()?;
         Some(Clip { file: clip, seconds })
     }
 
-    async fn article_clip(&self, article: &Article, index: usize, total: usize, music: &Path, cancel: &CancellationToken) -> anyhow::Result<Option<Clip>> {
+    async fn article_clip(
+        &self,
+        article: &Article,
+        index: usize,
+        total: usize,
+        music: &Path,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<Option<Clip>> {
         // Videos made under other encode settings are brought up to date first.
         let key_now = self.encode_key();
         for asset in doc_asset_ids(&article.doc).iter().filter_map(|id| self.store.asset(id)) {
-            if asset.kind == AssetKind::Video && asset.status == AssetStatus::Ready && asset.enc.as_deref() != Some(key_now.as_str()) {
+            if asset.kind == AssetKind::Video
+                && asset.status == AssetStatus::Ready
+                && asset.enc.as_deref() != Some(key_now.as_str())
+            {
                 self.refresh_video_copy(&asset, cancel).await?;
             }
         }
@@ -428,12 +544,17 @@ impl MediaChannel {
         }
         let (clip_path, meta_path) = self.clip_paths(&key);
         let work = make_build_dir(&self.store.dirs.clips, ".work-")?;
-        let result = self.render_clip(article, index, total, &media, music, &work, cancel).await;
+        let result = self
+            .render_clip(article, index, total, &media, music, &work, cancel)
+            .await;
         let outcome = match result {
             Ok(Some((out, seconds))) => {
                 std::fs::rename(out, &clip_path)?;
                 std::fs::write(&meta_path, json!({ "seconds": seconds }).to_string())?;
-                Ok(Some(Clip { file: clip_path, seconds }))
+                Ok(Some(Clip {
+                    file: clip_path,
+                    seconds,
+                }))
             }
             Ok(None) => Ok(None),
             Err(e) => Err(e),
@@ -453,13 +574,28 @@ impl MediaChannel {
         work: &Path,
         cancel: &CancellationToken,
     ) -> anyhow::Result<Option<(PathBuf, f64)>> {
-        let Some(laid) = self.layout_article(article, media)? else { return Ok(None) };
+        let Some(laid) = self.layout_article(article, media)? else {
+            return Ok(None);
+        };
         let (w, h) = (self.config.channel.width, self.config.channel.height);
-        let ctx = RenderCtx { width: w, height: h, now: jiff::Timestamp::now(), tz: &self.config.tz, expiring_threshold_days: 0 };
-        let (page, bg, edges, chip) = (work.join("page.png"), work.join("bg.png"), work.join("edges.png"), work.join("chip.png"));
+        let ctx = RenderCtx {
+            width: w,
+            height: h,
+            now: jiff::Timestamp::now(),
+            tz: &self.config.tz,
+            expiring_threshold_days: 0,
+        };
+        let (page, bg, edges, chip) = (
+            work.join("page.png"),
+            work.join("bg.png"),
+            work.join("edges.png"),
+            work.join("chip.png"),
+        );
         std::fs::write(&page, &laid.layer_png)?;
-        self.raster.render_to_file(&build_background_svg(&ctx, false), w, h, &bg)?;
-        self.raster.render_to_file(&build_background_svg(&ctx, true), w, h, &edges)?;
+        self.raster
+            .render_to_file(&build_background_svg(&ctx, false), w, h, &bg)?;
+        self.raster
+            .render_to_file(&build_background_svg(&ctx, true), w, h, &edges)?;
         let indicator = match render_indicator_png(&self.raster, &self.measure, index, total, &article.title, w, h)? {
             Some(png) => {
                 std::fs::write(&chip, png)?;
@@ -485,8 +621,13 @@ impl MediaChannel {
             })
             .collect();
         let out = work.join("clip.mp4");
-        let (bg_s, page_s, edges_s, music_s, out_s) =
-            (bg.to_string_lossy(), page.to_string_lossy(), edges.to_string_lossy(), music.to_string_lossy(), out.to_string_lossy());
+        let (bg_s, page_s, edges_s, music_s, out_s) = (
+            bg.to_string_lossy(),
+            page.to_string_lossy(),
+            edges.to_string_lossy(),
+            music.to_string_lossy(),
+            out.to_string_lossy(),
+        );
         let args = article_clip_args(
             &self.params(),
             &ClipInputs {
@@ -501,7 +642,13 @@ impl MediaChannel {
                 out: &out_s,
             },
         );
-        run(&self.config.ffmpeg_path, &args, &format!("media article {}", article.id), Some(cancel)).await?;
+        run(
+            &self.config.ffmpeg_path,
+            &args,
+            &format!("media article {}", article.id),
+            Some(cancel),
+        )
+        .await?;
         Ok(Some((out, laid.timeline.total)))
     }
 
@@ -519,11 +666,21 @@ impl MediaChannel {
     }
 
     /// Join one variant's clips into its loop (no-op when already exact).
-    async fn build_loop(&self, dir: &Path, clips: &[Clip], reason: &str, force: bool, label: &str, cancel: &CancellationToken) -> anyhow::Result<(f64, bool)> {
+    async fn build_loop(
+        &self,
+        dir: &Path,
+        clips: &[Clip],
+        reason: &str,
+        force: bool,
+        label: &str,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<(f64, bool)> {
         let p = self.params();
         let seconds: f64 = clips.iter().map(|c| c.seconds).sum();
         let repeats = loop_repeats(&p, seconds);
-        let files: Vec<String> = (0..repeats).flat_map(|_| clips.iter().map(|c| c.file.to_string_lossy().into_owned())).collect();
+        let files: Vec<String> = (0..repeats)
+            .flat_map(|_| clips.iter().map(|c| c.file.to_string_lossy().into_owned()))
+            .collect();
         let signature = hash(&json!({ "v": LOOP_VERSION, "files": files, "seg": p.hls_time, "live": p.live_loop }));
         if !force && loop_ready(dir) && read_sig(dir).as_deref() == Some(signature.as_str()) {
             return Ok((seconds, false));
@@ -534,7 +691,13 @@ impl MediaChannel {
         let result: anyhow::Result<()> = async {
             let list = tmp.join("list.txt");
             std::fs::write(&list, concat_list(&files))?;
-            run(&self.config.ffmpeg_path, &loop_args(&p, &list.to_string_lossy(), &tmp.to_string_lossy()), &format!("media loop {label}"), Some(cancel)).await?;
+            run(
+                &self.config.ffmpeg_path,
+                &loop_args(&p, &list.to_string_lossy(), &tmp.to_string_lossy()),
+                &format!("media loop {label}"),
+                Some(cancel),
+            )
+            .await?;
             let _ = std::fs::remove_file(&list);
             if p.live_loop {
                 write_loop_state(&tmp, next_loop_start(previous), now_ms())?;
@@ -567,20 +730,28 @@ impl MediaChannel {
         let (_, variants) = media_variants(&articles, &self.users.users());
         let mut keep_clips: HashSet<String> = HashSet::new();
         let mut keep_dirs: HashSet<PathBuf> = HashSet::new();
-        let (mut public_seconds, mut public_articles, mut private_loops, mut private_viewers, mut rebuilt) = (0.0, 0, 0, 0, 0);
+        let (mut public_seconds, mut public_articles, mut private_loops, mut private_viewers, mut rebuilt) =
+            (0.0, 0, 0, 0, 0);
 
         for (key, variant) in &variants {
             if cancel.is_cancelled() {
                 return Err(RunError::Aborted.into());
             }
-            let dir = if variant.public { self.public_loop_dir() } else { self.variant_dir(key) };
+            let dir = if variant.public {
+                self.public_loop_dir()
+            } else {
+                self.variant_dir(key)
+            };
             let mut clips = Vec::new();
             for (i, entry) in variant.entries.iter().enumerate() {
                 if cancel.is_cancelled() {
                     return Err(RunError::Aborted.into());
                 }
                 let article = &entry.article;
-                match self.article_clip(article, i + 1, variant.entries.len(), &music, cancel).await {
+                match self
+                    .article_clip(article, i + 1, variant.entries.len(), &music, cancel)
+                    .await
+                {
                     Ok(Some(c)) => {
                         clips.push(c);
                         if article.error.is_some() {
@@ -588,12 +759,16 @@ impl MediaChannel {
                         }
                     }
                     Ok(None) => {}
-                    Err(e) if matches!(e.downcast_ref::<RunError>(), Some(RunError::Aborted)) || cancel.is_cancelled() => {
+                    Err(e)
+                        if matches!(e.downcast_ref::<RunError>(), Some(RunError::Aborted)) || cancel.is_cancelled() =>
+                    {
                         return Err(RunError::Aborted.into());
                     }
                     Err(e) => {
                         tracing::error!(target: "media", article_id = %article.id, error = %e, "article could not be rendered");
-                        self.store.set_article_error(&article.id, Some(e.to_string().chars().take(200).collect())).await?;
+                        self.store
+                            .set_article_error(&article.id, Some(e.to_string().chars().take(200).collect()))
+                            .await?;
                     }
                 }
             }
@@ -607,7 +782,13 @@ impl MediaChannel {
                 continue;
             }
             keep_dirs.insert(dir.clone());
-            let label = if variant.public { "public".to_owned() } else { dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+            let label = if variant.public {
+                "public".to_owned()
+            } else {
+                dir.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            };
             let (seconds, built) = self.build_loop(&dir, &clips, reason, force, &label, cancel).await?;
             if built {
                 rebuilt += 1;

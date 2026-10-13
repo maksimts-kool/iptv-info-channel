@@ -28,7 +28,12 @@ fn valid_email(email: &str) -> bool {
 
 /// A validated subscribe request. Renewal is always forced on.
 pub fn validate_subscription(body: &Value) -> Result<(String, NotifyOptions), &'static str> {
-    let email = body.get("email").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+    let email = body
+        .get("email")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
     if email.is_empty() || !valid_email(&email) {
         return Err("Введите корректный адрес электронной почты");
     }
@@ -36,7 +41,13 @@ pub fn validate_subscription(body: &Value) -> Result<(String, NotifyOptions), &'
     let flag = |k: &str| opt.and_then(|o| o.get(k)).is_some_and(truthy);
     Ok((
         email,
-        NotifyOptions { server: flag("server"), expiry: flag("expiry"), content: flag("content"), news: flag("news"), renewal: true },
+        NotifyOptions {
+            server: flag("server"),
+            expiry: flag("expiry"),
+            content: flag("content"),
+            news: flag("news"),
+            renewal: true,
+        },
     ))
 }
 
@@ -71,7 +82,10 @@ pub fn build_provider_request(cfg: &crate::config::Notify, to: &str, m: &Message
     match cfg.provider {
         MailProvider::Brevo => ProviderRequest {
             url: "https://api.brevo.com/v3/smtp/email",
-            headers: vec![("api-key", cfg.api_key.clone()), ("content-type", "application/json".into())],
+            headers: vec![
+                ("api-key", cfg.api_key.clone()),
+                ("content-type", "application/json".into()),
+            ],
             body: json!({
                 "sender": { "email": cfg.from, "name": cfg.from_name },
                 "to": [{ "email": to }],
@@ -82,7 +96,10 @@ pub fn build_provider_request(cfg: &crate::config::Notify, to: &str, m: &Message
         },
         MailProvider::Resend => ProviderRequest {
             url: "https://api.resend.com/emails",
-            headers: vec![("authorization", format!("Bearer {}", cfg.api_key)), ("content-type", "application/json".into())],
+            headers: vec![
+                ("authorization", format!("Bearer {}", cfg.api_key)),
+                ("content-type", "application/json".into()),
+            ],
             body: json!({
                 "from": if cfg.from_name.is_empty() { cfg.from.clone() } else { format!("{} <{}>", cfg.from_name, cfg.from) },
                 "to": [to],
@@ -171,7 +188,10 @@ fn list(items: &[String]) -> String {
 }
 
 pub mod templates {
-    use super::*;
+    use super::{
+        ContentChange, ERROR, HEADING, Incident, Message, NotifyOptions, PRIMARY, SUCCESS, TEXT, TimeZone, Timestamp,
+        WARNING, button, callout, days_left, format_date, layout, list, p, plural_days, regex, xml_escape,
+    };
 
     /// Double opt-in: the link the recipient must click.
     pub fn verification(brand: &str, url: &str) -> Message {
@@ -239,7 +259,10 @@ pub mod templates {
         let date = format_date(expires_at);
         let body = p(&format!("Здравствуйте, {}!", xml_escape(username)))
             + &callout(
-                &format!(r#"Новая дата окончания подписки:<br><b style="color:{SUCCESS}">{}</b>"#, xml_escape(&date)),
+                &format!(
+                    r#"Новая дата окончания подписки:<br><b style="color:{SUCCESS}">{}</b>"#,
+                    xml_escape(&date)
+                ),
                 SUCCESS,
             )
             + &p("Спасибо, что остаётесь с нами!");
@@ -283,7 +306,8 @@ pub mod templates {
             + &section("Больше не входят категории", &change.removed_categories)
             + &section("Больше не входят каналы", &change.removed_channels)
             + &p("Изменения уже действуют — обновите плейлист в плеере, если список не поменялся сам.");
-        let line = |label: &str, names: &[String]| (!names.is_empty()).then(|| format!("{label}: {}", names.join(", ")));
+        let line =
+            |label: &str, names: &[String]| (!names.is_empty()).then(|| format!("{label}: {}", names.join(", ")));
         let text: Vec<String> = std::iter::once(Some(heading.to_owned()))
             .chain([
                 line("Добавлены категории", &change.added_categories),
@@ -295,23 +319,51 @@ pub mod templates {
             .collect();
         Message {
             subject: format!("{brand}: изменения в списке каналов"),
-            html: layout(brand, heading, &body, if removed > 0 && added == 0 { WARNING } else { PRIMARY }),
+            html: layout(
+                brand,
+                heading,
+                &body,
+                if removed > 0 && added == 0 { WARNING } else { PRIMARY },
+            ),
             text: text.join("\n"),
         }
     }
 
     pub fn server_status(brand: &str, resolved: bool, incident: &Incident) -> Message {
-        let heading = if resolved { "Сервис восстановлен" } else { "Проблема в работе сервиса" };
+        let heading = if resolved {
+            "Сервис восстановлен"
+        } else {
+            "Проблема в работе сервиса"
+        };
         let accent = if resolved { SUCCESS } else { ERROR };
         let note_html = if incident.note.is_empty() {
             String::new()
         } else {
-            format!(r#"<br><span style="color:{TEXT};font-size:14px">{}</span>"#, xml_escape(&incident.note))
+            format!(
+                r#"<br><span style="color:{TEXT};font-size:14px">{}</span>"#,
+                xml_escape(&incident.note)
+            )
         };
-        let note_text = if incident.note.is_empty() { String::new() } else { format!(" — {}", incident.note) };
+        let note_text = if incident.note.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", incident.note)
+        };
         Message {
-            subject: format!("{brand}: {}", if resolved { "сервис восстановлен" } else { "инцидент в работе сервиса" }),
-            html: layout(brand, heading, &callout(&format!("<b>{}</b>{note_html}", xml_escape(&incident.title)), accent), accent),
+            subject: format!(
+                "{brand}: {}",
+                if resolved {
+                    "сервис восстановлен"
+                } else {
+                    "инцидент в работе сервиса"
+                }
+            ),
+            html: layout(
+                brand,
+                heading,
+                &callout(&format!("<b>{}</b>{note_html}", xml_escape(&incident.title)), accent),
+                accent,
+            ),
             text: format!("{heading}: {}{note_text}", incident.title),
         }
     }
@@ -319,20 +371,38 @@ pub mod templates {
     /// The admin's announcement. Blank line = new paragraph; `important`
     /// only changes the look.
     pub fn newsletter(brand: &str, subject: &str, body: &str, important: bool) -> Message {
-        let paragraphs: Vec<&str> = regex!(r"\n\s*\n").split(body).map(str::trim).filter(|s| !s.is_empty()).collect();
-        let html: String = paragraphs.iter().map(|para| p(&xml_escape(para).replace('\n', "<br>"))).collect();
+        let paragraphs: Vec<&str> = regex!(r"\n\s*\n")
+            .split(body)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let html: String = paragraphs
+            .iter()
+            .map(|para| p(&xml_escape(para).replace('\n', "<br>")))
+            .collect();
         let accent = if important { WARNING } else { PRIMARY };
-        let lead = if important { callout(&format!(r#"<b style="color:{WARNING}">Важная информация</b>"#), WARNING) } else { String::new() };
+        let lead = if important {
+            callout(&format!(r#"<b style="color:{WARNING}">Важная информация</b>"#), WARNING)
+        } else {
+            String::new()
+        };
         Message {
             subject: format!("{brand}: {}{subject}", if important { "Важно — " } else { "" }),
             html: layout(brand, subject, &(lead + &html), accent),
-            text: format!("{}{subject}\n\n{}", if important { "ВАЖНО. " } else { "" }, paragraphs.join("\n\n")),
+            text: format!(
+                "{}{subject}\n\n{}",
+                if important { "ВАЖНО. " } else { "" },
+                paragraphs.join("\n\n")
+            ),
         }
     }
 
     pub fn test(brand: &str) -> Message {
         let body = p("Если вы видите это письмо, отправка уведомлений настроена правильно.")
-            + &callout(&format!(r#"<b style="color:{SUCCESS}">✓ Отправка уведомлений работает</b>"#), SUCCESS);
+            + &callout(
+                &format!(r#"<b style="color:{SUCCESS}">✓ Отправка уведомлений работает</b>"#),
+                SUCCESS,
+            );
         Message {
             subject: format!("{brand}: тестовое письмо"),
             html: layout(brand, "Тестовое письмо", &body, PRIMARY),
@@ -354,7 +424,10 @@ pub fn cap_names(names: &[String]) -> Vec<String> {
     }
     let rest = clean.len() - MAX_LISTED;
     let mut out = clean[..MAX_LISTED].to_vec();
-    out.push(format!("…и ещё {rest} {}", if rest == 1 { "позиция" } else { "позиций" }));
+    out.push(format!(
+        "…и ещё {rest} {}",
+        if rest == 1 { "позиция" } else { "позиций" }
+    ));
     out
 }
 
@@ -374,7 +447,10 @@ pub fn content_change_summary(diff: &ContentChange) -> Option<ContentChange> {
         added_channels: cap_names(&diff.added_channels),
         removed_channels: cap_names(&diff.removed_channels),
     };
-    let total = change.added_categories.len() + change.removed_categories.len() + change.added_channels.len() + change.removed_channels.len();
+    let total = change.added_categories.len()
+        + change.removed_categories.len()
+        + change.added_channels.len()
+        + change.removed_channels.len();
     (total > 0).then_some(change)
 }
 
@@ -392,14 +468,25 @@ pub struct NewsletterDraft {
 }
 
 pub fn validate_newsletter(body: &Value) -> Result<NewsletterDraft, String> {
-    let subject = body.get("subject").and_then(Value::as_str).unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+    let subject = body
+        .get("subject")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if subject.is_empty() {
         return Err("Укажите тему письма".into());
     }
     if subject.chars().count() > NEWSLETTER_SUBJECT_MAX {
         return Err(format!("Тема — не больше {NEWSLETTER_SUBJECT_MAX} символов"));
     }
-    let text = body.get("body").and_then(Value::as_str).unwrap_or("").replace("\r\n", "\n").replace('\r', "\n");
+    let text = body
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let text = text.trim();
     if text.is_empty() {
         return Err("Напишите текст письма".into());
@@ -439,7 +526,9 @@ pub fn newsletter_recipients<'a>(
 /// address inside the threshold window, not already warned for this exact
 /// expiry date (a renewal changes `expires_at`, which re-arms it).
 pub fn expiry_due(user: &DecoratedUser, sub: &Subscriber, now: Timestamp, tz: &TimeZone, threshold: i64) -> bool {
-    let Some(expires) = user.expires_at.as_deref() else { return false };
+    let Some(expires) = user.expires_at.as_deref() else {
+        return false;
+    };
     sub.verified
         && sub.options.expiry
         && account_status(user.active, Some(expires), threshold, now, tz) == AccountStatus::Expiring
@@ -522,7 +611,14 @@ impl Notifier {
     }
 
     async fn log(&self, user_id: Option<i64>, email: &str, kind: &str, error: Option<String>) {
-        let entry = NotifyLogEntry { at: String::new(), user_id, email: email.to_owned(), kind: kind.to_owned(), ok: error.is_none(), error };
+        let entry = NotifyLogEntry {
+            at: String::new(),
+            user_id,
+            email: email.to_owned(),
+            kind: kind.to_owned(),
+            ok: error.is_none(),
+            error,
+        };
         if let Err(e) = self.store.notify_log_add(entry).await {
             tracing::error!(target: "notify", error = %e, "notify log write failed");
         }
@@ -544,12 +640,28 @@ impl Notifier {
     }
 
     pub async fn send_verification(&self, user: &DecoratedUser, sub: &Subscriber) -> bool {
-        let url = format!("{}/sub/verify/{}", self.config.public_base_url, sub.verify_token.as_deref().unwrap_or(""));
-        self.dispatch("verification", user.id, &sub.email, &templates::verification(&self.brand(), &url)).await
+        let url = format!(
+            "{}/sub/verify/{}",
+            self.config.public_base_url,
+            sub.verify_token.as_deref().unwrap_or("")
+        );
+        self.dispatch(
+            "verification",
+            user.id,
+            &sub.email,
+            &templates::verification(&self.brand(), &url),
+        )
+        .await
     }
 
     pub async fn send_confirmation(&self, user: &DecoratedUser, sub: &Subscriber) -> bool {
-        self.dispatch("confirmation", user.id, &sub.email, &templates::confirmation(&self.brand(), &sub.options)).await
+        self.dispatch(
+            "confirmation",
+            user.id,
+            &sub.email,
+            &templates::confirmation(&self.brand(), &sub.options),
+        )
+        .await
     }
 
     /// Mandatory renewal notice — whenever the expiry is pushed later.
@@ -557,7 +669,9 @@ impl Notifier {
         if !self.enabled() {
             return;
         }
-        let Some(sub) = self.store.subscriber(user.id).filter(|s| s.verified) else { return };
+        let Some(sub) = self.store.subscriber(user.id).filter(|s| s.verified) else {
+            return;
+        };
         let m = templates::renewal(&self.brand(), &user.username, user.expires_at.as_deref());
         self.dispatch("renewal", user.id, &sub.email, &m).await;
     }
@@ -567,22 +681,37 @@ impl Notifier {
         if !self.enabled() {
             return false;
         }
-        let Some(change) = content_change_summary(diff) else { return false };
-        let Some(sub) = self.store.subscriber(user.id).filter(|s| s.verified && s.options.content) else { return false };
+        let Some(change) = content_change_summary(diff) else {
+            return false;
+        };
+        let Some(sub) = self
+            .store
+            .subscriber(user.id)
+            .filter(|s| s.verified && s.options.content)
+        else {
+            return false;
+        };
         let m = templates::content_change(&self.brand(), &user.username, &change, plan_name);
         self.dispatch("content", user.id, &sub.email, &m).await
     }
 
     /// Mail a newsletter to its recipients. With the switch off it errors
     /// rather than "sending" to nobody.
-    pub async fn send_newsletter(&self, draft: &NewsletterDraft, mut progress: impl FnMut(SendCounts)) -> Result<SendCounts, SendError> {
+    pub async fn send_newsletter(
+        &self,
+        draft: &NewsletterDraft,
+        mut progress: impl FnMut(SendCounts),
+    ) -> Result<SendCounts, SendError> {
         if !self.enabled() {
             return Err(SendError::Disabled);
         }
         let (users, subs) = (self.store.users(), self.store.subscribers());
         let recipients = newsletter_recipients(draft.audience.as_ref(), &users, &subs);
         let m = templates::newsletter(&self.brand(), &draft.subject, &draft.body, draft.important);
-        let mut counts = SendCounts { recipients: recipients.len(), ..SendCounts::default() };
+        let mut counts = SendCounts {
+            recipients: recipients.len(),
+            ..SendCounts::default()
+        };
         for (user, sub) in recipients {
             if self.dispatch("news", user.id, &sub.email, &m).await {
                 counts.sent += 1;
@@ -603,7 +732,13 @@ impl Notifier {
         let mut m = templates::newsletter(&self.brand(), &draft.subject, &draft.body, draft.important);
         m.subject = format!("[Тест] {}", m.subject);
         let result = self.send_email(&email, &m).await;
-        self.log(None, &email, "news_test", result.as_ref().err().map(ToString::to_string)).await;
+        self.log(
+            None,
+            &email,
+            "news_test",
+            result.as_ref().err().map(ToString::to_string),
+        )
+        .await;
         result
     }
 
@@ -613,7 +748,12 @@ impl Notifier {
             return;
         }
         let m = templates::server_status(&self.brand(), resolved, incident);
-        for sub in self.store.subscribers().into_iter().filter(|s| s.verified && s.options.server) {
+        for sub in self
+            .store
+            .subscribers()
+            .into_iter()
+            .filter(|s| s.verified && s.options.server)
+        {
             if self.store.user(sub.user_id).is_some() {
                 self.dispatch("server", sub.user_id, &sub.email, &m).await;
             }
@@ -629,7 +769,9 @@ impl Notifier {
         let brand = self.brand();
         let mut sent = 0;
         for sub in self.store.subscribers() {
-            let Some(user) = self.store.user(sub.user_id) else { continue };
+            let Some(user) = self.store.user(sub.user_id) else {
+                continue;
+            };
             if !expiry_due(&user, &sub, now, tz, threshold) {
                 continue;
             }
@@ -651,7 +793,8 @@ impl Notifier {
             return Err(SendError::BadAddress);
         }
         let result = self.send_email(&email, &templates::test(&self.brand())).await;
-        self.log(None, &email, "test", result.as_ref().err().map(ToString::to_string)).await;
+        self.log(None, &email, "test", result.as_ref().err().map(ToString::to_string))
+            .await;
         result
     }
 }
@@ -663,9 +806,19 @@ mod tests {
 
     #[test]
     fn subscription_validation() {
-        let (email, o) = validate_subscription(&json!({"email": "  USER@Example.com ", "options": {"server": true}})).unwrap();
+        let (email, o) =
+            validate_subscription(&json!({"email": "  USER@Example.com ", "options": {"server": true}})).unwrap();
         assert_eq!(email, "user@example.com");
-        assert_eq!(o, NotifyOptions { server: true, expiry: false, content: false, news: false, renewal: true });
+        assert_eq!(
+            o,
+            NotifyOptions {
+                server: true,
+                expiry: false,
+                content: false,
+                news: false,
+                renewal: true
+            }
+        );
         let long = format!("{}@example.com", "x".repeat(250));
         for e in ["", "nope", "a@b", "a b@c.d", long.as_str()] {
             assert!(validate_subscription(&json!({ "email": e })).is_err(), "{e}");
@@ -680,13 +833,20 @@ mod tests {
         assert_eq!(capped.len(), 13);
         assert_eq!(capped[12], "…и ещё 8 позиций");
         assert_eq!(content_change_summary(&ContentChange::default()), None);
-        let one = ContentChange { added_categories: vec!["Спорт".into()], ..ContentChange::default() };
+        let one = ContentChange {
+            added_categories: vec!["Спорт".into()],
+            ..ContentChange::default()
+        };
         assert_eq!(content_change_summary(&one), Some(one));
     }
 
     #[test]
     fn content_change_template() {
-        let change = ContentChange { added_categories: vec!["Спорт".into()], removed_channels: vec!["НТВ".into()], ..ContentChange::default() };
+        let change = ContentChange {
+            added_categories: vec!["Спорт".into()],
+            removed_channels: vec!["НТВ".into()],
+            ..ContentChange::default()
+        };
         let m = templates::content_change("Бренд", "Алиса", &change, "Про");
         assert!(m.subject.contains("изменения в списке каналов"));
         assert!(m.html.contains("Список каналов изменился") && m.html.contains("Спорт") && m.html.contains("НТВ"));
@@ -706,7 +866,11 @@ mod tests {
 
     #[test]
     fn provider_payloads() {
-        let m = Message { subject: "S".into(), html: "<b>h</b>".into(), text: "t".into() };
+        let m = Message {
+            subject: "S".into(),
+            html: "<b>h</b>".into(),
+            text: "t".into(),
+        };
         let brevo = build_provider_request(&notify_cfg(MailProvider::Brevo), "c@d.e", &m);
         assert!(brevo.url.contains("brevo"));
         assert_eq!(brevo.headers[0], ("api-key", "key123".to_owned()));
@@ -722,14 +886,22 @@ mod tests {
     #[test]
     fn templates_escape() {
         let tz = TimeZone::get("Europe/Tallinn").unwrap();
-        let m = templates::expiry("Brand", "<script>alert(1)</script>", Some("2026-07-05"), Timestamp::now(), &tz);
+        let m = templates::expiry(
+            "Brand",
+            "<script>alert(1)</script>",
+            Some("2026-07-05"),
+            Timestamp::now(),
+            &tz,
+        );
         assert!(!m.html.contains("<script>") && m.html.contains("&lt;script&gt;"));
         assert!(m.subject.contains("скоро истекает"));
         let v = templates::verification("Brand", "http://h/sub/verify/tok123");
         assert!(v.html.contains("http://h/sub/verify/tok123") && v.text.contains("http://h/sub/verify/tok123"));
         let n = templates::newsletter("Бренд", "Новости <b>", "Первый\nабзац\n\n<script>x</script>", true);
         assert_eq!(n.subject, "Бренд: Важно — Новости <b>");
-        assert!(!n.html.contains("<script>") && n.html.contains("Первый<br>абзац") && n.html.contains("&lt;script&gt;"));
+        assert!(
+            !n.html.contains("<script>") && n.html.contains("Первый<br>абзац") && n.html.contains("&lt;script&gt;")
+        );
         assert!(n.text.starts_with("ВАЖНО. Новости <b>"));
     }
 
@@ -737,7 +909,11 @@ mod tests {
         Subscriber {
             user_id,
             email: format!("u{user_id}@x.io"),
-            options: NotifyOptions { news, expiry, ..NotifyOptions::default() },
+            options: NotifyOptions {
+                news,
+                expiry,
+                ..NotifyOptions::default()
+            },
             verified,
             verify_token: None,
             created_at: String::new(),
@@ -753,9 +929,21 @@ mod tests {
         let u = user("t", "u", Some("2026-07-05"), true, false);
         assert!(expiry_due(&u, &sub(1, true, false, true, None), now, &tz, 7));
         assert!(!expiry_due(&u, &sub(1, false, false, true, None), now, &tz, 7));
-        assert!(!expiry_due(&u, &sub(1, true, false, true, Some("2026-07-05")), now, &tz, 7));
+        assert!(!expiry_due(
+            &u,
+            &sub(1, true, false, true, Some("2026-07-05")),
+            now,
+            &tz,
+            7
+        ));
         let later = user("t", "u", Some("2026-07-07"), true, false);
-        assert!(expiry_due(&later, &sub(1, true, false, true, Some("2026-07-05")), now, &tz, 7));
+        assert!(expiry_due(
+            &later,
+            &sub(1, true, false, true, Some("2026-07-05")),
+            now,
+            &tz,
+            7
+        ));
         assert!(!expiry_due(&u, &sub(1, true, false, false, None), now, &tz, 7));
         let far = user("t", "u", Some("2026-12-31"), true, false);
         assert!(!expiry_due(&far, &sub(1, true, false, true, None), now, &tz, 7));
@@ -764,15 +952,32 @@ mod tests {
     #[test]
     fn newsletter_validation_and_recipients() {
         assert!(validate_newsletter(&json!({"body": "x"})).unwrap_err().contains("тему"));
-        assert!(validate_newsletter(&json!({"subject": "Тема"})).unwrap_err().contains("текст"));
-        assert!(validate_newsletter(&json!({"subject": "x".repeat(151), "body": "x"})).unwrap_err().contains("150"));
+        assert!(
+            validate_newsletter(&json!({"subject": "Тема"}))
+                .unwrap_err()
+                .contains("текст")
+        );
+        assert!(
+            validate_newsletter(&json!({"subject": "x".repeat(151), "body": "x"}))
+                .unwrap_err()
+                .contains("150")
+        );
         let d = validate_newsletter(&json!({"subject": "  Плановые   работы ", "body": "Строка\r\nвторая\r\n\r\nНовый абзац", "important": "yes"})).unwrap();
         assert_eq!(d.subject, "Плановые работы");
         assert_eq!(d.body, "Строка\nвторая\n\nНовый абзац");
         assert!(!d.important);
         assert_eq!(d.audience, None);
-        let aimed = validate_newsletter(&json!({"subject": "a", "body": "b", "audience": {"users": ["3", 3, "x"], "plans": ["pro"]}})).unwrap();
-        assert_eq!(aimed.audience, Some(Audience { users: vec![3], plans: vec!["pro".into()] }));
+        let aimed = validate_newsletter(
+            &json!({"subject": "a", "body": "b", "audience": {"users": ["3", 3, "x"], "plans": ["pro"]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            aimed.audience,
+            Some(Audience {
+                users: vec![3],
+                plans: vec!["pro".into()]
+            })
+        );
 
         let mk = |id: i64, plan: &str| {
             let mut u = user("t", "u", None, true, false);
@@ -781,11 +986,34 @@ mod tests {
             u
         };
         let users = [mk(1, "pro"), mk(2, "std"), mk(3, "std"), mk(4, "std")];
-        let subs = [sub(1, true, true, false, None), sub(2, true, true, false, None), sub(3, false, true, false, None), sub(4, true, false, false, None), sub(99, true, true, false, None)];
-        let ids = |a: Option<Audience>| newsletter_recipients(a.as_ref(), &users, &subs).iter().map(|(u, _)| u.id).collect::<Vec<_>>();
+        let subs = [
+            sub(1, true, true, false, None),
+            sub(2, true, true, false, None),
+            sub(3, false, true, false, None),
+            sub(4, true, false, false, None),
+            sub(99, true, true, false, None),
+        ];
+        let ids = |a: Option<Audience>| {
+            newsletter_recipients(a.as_ref(), &users, &subs)
+                .iter()
+                .map(|(u, _)| u.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(None), [1, 2]);
-        assert_eq!(ids(Some(Audience { users: vec![], plans: vec!["pro".into()] })), [1]);
-        assert_eq!(ids(Some(Audience { users: vec![2, 3], plans: vec![] })), [2]);
+        assert_eq!(
+            ids(Some(Audience {
+                users: vec![],
+                plans: vec!["pro".into()]
+            })),
+            [1]
+        );
+        assert_eq!(
+            ids(Some(Audience {
+                users: vec![2, 3],
+                plans: vec![]
+            })),
+            [2]
+        );
         assert_eq!(ids(Some(Audience::default())), Vec::<i64>::new());
     }
 }

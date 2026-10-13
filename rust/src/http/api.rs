@@ -17,7 +17,10 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
-        Self { status, message: message.into() }
+        Self {
+            status,
+            message: message.into(),
+        }
     }
     pub fn bad(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)

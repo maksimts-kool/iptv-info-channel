@@ -62,7 +62,11 @@ pub fn channel_stream_url(token: &str, channel: &Channel, cfg: &PlaylistCfg<'_>,
     if !cfg.gateway_enabled || channel.builtin || channel.url.is_empty() || !is_hls_url(&channel.url) {
         return channel.url.clone();
     }
-    let tag = if device_tag.is_empty() { String::new() } else { format!("{}/", enc(device_tag)) };
+    let tag = if device_tag.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", enc(device_tag))
+    };
     format!("{}/c/{}/{tag}{}.m3u8", cfg.base_url, enc(token), enc(&channel.id))
 }
 
@@ -83,12 +87,17 @@ pub fn build_user_playlist(
     let mut header = Attrs::new();
     if cfg.epg_enabled {
         // Ours first; a provider's own guide follows comma-separated.
-        let urls: Vec<String> = std::iter::once(user_epg_url(token, base)).chain(epg_urls.iter().cloned()).collect();
+        let urls: Vec<String> = std::iter::once(user_epg_url(token, base))
+            .chain(epg_urls.iter().cloned())
+            .collect();
         header.insert("url-tvg".into(), urls.join(","));
     }
     if foss {
         // The leading "=" takes the channel out of OTT-play's central match.
-        header.insert("foss-tvg".into(), format!("={provider}::{}", foss_epg_dir_url(token, base)));
+        header.insert(
+            "foss-tvg".into(),
+            format!("={provider}::{}", foss_epg_dir_url(token, base)),
+        );
     }
 
     let info_url = user_stream_url(token, base);
@@ -128,17 +137,35 @@ pub fn build_user_playlist(
                         attrs.insert("tvg-logo".into(), foss_logo_url(token, base));
                     }
                     attrs.insert("group-title".into(), group);
-                    OutItem { name, url, duration: None, attrs, extras: &[] }
+                    OutItem {
+                        name,
+                        url,
+                        duration: None,
+                        attrs,
+                        extras: &[],
+                    }
                 }
                 INFO_MEDIA_CHANNEL_ID => {
                     attrs.insert("tvg-name".into(), name.clone());
                     attrs.insert("group-title".into(), group);
-                    OutItem { name, url, duration: None, attrs, extras: &[] }
+                    OutItem {
+                        name,
+                        url,
+                        duration: None,
+                        attrs,
+                        extras: &[],
+                    }
                 }
                 _ => {
                     attrs.clone_from(&e.channel.attrs);
                     attrs.insert("group-title".into(), group);
-                    OutItem { name, url, duration: None, attrs, extras: &e.channel.extras }
+                    OutItem {
+                        name,
+                        url,
+                        duration: None,
+                        attrs,
+                        extras: &e.channel.extras,
+                    }
                 }
             }
         })
@@ -150,8 +177,16 @@ pub fn build_user_playlist(
 /// 5987 UTF-8 form (customer names are usually Cyrillic).
 pub fn playlist_disposition(username: &str) -> String {
     let name = format!("{}.m3u", if username.is_empty() { "playlist" } else { username });
-    let ascii: String =
-        name.chars().map(|c| if (' '..='~').contains(&c) && c != '"' && c != '\\' { c } else { '_' }).collect();
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if (' '..='~').contains(&c) && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     format!("inline; filename=\"{ascii}\"; filename*=UTF-8''{}", enc(&name))
 }
 
@@ -162,11 +197,26 @@ mod tests {
     use crate::playlist::model::{Category, INFO_CATEGORY_ID};
 
     fn cfg(foss: bool, gateway: bool) -> PlaylistCfg<'static> {
-        PlaylistCfg { base_url: "https://iptv.example", epg_enabled: true, foss_enabled: foss, foss_provider_id: "infochannel", gateway_enabled: gateway }
+        PlaylistCfg {
+            base_url: "https://iptv.example",
+            epg_enabled: true,
+            foss_enabled: foss,
+            foss_provider_id: "infochannel",
+            gateway_enabled: gateway,
+        }
     }
 
     fn cat(id: &str, name: &str) -> Category {
-        Category { id: id.into(), key: id.into(), name: name.into(), source_name: None, enabled: true, builtin: false, custom: false, sort: 0 }
+        Category {
+            id: id.into(),
+            key: id.into(),
+            name: name.into(),
+            source_name: None,
+            enabled: true,
+            builtin: false,
+            custom: false,
+            sort: 0,
+        }
     }
 
     fn channel(id: &str, name: &str, url: &str) -> Channel {
@@ -192,9 +242,18 @@ mod tests {
 
     fn build(c: &PlaylistCfg<'_>, extra: &[(Channel, Category)], epg: &[String], brand: &str) -> String {
         let info_cat = cat(INFO_CATEGORY_ID, "Информация");
-        let info = Channel { builtin: true, ..channel(INFO_CHANNEL_ID, "", "") };
-        let mut entries = vec![Entry { channel: &info, category: &info_cat }];
-        entries.extend(extra.iter().map(|(ch, ca)| Entry { channel: ch, category: ca }));
+        let info = Channel {
+            builtin: true,
+            ..channel(INFO_CHANNEL_ID, "", "")
+        };
+        let mut entries = vec![Entry {
+            channel: &info,
+            category: &info_cat,
+        }];
+        entries.extend(extra.iter().map(|(ch, ca)| Entry {
+            channel: ch,
+            category: ca,
+        }));
         build_user_playlist("abc123", "ivan", brand, c, &entries, epg, "")
     }
 
@@ -204,8 +263,14 @@ mod tests {
         assert!(p.contains(r#"foss-tvg="=infochannel::https://iptv.example/foss-epg/u/abc123/epg/""#));
         assert!(p.contains(r#"tvg-source="=infochannel""#));
         assert!(p.contains(r#"tvg-logo="https://iptv.example/foss-epg/u/abc123/logo.svg""#));
-        let src = crate::regex!(r#"foss-tvg="=infochannel::([^"]+)""#).captures(&p).unwrap()[1].to_owned();
-        assert_eq!(format!("{src}{}.json", foss_id_hash("abc123")), "https://iptv.example/foss-epg/u/abc123/epg/463191053.json");
+        let src = crate::regex!(r#"foss-tvg="=infochannel::([^"]+)""#)
+            .captures(&p)
+            .unwrap()[1]
+            .to_owned();
+        assert_eq!(
+            format!("{src}{}.json", foss_id_hash("abc123")),
+            "https://iptv.example/foss-epg/u/abc123/epg/463191053.json"
+        );
         let off = build(&cfg(false, false), &[], &[], "x");
         assert!(!off.contains("foss-tvg") && !off.contains("tvg-source") && !off.contains("tvg-logo"));
         assert!(off.contains("url-tvg="));
@@ -218,10 +283,17 @@ mod tests {
         ch.attrs.insert("tvg-id".into(), "sport1".into());
         ch.attrs.insert("tvg-logo".into(), "http://provider/1.png".into());
         ch.extras = vec!["#EXTVLCOPT:http-user-agent=Mozilla".into()];
-        let p = build(&cfg(true, false), &[(ch, cat("c1", "Спорт"))], &["http://provider/epg.xml.gz".into()], "TestIPTV");
+        let p = build(
+            &cfg(true, false),
+            &[(ch, cat("c1", "Спорт"))],
+            &["http://provider/epg.xml.gz".into()],
+            "TestIPTV",
+        );
         assert!(p.contains(",TestIPTV — ivan\n"));
         assert!(p.contains("\nhttps://iptv.example/hls/abc123/index.m3u8\n"));
-        assert!(p.contains(r#"#EXTINF:-1 tvg-id="sport1" tvg-logo="http://provider/1.png" group-title="Спорт",Спорт 1 HD"#));
+        assert!(
+            p.contains(r#"#EXTINF:-1 tvg-id="sport1" tvg-logo="http://provider/1.png" group-title="Спорт",Спорт 1 HD"#)
+        );
         assert!(!p.contains("SPORT 1 [RAW]"));
         assert!(p.contains("#EXTVLCOPT:http-user-agent=Mozilla\nhttp://provider/live/1.ts"));
         assert!(p.contains(r#"url-tvg="https://iptv.example/u/abc123/epg.xml,http://provider/epg.xml.gz""#));
@@ -229,20 +301,40 @@ mod tests {
 
     #[test]
     fn media_channel_and_gateway() {
-        let media = Channel { builtin: true, ..channel(INFO_MEDIA_CHANNEL_ID, "", "") };
+        let media = Channel {
+            builtin: true,
+            ..channel(INFO_MEDIA_CHANNEL_ID, "", "")
+        };
         let info_cat = cat(INFO_CATEGORY_ID, "Информация");
         let p = build(&cfg(true, true), &[(media.clone(), info_cat.clone())], &[], "x");
-        assert!(p.contains("#EXTINF:-1 tvg-name=\"Медиа\" group-title=\"Информация\",Медиа\nhttps://iptv.example/m/abc123/index.m3u8"));
-        let renamed = Channel { name: "Инструкции".into(), ..media };
+        assert!(p.contains(
+            "#EXTINF:-1 tvg-name=\"Медиа\" group-title=\"Информация\",Медиа\nhttps://iptv.example/m/abc123/index.m3u8"
+        ));
+        let renamed = Channel {
+            name: "Инструкции".into(),
+            ..media
+        };
         assert!(build(&cfg(true, false), &[(renamed, info_cat)], &[], "x").contains(",Инструкции\n"));
 
         let mut hls = channel("ch1", "Спорт 1 HD", "http://provider/live/1.m3u8");
         hls.attrs.insert("tvg-id".into(), "sport1".into());
         let ts = channel("ch2", "Спорт 2", "http://provider/live/2.ts");
         let sport = cat("c1", "Спорт");
-        let p = build(&cfg(true, true), &[(hls.clone(), sport.clone()), (ts, sport.clone())], &[], "x");
+        let p = build(
+            &cfg(true, true),
+            &[(hls.clone(), sport.clone()), (ts, sport.clone())],
+            &[],
+            "x",
+        );
         let urls: Vec<&str> = p.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
-        assert_eq!(urls, ["https://iptv.example/hls/abc123/index.m3u8", "https://iptv.example/c/abc123/ch1.m3u8", "http://provider/live/2.ts"]);
+        assert_eq!(
+            urls,
+            [
+                "https://iptv.example/hls/abc123/index.m3u8",
+                "https://iptv.example/c/abc123/ch1.m3u8",
+                "http://provider/live/2.ts"
+            ]
+        );
         assert!(build(&cfg(true, false), &[(hls, sport)], &[], "x").contains("\nhttp://provider/live/1.m3u8\n"));
     }
 

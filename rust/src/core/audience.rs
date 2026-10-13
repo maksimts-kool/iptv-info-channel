@@ -26,12 +26,7 @@ pub struct Audience {
 /// de-duplicated; users are positive integers, plans non-empty strings.
 pub fn clean_audience(raw: &Value) -> Option<Audience> {
     let obj = raw.as_object()?;
-    let list = |key: &str| {
-        obj.get(key)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-    };
+    let list = |key: &str| obj.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
 
     let mut users = Vec::new();
     for v in list("users") {
@@ -40,9 +35,7 @@ pub fn clean_audience(raw: &Value) -> Option<Audience> {
             Value::String(s) => s.trim().parse::<f64>().ok(),
             _ => None,
         };
-        if let Some(id) = id
-            .filter(|f| f.fract() == 0.0 && *f > 0.0)
-            .map(|f| f as i64)
+        if let Some(id) = id.filter(|f| f.fract() == 0.0 && *f > 0.0).map(|f| f as i64)
             && !users.contains(&id)
         {
             users.push(id);
@@ -65,10 +58,6 @@ pub fn clean_audience(raw: &Value) -> Option<Audience> {
     Some(Audience { users, plans })
 }
 
-pub fn audience_is_empty(audience: Option<&Audience>) -> bool {
-    audience.is_none_or(|a| a.users.is_empty() && a.plans.is_empty())
-}
-
 /// Anything with an id and a plan can be matched against an audience.
 pub trait Member {
     fn member_id(&self) -> i64;
@@ -82,16 +71,7 @@ pub fn audience_matches<M: Member + ?Sized>(audience: Option<&Audience>, user: O
         return true;
     };
     let Some(user) = user else { return false };
-    audience.users.contains(&user.member_id())
-        || audience.plans.iter().any(|p| p == user.member_plan())
-}
-
-/// Every customer the audience covers, in the order given.
-pub fn audience_members<'a, M: Member>(audience: Option<&Audience>, users: &'a [M]) -> Vec<&'a M> {
-    users
-        .iter()
-        .filter(|u| audience_matches(audience, Some(*u)))
-        .collect()
+    audience.users.contains(&user.member_id()) || audience.plans.iter().any(|p| p == user.member_plan())
 }
 
 #[cfg(test)]
@@ -117,9 +97,7 @@ mod tests {
         assert_eq!(clean_audience(&json!({})), Some(Audience::default()));
         let long = "x".repeat(65);
         assert_eq!(
-            clean_audience(
-                &json!({"users": [3, "3", "7", -1, 2.5, "x", null], "plans": [" pro ", "pro", "", long]})
-            ),
+            clean_audience(&json!({"users": [3, "3", "7", -1, 2.5, "x", null], "plans": [" pro ", "pro", "", long]})),
             Some(Audience {
                 users: vec![3, 7],
                 plans: vec!["pro".into()]
@@ -144,15 +122,5 @@ mod tests {
         assert!(!audience_matches(Some(&vip), Some(&bob)));
         assert!(audience_matches(None, Some(&bob)));
         assert!(!audience_matches::<U>(Some(&group), None));
-        assert!(audience_is_empty(Some(&Audience::default())));
-        assert!(!audience_is_empty(Some(&group)));
-        let std = Audience {
-            users: vec![],
-            plans: vec!["std".into()],
-        };
-        let all = [alice, bob];
-        let members = audience_members(Some(&std), &all);
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].0, 2);
     }
 }

@@ -48,11 +48,7 @@ pub fn is_master_playlist(text: &str) -> bool {
 /// `EXT-X-MEDIA` renditions — so they come back through the gateway and a
 /// revocation lands while the customer is watching. I-frame playlists and
 /// keys stay direct.
-pub fn rewrite_hls_manifest(
-    text: &str,
-    base: &str,
-    playlist_uri: Option<&dyn Fn(&str) -> String>,
-) -> String {
+pub fn rewrite_hls_manifest(text: &str, base: &str, playlist_uri: Option<&dyn Fn(&str) -> String>) -> String {
     let gate = playlist_uri.filter(|_| is_master_playlist(text));
     text.split('\n')
         .map(|raw| {
@@ -66,10 +62,7 @@ pub fn rewrite_hls_manifest(
                 return regex!(r#"URI="([^"]*)""#)
                     .replace_all(line, |c: &regex::Captures<'_>| {
                         let abs = absolutize(&c[1], base);
-                        format!(
-                            "URI=\"{}\"",
-                            gate_tag.map_or_else(|| abs.clone(), |g| g(&abs))
-                        )
+                        format!("URI=\"{}\"", gate_tag.map_or_else(|| abs.clone(), |g| g(&abs)))
                     })
                     .into_owned();
             }
@@ -185,8 +178,7 @@ pub fn parse_media_playlist(text: &str) -> MediaPlaylist {
             .filter(|v| *v != 0.0)
             .unwrap_or(6.0),
         media_sequence: tag_number(text, "#EXT-X-MEDIA-SEQUENCE").map_or(0, |v| v as i64),
-        discontinuity_sequence: tag_number(text, "#EXT-X-DISCONTINUITY-SEQUENCE")
-            .map_or(0, |v| v as i64),
+        discontinuity_sequence: tag_number(text, "#EXT-X-DISCONTINUITY-SEQUENCE").map_or(0, |v| v as i64),
         independent: regex!(r"(?m)^#EXT-X-INDEPENDENT-SEGMENTS").is_match(text),
         has_map,
         segments,
@@ -271,11 +263,7 @@ pub fn build_spliced_playlist(sp: &Splice<'_>) -> String {
     let filler_disc = |k: usize| last_provider_disc + 1 + ((sp.start_index + k) / loop_len) as i64;
     let filler_tagged = |k: usize| k == 0 || (sp.start_index + k).is_multiple_of(loop_len);
     let disc_at = |i: usize| {
-        if i < n {
-            provider_disc[i]
-        } else {
-            filler_disc(i - n)
-        }
+        if i < n { provider_disc[i] } else { filler_disc(i - n) }
     };
 
     // Continue the provider's wall clock across the cut.
@@ -355,17 +343,9 @@ pub fn build_spliced_playlist(sp: &Splice<'_>) -> String {
 pub fn ended_playlist(provider: &MediaPlaylist) -> String {
     let mut out = String::from("#EXTM3U\n");
     let _ = writeln!(out, "#EXT-X-VERSION:{}", provider.version.max(3));
-    let _ = writeln!(
-        out,
-        "#EXT-X-TARGETDURATION:{}",
-        provider.target_duration.ceil() as i64
-    );
+    let _ = writeln!(out, "#EXT-X-TARGETDURATION:{}", provider.target_duration.ceil() as i64);
     let _ = writeln!(out, "#EXT-X-MEDIA-SEQUENCE:{}", provider.media_sequence);
-    let _ = writeln!(
-        out,
-        "#EXT-X-DISCONTINUITY-SEQUENCE:{}",
-        provider.discontinuity_sequence
-    );
+    let _ = writeln!(out, "#EXT-X-DISCONTINUITY-SEQUENCE:{}", provider.discontinuity_sequence);
     for (i, seg) in provider.segments.iter().enumerate() {
         for tag in &seg.tags {
             if tag == "#EXT-X-DISCONTINUITY" && i == 0 {
@@ -403,14 +383,8 @@ mod tests {
         let m = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.000,\nseg_001.ts\n#EXTINF:6.000,\n../shared/seg_002.ts\n#EXTINF:6.000,\n/abs/seg_003.ts?token=xyz";
         let out = rewrite_hls_manifest(m, BASE, None);
         let lines: Vec<_> = out.split('\n').collect();
-        assert_eq!(
-            lines[4],
-            "http://provider.example/live/user/pass/123/seg_001.ts"
-        );
-        assert_eq!(
-            lines[6],
-            "http://provider.example/live/user/pass/shared/seg_002.ts"
-        );
+        assert_eq!(lines[4], "http://provider.example/live/user/pass/123/seg_001.ts");
+        assert_eq!(lines[6], "http://provider.example/live/user/pass/shared/seg_002.ts");
         assert_eq!(lines[8], "http://provider.example/abs/seg_003.ts?token=xyz");
     }
 
@@ -418,9 +392,7 @@ mod tests {
     fn tag_uris_rewritten() {
         let m = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\",IV=0x0\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6.000,\nseg_001.ts";
         let out = rewrite_hls_manifest(m, BASE, None);
-        assert!(out.contains(
-            "METHOD=AES-128,URI=\"http://provider.example/live/user/pass/123/key.bin\",IV=0x0"
-        ));
+        assert!(out.contains("METHOD=AES-128,URI=\"http://provider.example/live/user/pass/123/key.bin\",IV=0x0"));
         assert!(out.contains("URI=\"http://provider.example/live/user/pass/123/init.mp4\""));
     }
 
@@ -494,13 +466,7 @@ mod tests {
     }
 
     fn timeline(text: &str) -> Vec<(i64, i64, String)> {
-        let num = |tag: &str| -> i64 {
-            text.lines()
-                .find_map(|l| l.strip_prefix(tag))
-                .unwrap()
-                .parse()
-                .unwrap()
-        };
+        let num = |tag: &str| -> i64 { text.lines().find_map(|l| l.strip_prefix(tag)).unwrap().parse().unwrap() };
         let mut seq = num("#EXT-X-MEDIA-SEQUENCE:");
         let mut disc = num("#EXT-X-DISCONTINUITY-SEQUENCE:");
         let mut out = Vec::new();
@@ -543,10 +509,7 @@ mod tests {
         let mut previous_first = i64::MIN;
         for t in (0..=120).step_by(2) {
             let text = splice(&p, &f, f64::from(t), 6);
-            let now: HashMap<i64, (i64, String)> = timeline(&text)
-                .into_iter()
-                .map(|(s, d, u)| (s, (d, u)))
-                .collect();
+            let now: HashMap<i64, (i64, String)> = timeline(&text).into_iter().map(|(s, d, u)| (s, (d, u))).collect();
             let first = *now.keys().min().unwrap();
             assert!(first >= previous_first, "moved backwards at t={t}");
             assert!(first > p.media_sequence || now.len() > p.segments.len());
@@ -558,19 +521,14 @@ mod tests {
                 }
             }
             assert!(
-                !crate::regex!(
-                    r"DISCONTINUITY-SEQUENCE:\d+\n(#EXT-X-KEY[^\n]*\n)?#EXT-X-DISCONTINUITY\n"
-                )
-                .is_match(&text)
+                !crate::regex!(r"DISCONTINUITY-SEQUENCE:\d+\n(#EXT-X-KEY[^\n]*\n)?#EXT-X-DISCONTINUITY\n")
+                    .is_match(&text)
             );
             previous = Some(now);
             previous_first = first;
         }
         let end = timeline(&splice(&p, &f, 0.0, 20));
-        assert_eq!(
-            end.iter().map(|x| x.1).collect::<Vec<_>>(),
-            [7, 7, 8, 9, 9, 9]
-        );
+        assert_eq!(end.iter().map(|x| x.1).collect::<Vec<_>>(), [7, 7, 8, 9, 9, 9]);
         assert_eq!(
             end.iter().find(|x| x.0 == 503).unwrap().2,
             "https://me/hls/t/seg_000.ts?s=503"

@@ -11,7 +11,7 @@
 //! - A refusal mid-view is a SPLICE (provider's last window + our own loop as
 //!   the continuation), sticky until a fresh tune-in. A refusal at tune-in is
 //!   a 302 to the customer's own info card (same origin, so no protocol issue).
-//! - The device limit is enforced here (playlist::devices).
+//! - The device limit is enforced here (`playlist::devices`).
 //! - Deliberately NOT gated on the gateway flag: playlists handed out while it
 //!   was on stay in players and must keep working.
 
@@ -35,7 +35,10 @@ use crate::core::util::{AccountStatus, account_status, now_ms};
 use crate::data::model::DecoratedUser;
 use crate::encode::liveloop::{LIVE_WINDOW_SEGMENTS, Segment, loop_segments};
 use crate::playlist::devices::{DeviceInfo, DeviceTracker, ListedDevice, device_key};
-use crate::playlist::hls::{MediaPlaylist, Splice, build_spliced_playlist, is_hls_url, is_master_playlist, parse_media_playlist, rewrite_hls_manifest};
+use crate::playlist::hls::{
+    MediaPlaylist, Splice, build_spliced_playlist, is_hls_url, is_master_playlist, parse_media_playlist,
+    rewrite_hls_manifest,
+};
 use crate::playlist::model::{INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, Resolve, resolve_channel_access};
 
 const SESSION_TTL_MS: i64 = 10 * 60 * 1000;
@@ -48,8 +51,15 @@ enum Refusal {
 
 #[derive(Debug, Clone)]
 enum Session {
-    Master { last_seen: i64 },
-    Media { last_seen: i64, snapshot: MediaPlaylist, snapshot_text: String, splice: Option<(i64, Refusal)> },
+    Master {
+        last_seen: i64,
+    },
+    Media {
+        last_seen: i64,
+        snapshot: MediaPlaylist,
+        snapshot_text: String,
+        splice: Option<(i64, Refusal)>,
+    },
 }
 
 impl Session {
@@ -89,7 +99,9 @@ pub struct DeviceView {
 }
 
 fn iso_ms(ms: i64) -> String {
-    jiff::Timestamp::from_millisecond(ms).map(crate::core::util::iso).unwrap_or_default()
+    jiff::Timestamp::from_millisecond(ms)
+        .map(crate::core::util::iso)
+        .unwrap_or_default()
 }
 
 impl Gateway {
@@ -143,7 +155,9 @@ impl Gateway {
 }
 
 fn variant_signature(secret: &str, token: &str, channel_id: &str, url: &str) -> String {
-    let Ok(mut mac) = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else { return String::new() };
+    let Ok(mut mac) = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes()) else {
+        return String::new();
+    };
     mac.update(format!("gate:{token}:{channel_id}:{url}").as_bytes());
     let mut sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
     sig.truncate(22);
@@ -166,7 +180,10 @@ fn variant_gate_url(st: &AppState, user: &DecoratedUser, tag: &str, channel_id: 
 /// Verify a signed variant link; without the signature the route would be an
 /// open fetch proxy.
 fn decode_variant(st: &AppState, user: &DecoratedUser, channel_id: &str, sig: &str, reference: &str) -> Option<String> {
-    let raw = reference.strip_suffix(".m3u8").or_else(|| reference.strip_suffix(".M3U8")).unwrap_or(reference);
+    let raw = reference
+        .strip_suffix(".m3u8")
+        .or_else(|| reference.strip_suffix(".M3U8"))
+        .unwrap_or(reference);
     let url = String::from_utf8(URL_SAFE_NO_PAD.decode(raw.trim_end_matches('=')).ok()?).ok()?;
     let lower = url.to_ascii_lowercase();
     if !lower.starts_with("http://") && !lower.starts_with("https://") {
@@ -183,7 +200,13 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Whether the account is expired or deactivated (the expiry gate).
 pub fn is_locked(st: &AppState, user: &DecoratedUser) -> bool {
     matches!(
-        account_status(user.active, user.expires_at.as_deref(), st.config.expiring_threshold_days, jiff::Timestamp::now(), &st.config.tz),
+        account_status(
+            user.active,
+            user.expires_at.as_deref(),
+            st.config.expiring_threshold_days,
+            jiff::Timestamp::now(),
+            &st.config.tz
+        ),
         AccountStatus::Expired | AccountStatus::Disabled
     )
 }
@@ -197,8 +220,14 @@ struct Filler {
 /// encoded yet (an encode is started meanwhile).
 fn filler_for(st: &AppState, user: &DecoratedUser, refusal: Refusal) -> Option<Filler> {
     let (dir, base): (PathBuf, String) = match refusal {
-        Refusal::Devices => (st.channels.notice_hls_dir(), format!("{}/notice/devices/", st.config.public_base_url)),
-        Refusal::Access => (st.channels.user_hls_dir(user.id), format!("{}/hls/{}/", st.config.public_base_url, enc(&user.token))),
+        Refusal::Devices => (
+            st.channels.notice_hls_dir(),
+            format!("{}/notice/devices/", st.config.public_base_url),
+        ),
+        Refusal::Access => (
+            st.channels.user_hls_dir(user.id),
+            format!("{}/hls/{}/", st.config.public_base_url, enc(&user.token)),
+        ),
     };
     if let Some(segments) = loop_segments(&dir) {
         return Some(Filler { segments, base });
@@ -208,7 +237,10 @@ fn filler_for(st: &AppState, user: &DecoratedUser, refusal: Refusal) -> Option<F
     tokio::spawn(async move {
         let result = match refusal {
             Refusal::Devices => channels.ensure_device_notice(false).await.map(|_| ()),
-            Refusal::Access => channels.generate_for_user(user_id, "gateway filler", false).await.map(|_| ()),
+            Refusal::Access => channels
+                .generate_for_user(user_id, "gateway filler", false)
+                .await
+                .map(|_| ()),
         };
         if let Err(e) = result {
             tracing::error!(target: "gateway", user_id, error = %e, "filler loop generation failed");
@@ -266,13 +298,24 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         let access = resolve_channel_access(
             &catalog,
             req.channel_id,
-            Resolve { overrides: Some(&overrides), locked: is_locked(st, &user), plan: Some(&plan) },
+            Resolve {
+                overrides: Some(&overrides),
+                locked: is_locked(st, &user),
+                plan: Some(&plan),
+            },
         );
         let ch = access.channel;
         (
             access.allowed,
             access.reason,
-            ch.map(|c| if c.name.is_empty() { c.id.clone() } else { c.name.clone() }).unwrap_or_default(),
+            ch.map(|c| {
+                if c.name.is_empty() {
+                    c.id.clone()
+                } else {
+                    c.name.clone()
+                }
+            })
+            .unwrap_or_default(),
             ch.map(|c| c.url.clone()).unwrap_or_default(),
             ch.is_some_and(|c| c.id == INFO_CHANNEL_ID),
             ch.is_some_and(|c| c.id == INFO_MEDIA_CHANNEL_ID),
@@ -300,14 +343,27 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     } else if let Some((_, r)) = existing_splice {
         Some(r)
     } else {
-        let info = DeviceInfo { ip: req.ip.clone(), ua: req.user_agent.clone(), channel: channel_name.clone() };
-        let slot = st.gateway.devices().admit(user.id, &device, user.device_limit, info, now);
+        let info = DeviceInfo {
+            ip: req.ip.clone(),
+            ua: req.user_agent.clone(),
+            channel: channel_name.clone(),
+        };
+        let slot = st
+            .gateway
+            .devices()
+            .admit(user.id, &device, user.device_limit, info, now);
         (!slot.allowed).then_some(Refusal::Devices)
     };
 
     if let Some(refusal) = refusal {
         // Mid-view: continue the stream into our own loop instead of breaking it.
-        if let Some(Session::Media { snapshot, snapshot_text, splice, .. }) = session {
+        if let Some(Session::Media {
+            snapshot,
+            snapshot_text,
+            splice,
+            ..
+        }) = session
+        {
             let (at, why) = splice.unwrap_or((now, refusal));
             if splice.is_none() {
                 tracing::info!(target: "gateway", user_id = user.id, username = %user.username, channel_id = req.channel_id, reason = reason.as_str(),
@@ -315,9 +371,16 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
             }
             st.gateway.sessions().insert(
                 session_key,
-                Session::Media { last_seen: now, snapshot: snapshot.clone(), snapshot_text: snapshot_text.clone(), splice: Some((at, why)) },
+                Session::Media {
+                    last_seen: now,
+                    snapshot: snapshot.clone(),
+                    snapshot_text: snapshot_text.clone(),
+                    splice: Some((at, why)),
+                },
             );
-            let Some(filler) = filler_for(st, &user, why) else { return manifest(snapshot_text) };
+            let Some(filler) = filler_for(st, &user, why) else {
+                return manifest(snapshot_text);
+            };
             let uri = |seg: &Segment, seq: i64| format!("{}{}?s={seq}", filler.base, seg.file);
             return manifest(build_spliced_playlist(&Splice {
                 provider: &snapshot,
@@ -352,7 +415,11 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     let url = upstream.unwrap_or(channel_url);
     let mut headers = HeaderMap::new();
     // Providers routinely gate on the User-Agent; forward the player's.
-    let ua = if req.user_agent.is_empty() { "VLC/3.0.20 LibVLC/3.0.20" } else { req.user_agent.as_str() };
+    let ua = if req.user_agent.is_empty() {
+        "VLC/3.0.20 LibVLC/3.0.20"
+    } else {
+        req.user_agent.as_str()
+    };
     if let Ok(v) = HeaderValue::from_str(ua) {
         headers.insert(USER_AGENT, v);
     }
@@ -368,14 +435,21 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         Ok(f) => {
             let body = f.text();
             if is_master_playlist(&body) {
-                st.gateway.sessions().insert(session_key, Session::Master { last_seen: now });
+                st.gateway
+                    .sessions()
+                    .insert(session_key, Session::Master { last_seen: now });
                 let gate = |abs: &str| variant_gate_url(st, &user, req.tag, req.channel_id, abs);
                 return manifest(rewrite_hls_manifest(&body, &f.final_url, Some(&gate)));
             }
             let rewritten = rewrite_hls_manifest(&body, &f.final_url, None);
             st.gateway.sessions().insert(
                 session_key,
-                Session::Media { last_seen: now, snapshot: parse_media_playlist(&rewritten), snapshot_text: rewritten.clone(), splice: None },
+                Session::Media {
+                    last_seen: now,
+                    snapshot: parse_media_playlist(&rewritten),
+                    snapshot_text: rewritten.clone(),
+                    splice: None,
+                },
             );
             manifest(rewritten)
         }
@@ -397,6 +471,8 @@ mod tests {
         assert_ne!(a, variant_signature("s", "tok2", "ch", "http://p/v.m3u8"));
         assert_ne!(a, variant_signature("s", "tok", "ch2", "http://p/v.m3u8"));
         assert_ne!(a, variant_signature("s", "tok", "ch", "http://evil/"));
-        assert!(constant_time_eq(b"abc", b"abc") && !constant_time_eq(b"abc", b"abd") && !constant_time_eq(b"a", b"ab"));
+        assert!(
+            constant_time_eq(b"abc", b"abc") && !constant_time_eq(b"abc", b"abd") && !constant_time_eq(b"a", b"ab")
+        );
     }
 }

@@ -22,11 +22,7 @@ const FIELD_SEP: char = '¦';
 
 pub fn normalize_foss_provider_id(value: &str) -> String {
     let id = value.trim().trim_start_matches('=');
-    let id = if id.is_empty() {
-        DEFAULT_PROVIDER_ID
-    } else {
-        id
-    };
+    let id = if id.is_empty() { DEFAULT_PROVIDER_ID } else { id };
     if regex!(r"^[A-Za-z0-9._-]+$").is_match(id) {
         id.to_owned()
     } else {
@@ -59,9 +55,7 @@ pub fn build_foss_channels_json(
     let days = each_epg_day(user, opts);
     let now_unix = opts.now.as_second();
     // channels.json only needs the latest programme start (the top of the guide).
-    let top = days
-        .last()
-        .map_or(now_unix, |d| day_start_unix(d.date, opts.tz));
+    let top = days.last().map_or(now_unix, |d| day_start_unix(d.date, opts.tz));
     let id_hash = foss_id_hash(&user.token).to_string();
     let hashes: Vec<u32> = epg_urls
         .iter()
@@ -72,10 +66,7 @@ pub fn build_foss_channels_json(
     data.insert(
         id_hash,
         json!([
-            format!(
-                "{}{FIELD_SEP}{top}{FIELD_SEP}{logo_url}",
-                epg_channel_id(&user.token)
-            ),
+            format!("{}{FIELD_SEP}{top}{FIELD_SEP}{logo_url}", epg_channel_id(&user.token)),
             name
         ]),
     );
@@ -123,8 +114,6 @@ pub struct MatchChannel {
 
 #[derive(Debug, Clone)]
 pub struct MatchRequest {
-    pub metadata: String,
-    pub tvg_urls: String,
     pub channels: Vec<MatchChannel>,
 }
 
@@ -134,7 +123,7 @@ fn is_u32(s: &str) -> bool {
 
 pub fn parse_match_request(body: &str) -> Option<MatchRequest> {
     let blocks: Vec<&str> = body.split(MATCH_BLOCK_SEP).collect();
-    let [metadata, tvg_urls, list] = blocks.as_slice() else {
+    let [_metadata, _tvg_urls, list] = blocks.as_slice() else {
         return None;
     };
     let channels = list
@@ -144,23 +133,17 @@ pub fn parse_match_request(body: &str) -> Option<MatchRequest> {
             let data = line.split('~').next().unwrap_or("");
             let fields: Vec<&str> = data.split('-').collect();
             match fields.as_slice() {
-                [key, id, tvg_name, name] if fields.iter().all(|x| is_u32(x)) => {
-                    Some(MatchChannel {
-                        key: (*key).to_owned(),
-                        tvg_id_hash: (*id).to_owned(),
-                        tvg_name_hash: (*tvg_name).to_owned(),
-                        name_hash: (*name).to_owned(),
-                    })
-                }
+                [key, id, tvg_name, name] if fields.iter().all(|x| is_u32(x)) => Some(MatchChannel {
+                    key: (*key).to_owned(),
+                    tvg_id_hash: (*id).to_owned(),
+                    tvg_name_hash: (*tvg_name).to_owned(),
+                    name_hash: (*name).to_owned(),
+                }),
                 _ => None,
             }
         })
         .collect();
-    Some(MatchRequest {
-        metadata: (*metadata).to_owned(),
-        tvg_urls: (*tvg_urls).to_owned(),
-        channels,
-    })
+    Some(MatchRequest { channels })
 }
 
 /// A matched local channel: its id hash plus the provider URL for its owner.
@@ -195,6 +178,7 @@ pub fn build_match_channels_response(
     ["{}".to_owned(), matched.join("\n"), providers].join(MATCH_BLOCK_SEP)
 }
 
+#[cfg(test)]
 pub fn empty_channel_match_response() -> String {
     ["{}", "", ""].join(MATCH_BLOCK_SEP)
 }
@@ -309,10 +293,7 @@ mod tests {
         let last = json["meta"]["last-epg"].as_i64().unwrap();
         assert!(last > now().as_second());
         assert_eq!(json["meta"]["url-hashes"], json!([foss_url_hash(EPG_URL)]));
-        assert_eq!(
-            json["data"][&id][0],
-            format!("account-abc123¦{last}¦{LOGO_URL}")
-        );
+        assert_eq!(json["data"][&id][0], format!("account-abc123¦{last}¦{LOGO_URL}"));
         assert_eq!(json["data"][&id][1], "TestIPTV — ivan");
         assert_eq!(json["data"].as_object().unwrap().len(), 1);
     }
@@ -357,9 +338,7 @@ mod tests {
         }];
         let json = build_foss_epg_json(&ivan(), &opts(&tz, &incs, 2, 1));
         let cur = current(&json);
-        assert!(
-            regex!(r"^✕ Сбой сервиса · Подписка активна").is_match(cur["name"].as_str().unwrap())
-        );
+        assert!(regex!(r"^✕ Сбой сервиса · Подписка активна").is_match(cur["name"].as_str().unwrap()));
         assert!(
             cur["descr"]
                 .as_str()
@@ -411,10 +390,7 @@ mod tests {
             build_match_channels_response(&req.channels, |_| None, "infochannel"),
             empty_channel_match_response()
         );
-        assert_eq!(
-            empty_logo_match_response().split(MATCH_BLOCK_SEP).count(),
-            2
-        );
+        assert_eq!(empty_logo_match_response().split(MATCH_BLOCK_SEP).count(), 2);
     }
 
     #[test]

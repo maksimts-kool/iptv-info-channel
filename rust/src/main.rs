@@ -7,8 +7,18 @@
 //! iptv-server seed                    create demo customers (no-op if any exist)
 //! ```
 
-// Temporary while the port is in progress: modules land before their callers.
-#![allow(dead_code)]
+// Tests favour readability over these pedantic lints.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::assert_is_empty,
+        clippy::bool_assert_comparison,
+        clippy::cloned_ref_to_slice_refs,
+        clippy::inconsistent_struct_constructor,
+        clippy::needless_pass_by_value,
+        clippy::semicolon_if_nothing_returned
+    )
+)]
 
 mod config;
 mod core;
@@ -42,7 +52,9 @@ use crate::playlist::catalog::{Catalog, CatalogSettings};
 
 fn init_logging() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,tower_http=warn")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn,tower_http=warn")),
+        )
         .with_target(true)
         .init();
 }
@@ -62,7 +74,11 @@ async fn main() -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("import-json") => {
             let force = args.iter().any(|a| a == "--force");
-            let dir = args.iter().skip(1).find(|a| !a.starts_with("--")).map_or_else(|| config.data_dir.clone(), Into::into);
+            let dir = args
+                .iter()
+                .skip(1)
+                .find(|a| !a.starts_with("--"))
+                .map_or_else(|| config.data_dir.clone(), Into::into);
             let report = data::import::import_json(&pool, &dir, force, &config.catalog.info_category_name).await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
@@ -74,11 +90,16 @@ async fn main() -> anyhow::Result<()> {
                 println!("customers already exist; nothing seeded");
             }
             for u in created {
-                println!("created {} -> {}/u/{}/playlist.m3u", u.username, config.public_base_url, u.token);
+                println!(
+                    "created {} -> {}/u/{}/playlist.m3u",
+                    u.username, config.public_base_url, u.token
+                );
             }
             Ok(())
         }
-        Some(other) if other != "serve" => anyhow::bail!("unknown command {other:?} (expected serve, import-json or seed)"),
+        Some(other) if other != "serve" => {
+            anyhow::bail!("unknown command {other:?} (expected serve, import-json or seed)")
+        }
         _ => serve(config, pool).await,
     }
 }
@@ -110,8 +131,16 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
     if let Some(on) = store.setting("gateway_enabled").and_then(|v| v.as_bool()) {
         config.set_gateway_enabled(on);
     }
-    let news = Arc::new(news::providernews::ProviderNews::new(Arc::clone(&config), Arc::clone(&store), http.clone()));
-    let notifier = Arc::new(notify::notify::Notifier::new(Arc::clone(&config), Arc::clone(&store), http.clone()));
+    let news = Arc::new(news::providernews::ProviderNews::new(
+        Arc::clone(&config),
+        Arc::clone(&store),
+        http.clone(),
+    ));
+    let notifier = Arc::new(notify::notify::Notifier::new(
+        Arc::clone(&config),
+        Arc::clone(&store),
+        http.clone(),
+    ));
     let raster = render::raster::Rasterizer::new(&config.media.font_dir);
     let channels = Arc::new(ChannelEncoder::new(
         Arc::clone(&config),
@@ -124,9 +153,24 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
     let media_store = Arc::new(
         media::store::MediaStore::open(pool, media::store::MediaDirs::new(&config.media_dir, &config.hls_dir)).await?,
     );
-    let media = Arc::new(media::build::MediaChannel::new(Arc::clone(&config), media_store, Arc::clone(&store), Arc::clone(&channels)));
+    let media = Arc::new(media::build::MediaChannel::new(
+        Arc::clone(&config),
+        media_store,
+        Arc::clone(&store),
+        Arc::clone(&channels),
+    ));
     let gateway = Arc::new(http::gateway::Gateway::new(config.gateway.device_idle_seconds));
-    Ok(AppState { config, store, catalog, http, news, notifier, channels, media, gateway })
+    Ok(AppState {
+        config,
+        store,
+        catalog,
+        http,
+        news,
+        notifier,
+        channels,
+        media,
+        gateway,
+    })
 }
 
 const LANDING: &str = r#"<!doctype html><meta charset="utf-8">
@@ -140,9 +184,10 @@ const LANDING: &str = r#"<!doctype html><meta charset="utf-8">
   </body>"#;
 
 pub fn app(state: AppState) -> Router {
-    let mut router = Router::new()
-        .route("/", get(|| async { Html(LANDING) }))
-        .route("/healthz", get(|| async { ([(header::CONTENT_TYPE, "application/json")], r#"{"ok":true}"#).into_response() }));
+    let mut router = Router::new().route("/", get(|| async { Html(LANDING) })).route(
+        "/healthz",
+        get(|| async { ([(header::CONTENT_TYPE, "application/json")], r#"{"ok":true}"#).into_response() }),
+    );
     if state.config.epg.enabled && state.config.epg.foss.enabled {
         router = router.merge(http::stream::foss_router());
     }
@@ -164,7 +209,10 @@ fn start_daily_refresh(st: AppState) {
                 Ok(t) => t.checked_add(1.day()).ok(),
                 Err(_) => None,
             };
-            let wait = next.and_then(|n| now.until(&n).ok()).and_then(|s| Duration::try_from(s).ok()).unwrap_or(Duration::from_secs(3600));
+            let wait = next
+                .and_then(|n| now.until(&n).ok())
+                .and_then(|s| Duration::try_from(s).ok())
+                .unwrap_or(Duration::from_secs(3600));
             tokio::time::sleep(wait).await;
             tracing::info!(target: "scheduler", "daily refresh triggered");
             // Safety net for source intervals that elapsed while we were down.
@@ -198,7 +246,8 @@ fn start_background(st: &AppState) {
     }
     if st.config.status_slide.enabled {
         let channels = Arc::clone(&st.channels);
-        st.news.start_watcher(move || encode::channel::spawn_regen_all(&channels, "provider service notices changed"));
+        st.news
+            .start_watcher(move || encode::channel::spawn_regen_all(&channels, "provider service notices changed"));
     }
     let gw = Arc::clone(&st.gateway);
     tokio::spawn(async move {
@@ -213,7 +262,9 @@ fn start_background(st: &AppState) {
 async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
     let st = build_state(Arc::clone(&config), pool).await?;
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("binding {addr}"))?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
     tracing::info!(target: "startup", listening = %addr, admin = %format!("{}/admin", config.public_base_url), "server started");
     tracing::info!(target: "startup",
         users = st.store.users().len(), plans = st.store.plans().len(),

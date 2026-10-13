@@ -26,7 +26,9 @@ impl Env {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                let Some((key, val)) = line.split_once('=') else { continue };
+                let Some((key, val)) = line.split_once('=') else {
+                    continue;
+                };
                 let mut val = val.trim();
                 if val.len() >= 2
                     && ((val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')))
@@ -44,7 +46,9 @@ impl Env {
     }
 
     fn str(&self, key: &str, default: &str) -> String {
-        self.raw(key).filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_owned())
+        self.raw(key)
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| default.to_owned())
     }
 
     fn num<T: std::str::FromStr>(&self, key: &str, default: T) -> T {
@@ -232,7 +236,10 @@ impl Config {
         let port: u16 = env.num("PORT", 9222);
         let data_dir = resolve(&root, &env.str("DATA_DIR", "data"));
         let default_music_file = root.join("assets/music/background.mp3");
-        let music_file = env.raw("MUSIC_FILE").filter(|v| !v.is_empty()).map_or_else(|| default_music_file.clone(), |v| resolve(&root, &v));
+        let music_file = env
+            .raw("MUSIC_FILE")
+            .filter(|v| !v.is_empty())
+            .map_or_else(|| default_music_file.clone(), |v| resolve(&root, &v));
         let trust_proxy = match env.raw("TRUST_PROXY").as_deref() {
             None | Some("" | "false") => TrustProxy::None,
             Some("true") => TrustProxy::All,
@@ -382,8 +389,11 @@ mod tests {
     #[test]
     fn dotenv_values_and_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".env"), "# c\nHLS_TIME=4\nINTRO_TRANSITION='fade'\nEPG_ENABLED=false\nPUBLIC_BASE_URL=https://x.example/\n")
-            .unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "# c\nHLS_TIME=4\nINTRO_TRANSITION='fade'\nEPG_ENABLED=false\nPUBLIC_BASE_URL=https://x.example/\n",
+        )
+        .unwrap();
         let c = Config::load(dir.path().to_path_buf());
         assert_eq!(c.channel.hls_time, 4);
         assert_eq!(c.intro.transition, "fade");

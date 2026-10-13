@@ -63,6 +63,14 @@ cast_possible_wrap = "allow"
 too_many_lines = "allow"
 # Records mirror the JSON schema, which is a bag of flags by nature.
 struct_excessive_bools = "allow"
+# PATCH fields: None = untouched, Some(None) = cleared, Some(Some(v)) = set.
+option_option = "allow"
+# Small strings built from iterators read better with format!.
+format_collect = "allow"
+# Geometry code reads best as x / y / w / h.
+many_single_char_names = "allow"
+# Handlers return ApiResult so every route has one signature.
+unnecessary_wraps = "allow"
 
 [profile.release]
 lto = "thin"

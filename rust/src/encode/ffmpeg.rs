@@ -28,7 +28,11 @@ impl RunError {
 pub fn ffprobe_path(ffmpeg: &str) -> String {
     std::env::var("FFPROBE_PATH").unwrap_or_else(|_| {
         ffmpeg.strip_suffix("ffmpeg.exe").map_or_else(
-            || ffmpeg.strip_suffix("ffmpeg").map_or_else(|| "ffprobe".to_owned(), |base| format!("{base}ffprobe")),
+            || {
+                ffmpeg
+                    .strip_suffix("ffmpeg")
+                    .map_or_else(|| "ffprobe".to_owned(), |base| format!("{base}ffprobe"))
+            },
             |base| format!("{base}ffprobe.exe"),
         )
     })
@@ -50,7 +54,10 @@ pub async fn run(cmd: &str, args: &[String], label: &str, cancel: Option<&Cancel
         .spawn()
         .map_err(|source| {
             tracing::error!(target: "process", %label, error = %source, "could not start");
-            RunError::Spawn { label: label.to_owned(), source }
+            RunError::Spawn {
+                label: label.to_owned(),
+                source,
+            }
         })?;
     let mut stderr = child.stderr.take();
     let read_err = async {
@@ -69,14 +76,21 @@ pub async fn run(cmd: &str, args: &[String], label: &str, cancel: Option<&Cancel
         }
         (status, output) = async { let out = read_err.await; (child.wait().await, out) } => (status, output),
     };
-    let status = status.map_err(|source| RunError::Spawn { label: label.to_owned(), source })?;
+    let status = status.map_err(|source| RunError::Spawn {
+        label: label.to_owned(),
+        source,
+    })?;
     if status.success() {
         return Ok(());
     }
     let code = status.code().unwrap_or(-1);
     let output = tail(&output, 800);
     tracing::error!(target: "process", %label, code, output = %output, "failed");
-    Err(RunError::Failed { label: label.to_owned(), code, output })
+    Err(RunError::Failed {
+        label: label.to_owned(),
+        code,
+        output,
+    })
 }
 
 /// Run a command and collect its stdout (ffprobe's JSON).
@@ -87,7 +101,10 @@ pub async fn capture(cmd: &str, args: &[String], label: &str) -> Result<String, 
         .kill_on_drop(true)
         .output()
         .await
-        .map_err(|source| RunError::Spawn { label: label.to_owned(), source })?;
+        .map_err(|source| RunError::Spawn {
+            label: label.to_owned(),
+            source,
+        })?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
@@ -126,7 +143,11 @@ pub fn js_fixed(v: f64, digits: usize) -> String {
     let frac_part: String = digits_vec[split..].iter().map(|d| char::from(b'0' + d)).collect();
     // JS: a negative input keeps its sign even when it rounds to zero.
     let sign = if v < 0.0 { "-" } else { "" };
-    if digits == 0 { format!("{sign}{int_part}") } else { format!("{sign}{int_part}.{frac_part}") }
+    if digits == 0 {
+        format!("{sign}{int_part}")
+    } else {
+        format!("{sign}{int_part}.{frac_part}")
+    }
 }
 
 /// JS `String(number)` for the values these builders print.

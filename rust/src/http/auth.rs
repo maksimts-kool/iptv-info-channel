@@ -22,7 +22,9 @@ pub const COOKIE_NAME: &str = "admin_session";
 const MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 fn hmac_hex(config: &Config, label: &str) -> String {
-    let Ok(mut mac) = hmac::Hmac::<Sha256>::new_from_slice(config.session_secret.as_bytes()) else { return String::new() };
+    let Ok(mut mac) = hmac::Hmac::<Sha256>::new_from_slice(config.session_secret.as_bytes()) else {
+        return String::new();
+    };
     mac.update(format!("{label}:{}", config.admin_password).as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -54,9 +56,12 @@ pub fn is_authed(config: &Config, headers: &HeaderMap) -> bool {
     cookie(headers, COOKIE_NAME).is_some_and(|v| constant_time_eq(v.as_bytes(), session_value(config).as_bytes()))
 }
 
-/// `Set-Cookie` for a fresh session (HttpOnly, SameSite=Lax, 7 days).
+/// `Set-Cookie` for a fresh session (`HttpOnly`, `SameSite=Lax`, 7 days).
 pub fn session_cookie(config: &Config) -> HeaderValue {
-    let value = format!("{COOKIE_NAME}={}; Path=/; Max-Age={MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax", session_value(config));
+    let value = format!(
+        "{COOKIE_NAME}={}; Path=/; Max-Age={MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax",
+        session_value(config)
+    );
     HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
@@ -73,9 +78,17 @@ pub async fn require_admin(State(st): State<AppState>, req: Request, next: Next)
     }
     let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     if !safe {
-        let given = req.headers().get("x-csrf-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+        let given = req
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
         if !constant_time_eq(given.as_bytes(), csrf_token(&st.config).as_bytes()) {
-            return (StatusCode::FORBIDDEN, axum::Json(json!({ "error": "bad or missing CSRF token" }))).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(json!({ "error": "bad or missing CSRF token" })),
+            )
+                .into_response();
         }
     }
     next.run(req).await
@@ -99,7 +112,10 @@ mod tests {
         assert_ne!(session_value(&a), session_value(&cfg("two")));
         assert!(check_password(&a, "one") && !check_password(&a, "on") && !check_password(&a, "two"));
         let mut h = HeaderMap::new();
-        h.insert(header::COOKIE, HeaderValue::from_str(&format!("x=1; {COOKIE_NAME}={}", session_value(&a))).unwrap());
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("x=1; {COOKIE_NAME}={}", session_value(&a))).unwrap(),
+        );
         assert!(is_authed(&a, &h));
         assert!(!is_authed(&cfg("two"), &h));
     }

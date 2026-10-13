@@ -17,7 +17,10 @@ pub struct FaceMetrics {
     pub descent: f32,
 }
 
-const FALLBACK_METRICS: FaceMetrics = FaceMetrics { ascent: 0.97, descent: 0.24 };
+const FALLBACK_METRICS: FaceMetrics = FaceMetrics {
+    ascent: 0.97,
+    descent: 0.24,
+};
 
 #[derive(Debug)]
 pub struct TextMeasurer {
@@ -29,7 +32,12 @@ pub struct TextMeasurer {
 
 impl TextMeasurer {
     pub fn new(db: Arc<fontdb::Database>) -> Self {
-        Self { db, faces: Mutex::default(), widths: Mutex::default(), metrics: Mutex::default() }
+        Self {
+            db,
+            faces: Mutex::default(),
+            widths: Mutex::default(),
+            metrics: Mutex::default(),
+        }
     }
 
     /// The face the frames' `font-family="Inter, sans-serif"` resolves to.
@@ -46,7 +54,9 @@ impl TextMeasurer {
     }
 
     pub fn metrics(&self, weight: u16, italic: bool) -> FaceMetrics {
-        let Some(id) = self.face(weight, italic) else { return FALLBACK_METRICS };
+        let Some(id) = self.face(weight, italic) else {
+            return FALLBACK_METRICS;
+        };
         let mut cache = self.metrics.lock().unwrap_or_else(PoisonError::into_inner);
         *cache.entry(id).or_insert_with(|| {
             self.db
@@ -54,7 +64,10 @@ impl TextMeasurer {
                     let font = skrifa::FontRef::from_index(data, index).ok()?;
                     let m = font.metrics(Size::unscaled(), LocationRef::default());
                     let upem = f32::from(m.units_per_em.max(1));
-                    Some(FaceMetrics { ascent: m.ascent / upem, descent: -m.descent / upem })
+                    Some(FaceMetrics {
+                        ascent: m.ascent / upem,
+                        descent: -m.descent / upem,
+                    })
                 })
                 .flatten()
                 .unwrap_or(FALLBACK_METRICS)
@@ -66,7 +79,9 @@ impl TextMeasurer {
         if text.is_empty() {
             return 0.0;
         }
-        let Some(id) = self.face(weight, italic) else { return text.chars().count() as f32 * size * 0.55 };
+        let Some(id) = self.face(weight, italic) else {
+            return text.chars().count() as f32 * size * 0.55;
+        };
         let key = (id, text.to_owned());
         if let Some(em) = self.widths.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
             return em * size;
@@ -75,7 +90,10 @@ impl TextMeasurer {
             .db
             .with_face_data(id, |data, index| {
                 let font = harfrust::FontRef::from_index(data, index).ok()?;
-                let upem = skrifa::FontRef::from_index(data, index).ok()?.metrics(Size::unscaled(), LocationRef::default()).units_per_em;
+                let upem = skrifa::FontRef::from_index(data, index)
+                    .ok()?
+                    .metrics(Size::unscaled(), LocationRef::default())
+                    .units_per_em;
                 let shaper_data = harfrust::ShaperData::new(&font);
                 let shaper = shaper_data.shaper(&font).build();
                 let mut buffer = harfrust::UnicodeBuffer::new();
@@ -87,7 +105,10 @@ impl TextMeasurer {
             })
             .flatten()
             .unwrap_or(text.chars().count() as f32 * 0.55);
-        self.widths.lock().unwrap_or_else(PoisonError::into_inner).insert(key, em);
+        self.widths
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, em);
         em * size
     }
 }

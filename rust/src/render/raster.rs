@@ -26,7 +26,10 @@ impl Rasterizer {
         // Arial, which Linux rarely has, so point it at the first installed
         // family that can draw Cyrillic.
         let has = |family: &str| db.faces().any(|f| f.families.iter().any(|(name, _)| name == family));
-        if let Some(family) = ["Inter", "Noto Sans", "DejaVu Sans", "Liberation Sans"].into_iter().find(|f| has(f)) {
+        if let Some(family) = ["Inter", "Noto Sans", "DejaVu Sans", "Liberation Sans"]
+            .into_iter()
+            .find(|f| has(f))
+        {
             db.set_sans_serif_family(family);
         }
         Self { fontdb: Arc::new(db) }

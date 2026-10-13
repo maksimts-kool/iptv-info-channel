@@ -110,7 +110,13 @@ pub fn plan_json(p: &Plan, names: &HashMap<String, String>) -> Value {
 }
 
 pub fn decorate_user(st: &AppState, u: &DecoratedUser) -> Value {
-    let status = account_status(u.active, u.expires_at.as_deref(), st.config.expiring_threshold_days, jiff::Timestamp::now(), &st.config.tz);
+    let status = account_status(
+        u.active,
+        u.expires_at.as_deref(),
+        st.config.expiring_threshold_days,
+        jiff::Timestamp::now(),
+        &st.config.tz,
+    );
     let base = &st.config.public_base_url;
     json!({
         "id": u.id, "username": u.username, "token": u.token, "plan_id": u.plan_id, "plan_name": u.plan_name,
@@ -131,10 +137,15 @@ pub const MAX_DEVICES_CEILING: i64 = 100;
 pub fn parse_max_devices(v: &Value, allow_null: bool) -> Result<Option<i64>, String> {
     let empty = v.is_null() || v.as_str() == Some("");
     if empty {
-        return if allow_null { Ok(None) } else { Err("max_devices must be a whole number".into()) };
+        return if allow_null {
+            Ok(None)
+        } else {
+            Err("max_devices must be a whole number".into())
+        };
     }
     let n = num_of(Some(v)).filter(|n| n.fract() == 0.0 && (0.0..=MAX_DEVICES_CEILING as f64).contains(n));
-    n.map(|n| Some(n as i64)).ok_or_else(|| format!("max_devices must be a whole number from 0 to {MAX_DEVICES_CEILING}"))
+    n.map(|n| Some(n as i64))
+        .ok_or_else(|| format!("max_devices must be a whole number from 0 to {MAX_DEVICES_CEILING}"))
 }
 
 /// Euros (as typed) -> integer cents.
@@ -143,7 +154,9 @@ pub fn parse_price_cents(v: Option<&Value>) -> Result<i64, String> {
     if empty {
         return Err("bad price".into());
     }
-    let cents = num_of(v).map(|e| (e * 100.0).round()).filter(|c| c.is_finite() && *c >= 0.0);
+    let cents = num_of(v)
+        .map(|e| (e * 100.0).round())
+        .filter(|c| c.is_finite() && *c >= 0.0);
     cents.map(|c| c as i64).ok_or_else(|| "bad price".into())
 }
 
@@ -152,7 +165,11 @@ pub fn parse_price_cents(v: Option<&Value>) -> Result<i64, String> {
 pub fn parse_plan_categories(v: &Value, known: &HashSet<String>) -> Result<Vec<String>, String> {
     let list = v.as_array().ok_or_else(|| "category_ids must be an array".to_owned())?;
     let mut ids: Vec<String> = Vec::new();
-    for id in list.iter().map(|x| str_of(Some(x)).trim().to_owned()).filter(|s| !s.is_empty()) {
+    for id in list
+        .iter()
+        .map(|x| str_of(Some(x)).trim().to_owned())
+        .filter(|s| !s.is_empty())
+    {
         if !ids.contains(&id) {
             ids.push(id);
         }
@@ -172,7 +189,9 @@ pub fn plan_category_diff(before: &[String], after: &[String]) -> (Vec<String>, 
 
 pub fn duplicate_plan_name(plans: &[Plan], name: &str, except: Option<&str>) -> bool {
     let n = name.trim().to_lowercase();
-    plans.iter().any(|p| Some(p.id.as_str()) != except && p.name.trim().to_lowercase() == n)
+    plans
+        .iter()
+        .any(|p| Some(p.id.as_str()) != except && p.name.trim().to_lowercase() == n)
 }
 
 const PAYMENT_PERIODS: [&str; 3] = ["day", "month", "year"];
@@ -188,13 +207,21 @@ pub struct PaymentRequest {
 /// "Customer paid for N periods". The period defaults to the plan's own, so
 /// the common case is just `{}`; a plan with no period is billed monthly.
 pub fn validate_payment(b: &Value, plan: Option<&Plan>) -> Result<PaymentRequest, String> {
-    let count = if b.get("count").is_none() { Some(1.0) } else { num_of(b.get("count")) };
+    let count = if b.get("count").is_none() {
+        Some(1.0)
+    } else {
+        num_of(b.get("count"))
+    };
     let count = count
         .filter(|c| c.fract() == 0.0 && *c >= 1.0 && *c <= MAX_PAYMENT_UNITS as f64)
-        .ok_or_else(|| format!("count must be a whole number between 1 and {MAX_PAYMENT_UNITS}"))? as i64;
+        .ok_or_else(|| format!("count must be a whole number between 1 and {MAX_PAYMENT_UNITS}"))?
+        as i64;
     let given = str_of(b.get("period"));
     let period = if given.is_empty() {
-        plan.map(|p| p.billing_period.as_str()).filter(|p| PAYMENT_PERIODS.contains(p)).unwrap_or("month").to_owned()
+        plan.map(|p| p.billing_period.as_str())
+            .filter(|p| PAYMENT_PERIODS.contains(p))
+            .unwrap_or("month")
+            .to_owned()
     } else {
         given
     };
@@ -215,7 +242,11 @@ pub fn validate_payment(b: &Value, plan: Option<&Plan>) -> Result<PaymentRequest
 /// still has; a lapsed or open-ended account restarts from today.
 pub fn payment_expiry(expires_at: Option<&str>, req: &PaymentRequest, today: &str) -> Option<String> {
     let current = expires_at.unwrap_or("");
-    let base = if req.from == "today" || current.is_empty() || current < today { today } else { current };
+    let base = if req.from == "today" || current.is_empty() || current < today {
+        today
+    } else {
+        current
+    };
     add_period(base, Period::parse(&req.period)?, req.count)
 }
 
@@ -223,7 +254,11 @@ pub fn payment_expiry(expires_at: Option<&str>, req: &PaymentRequest, today: &st
 /// payment in days has no fair price.
 pub fn suggested_payment_cents(plan: Option<&Plan>, count: i64, period: &str) -> Option<i64> {
     let plan = plan?;
-    let billed = if PAYMENT_PERIODS.contains(&plan.billing_period.as_str()) { plan.billing_period.as_str() } else { "month" };
+    let billed = if PAYMENT_PERIODS.contains(&plan.billing_period.as_str()) {
+        plan.billing_period.as_str()
+    } else {
+        "month"
+    };
     match (billed, period) {
         (b, p) if b == p => Some(plan.price_cents * count),
         ("month", "year") => Some(plan.price_cents * 12 * count),
@@ -261,8 +296,14 @@ pub fn payments_summary(payments: &[Payment], today: &str, tz: &jiff::tz::TimeZo
     let month = &today[..today.len().min(7)];
     let since = crate::core::util::parse_ymd(today).and_then(|d| d.checked_sub(jiff::Span::new().days(29)).ok());
     let local = |p: &Payment| parse_instant(&p.at).map(|t| local_date(t, tz));
-    let this_month: Vec<&Payment> = payments.iter().filter(|p| local(p).is_some_and(|d| d.to_string().starts_with(month))).collect();
-    let last30: Vec<&Payment> = payments.iter().filter(|p| local(p).zip(since).is_some_and(|(d, s)| d >= s)).collect();
+    let this_month: Vec<&Payment> = payments
+        .iter()
+        .filter(|p| local(p).is_some_and(|d| d.to_string().starts_with(month)))
+        .collect();
+    let last30: Vec<&Payment> = payments
+        .iter()
+        .filter(|p| local(p).zip(since).is_some_and(|(d, s)| d >= s))
+        .collect();
     let sum = |l: &[&Payment]| l.iter().filter_map(|p| p.amount_cents).sum::<i64>();
     json!({
         "month_count": this_month.len(), "month_cents": sum(&this_month), "month_total": format_price(sum(&this_month), "EUR"),
@@ -373,7 +414,10 @@ pub fn router(st: &AppState) -> Router<AppState> {
         .route("/", get(spa_shell))
         .route("/login", post(login))
         .route("/logout", post(logout))
-        .nest_service("/static", tower_http::services::ServeDir::new(st.config.public_dir.clone()))
+        .nest_service(
+            "/static",
+            tower_http::services::ServeDir::new(st.config.public_dir.clone()),
+        )
         .nest("/api", api)
 }
 
@@ -390,9 +434,17 @@ async fn spa_shell(State(st): State<AppState>) -> Response {
     }
 }
 
-async fn login(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
+async fn login(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    raw: axum::body::Bytes,
+) -> Response {
     let ip = client_ip(&headers, peer, st.config.trust_proxy);
-    let is_json = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|c| c.contains("json"));
+    let is_json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|c| c.contains("json"));
     if LOGIN_LIMIT.hit(&format!("login:{ip}")) {
         tracing::warn!(target: "admin", remote = %ip, "login rate limited");
         return if is_json {
@@ -402,15 +454,29 @@ async fn login(State(st): State<AppState>, ConnectInfo(peer): ConnectInfo<Socket
         };
     }
     let password = if is_json {
-        serde_json::from_slice::<Value>(&raw).ok().map(|v| str_of(v.get("password"))).unwrap_or_default()
+        serde_json::from_slice::<Value>(&raw)
+            .ok()
+            .map(|v| str_of(v.get("password")))
+            .unwrap_or_default()
     } else {
-        form_urlencoded::parse(&raw).find(|(k, _)| k == "password").map(|(_, v)| v.into_owned()).unwrap_or_default()
+        form_urlencoded::parse(&raw)
+            .find(|(k, _)| k == "password")
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default()
     };
     if !check_password(&st.config, &password) {
         tracing::warn!(target: "admin", remote = %ip, "login failed");
-        return if is_json { ApiError::new(StatusCode::UNAUTHORIZED, "wrong password").into_response() } else { Redirect::to("/admin/login?error=1").into_response() };
+        return if is_json {
+            ApiError::new(StatusCode::UNAUTHORIZED, "wrong password").into_response()
+        } else {
+            Redirect::to("/admin/login?error=1").into_response()
+        };
     }
-    let mut res = if is_json { Json(json!({ "ok": true })).into_response() } else { Redirect::to("/admin").into_response() };
+    let mut res = if is_json {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        Redirect::to("/admin").into_response()
+    };
     res.headers_mut().insert(header::SET_COOKIE, session_cookie(&st.config));
     res
 }
@@ -423,7 +489,12 @@ async fn logout() -> Response {
 
 /// Non-builtin categories: Информация is unconditional, so never sold.
 fn category_names(st: &AppState) -> HashMap<String, String> {
-    st.catalog.categories().into_iter().filter(|c| !c.builtin).map(|c| (c.id, c.name)).collect()
+    st.catalog
+        .categories()
+        .into_iter()
+        .filter(|c| !c.builtin)
+        .map(|c| (c.id, c.name))
+        .collect()
 }
 
 async fn state(State(st): State<AppState>) -> ApiResult {
@@ -447,7 +518,11 @@ async fn state(State(st): State<AppState>) -> ApiResult {
         .collect();
     let mut summary = payments_summary(&payments, &today, &st.config.tz);
     summary["recent"] = json!(payments.iter().take(6).map(payment_json).collect::<Vec<_>>());
-    let status = with_provider_notices(status_summary(&incidents, jiff::Timestamp::now(), &st.config.tz, 90), &st.news.current_notices(), &st.config.tz);
+    let status = with_provider_notices(
+        status_summary(&incidents, jiff::Timestamp::now(), &st.config.tz, 90),
+        &st.news.current_notices(),
+        &st.config.tz,
+    );
     ok(json!({
         "csrfToken": csrf_token(&st.config),
         "publicBaseUrl": st.config.public_base_url,
@@ -521,7 +596,10 @@ async fn create_user(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiR
     }
     let expires = expires_field(&b)?.flatten();
     let active = b.get("active").is_none_or(crate::notify::notify::truthy);
-    let u = st.store.create_user(username, plan_id.clone(), expires, active, None).await?;
+    let u = st
+        .store
+        .create_user(username, plan_id.clone(), expires, active, None)
+        .await?;
     tracing::info!(target: "admin", user_id = u.id, username = %u.username, %plan_id, "user created");
     spawn_regen(&st.channels, u.id, "admin user created");
     st.media.schedule_build_for_clients("client created");
@@ -570,10 +648,17 @@ async fn record_payment(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, b
     let req = validate_payment(&b, plan.as_ref()).map_err(ApiError::bad)?;
     let (amount, note) = validate_payment_record(&b).map_err(ApiError::bad)?;
     let today = local_date_string(jiff::Timestamp::now(), &st.config.tz);
-    let expires = payment_expiry(user.expires_at.as_deref(), &req, &today).ok_or_else(|| ApiError::bad("could not compute the new expiry date"))?;
+    let expires = payment_expiry(user.expires_at.as_deref(), &req, &today)
+        .ok_or_else(|| ApiError::bad("could not compute the new expiry date"))?;
     let updated = st
         .store
-        .update_user(id, UserPatch { expires_at: Some(Some(expires.clone())), ..UserPatch::default() })
+        .update_user(
+            id,
+            UserPatch {
+                expires_at: Some(Some(expires.clone())),
+                ..UserPatch::default()
+            },
+        )
         .await?
         .ok_or_else(ApiError::not_found)?;
     let amount = amount.or_else(|| suggested_payment_cents(plan.as_ref(), req.count, &req.period));
@@ -609,7 +694,9 @@ async fn record_payment(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, b
 async fn list_payments(State(st): State<AppState>) -> ApiResult {
     let payments = st.store.payments();
     let today = local_date_string(jiff::Timestamp::now(), &st.config.tz);
-    ok(json!({ "payments": payments.iter().map(payment_json).collect::<Vec<_>>(), "summary": payments_summary(&payments, &today, &st.config.tz) }))
+    ok(
+        json!({ "payments": payments.iter().map(payment_json).collect::<Vec<_>>(), "summary": payments_summary(&payments, &today, &st.config.tz) }),
+    )
 }
 
 /// Undo a mistaken payment: only the customer's LATEST one, and only while
@@ -620,9 +707,19 @@ async fn undo_payment(State(st): State<AppState>, UrlPath(id): UrlPath<String>) 
     if let Some(u) = &user {
         let latest = st.store.last_payment_for(u.id).is_some_and(|p| p.id == payment.id);
         if !latest || u.expires_at != payment.expires_at {
-            return Err(ApiError::conflict("отменить можно только последнюю оплату клиента, пока дата окончания не менялась"));
+            return Err(ApiError::conflict(
+                "отменить можно только последнюю оплату клиента, пока дата окончания не менялась",
+            ));
         }
-        st.store.update_user(u.id, UserPatch { expires_at: Some(payment.previous_expires_at.clone()), ..UserPatch::default() }).await?;
+        st.store
+            .update_user(
+                u.id,
+                UserPatch {
+                    expires_at: Some(payment.previous_expires_at.clone()),
+                    ..UserPatch::default()
+                },
+            )
+            .await?;
         spawn_regen(&st.channels, u.id, "admin payment undone");
     }
     st.store.remove_payment(&payment.id).await?;
@@ -644,7 +741,10 @@ async fn regenerate_token(State(st): State<AppState>, UrlPath(id): UrlPath<i64>)
 async fn regenerate_user(State(st): State<AppState>, UrlPath(id): UrlPath<i64>) -> ApiResult {
     let u = user_or_404(&st, id)?;
     tracing::info!(target: "admin", user_id = id, username = %u.username, "manual user regeneration requested");
-    st.channels.generate_for_user(id, "admin manual regeneration", false).await.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    st.channels
+        .generate_for_user(id, "admin manual regeneration", false)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     ok(json!({ "ok": true }))
 }
 
@@ -693,7 +793,9 @@ async fn all_devices(State(st): State<AppState>) -> ApiResult {
             (!devices.is_empty()).then(|| json!({ "user_id": u.id, "username": u.username, "plan_name": u.plan_name, "limit": u.device_limit, "devices": devices }))
         })
         .collect();
-    ok(json!({ "gateway_enabled": st.config.gateway_enabled(), "idle_seconds": st.config.gateway.device_idle_seconds, "clients": clients }))
+    ok(
+        json!({ "gateway_enabled": st.config.gateway_enabled(), "idle_seconds": st.config.gateway.device_idle_seconds, "clients": clients }),
+    )
 }
 
 fn validate_plan_name(name: &str, plans: &[Plan], except: Option<&str>) -> Result<String, ApiError> {
@@ -712,7 +814,11 @@ fn validate_plan_name(name: &str, plans: &[Plan], except: Option<&str>) -> Resul
 
 fn billing_period(v: Option<&Value>) -> Result<String, ApiError> {
     let p = str_of(v);
-    if ["", "month", "year"].contains(&p.as_str()) { Ok(p) } else { Err(ApiError::bad("bad billing_period")) }
+    if ["", "month", "year"].contains(&p.as_str()) {
+        Ok(p)
+    } else {
+        Err(ApiError::bad("bad billing_period"))
+    }
 }
 
 /// Expired accounts show every plan, so plan edits rebuild all streams.
@@ -722,11 +828,21 @@ async fn create_plan(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiR
     let price = parse_price_cents(b.get("price_eur")).map_err(ApiError::bad)?;
     let period = billing_period(b.get("billing_period"))?;
     let known: HashSet<String> = category_names(&st).into_keys().collect();
-    let categories = parse_plan_categories(b.get("category_ids").unwrap_or(&json!([])), &known).map_err(ApiError::bad)?;
-    let max = parse_max_devices(b.get("max_devices").unwrap_or(&json!(0)), false).map_err(ApiError::bad)?.unwrap_or(0);
+    let categories =
+        parse_plan_categories(b.get("category_ids").unwrap_or(&json!([])), &known).map_err(ApiError::bad)?;
+    let max = parse_max_devices(b.get("max_devices").unwrap_or(&json!(0)), false)
+        .map_err(ApiError::bad)?
+        .unwrap_or(0);
     let plan = st
         .store
-        .create_plan(NewPlan { name, price_cents: price, currency: "EUR".into(), billing_period: period, category_ids: categories, max_devices: max })
+        .create_plan(NewPlan {
+            name,
+            price_cents: price,
+            currency: "EUR".into(),
+            billing_period: period,
+            category_ids: categories,
+            max_devices: max,
+        })
         .await?;
     tracing::info!(target: "admin", plan_id = %plan.id, name = %plan.name, categories = plan.category_ids.len(), "plan created");
     spawn_regen_all(&st.channels, "admin plan created");
@@ -747,14 +863,22 @@ async fn update_plan(State(st): State<AppState>, UrlPath(id): UrlPath<String>, b
         patch.price_cents = Some(parse_price_cents(b.get("price_eur")).map_err(ApiError::bad)?);
     }
     if b.get("name").is_some() {
-        patch.name = Some(validate_plan_name(&str_of(b.get("name")), &st.store.plans(), Some(&id))?);
+        patch.name = Some(validate_plan_name(
+            &str_of(b.get("name")),
+            &st.store.plans(),
+            Some(&id),
+        )?);
     }
     if let Some(v) = b.get("category_ids") {
         let known: HashSet<String> = category_names(&st).into_keys().collect();
         patch.category_ids = Some(parse_plan_categories(v, &known).map_err(ApiError::bad)?);
     }
     let categories_changed = patch.category_ids.is_some();
-    let updated = st.store.update_plan(&id, patch).await?.ok_or_else(ApiError::not_found)?;
+    let updated = st
+        .store
+        .update_plan(&id, patch)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     tracing::info!(target: "admin", plan_id = %id, "plan updated");
     spawn_regen_all(&st.channels, "admin plan updated");
     if categories_changed {
@@ -770,7 +894,13 @@ async fn update_plan(State(st): State<AppState>, UrlPath(id): UrlPath<String>, b
 /// personal pin on the category (the plan edit changed nothing for them) and
 /// locked accounts (they see only Информация either way).
 fn notify_plan_category_change(st: &AppState, plan: &Plan, added: &[String], removed: &[String]) {
-    let visible: HashMap<String, String> = st.catalog.categories().into_iter().filter(|c| !c.builtin && c.enabled).map(|c| (c.id, c.name)).collect();
+    let visible: HashMap<String, String> = st
+        .catalog
+        .categories()
+        .into_iter()
+        .filter(|c| !c.builtin && c.enabled)
+        .map(|c| (c.id, c.name))
+        .collect();
     let jobs: Vec<(DecoratedUser, ContentChange)> = st
         .store
         .users()
@@ -778,8 +908,17 @@ fn notify_plan_category_change(st: &AppState, plan: &Plan, added: &[String], rem
         .filter(|u| u.plan_id == plan.id && !is_locked(st, u))
         .map(|u| {
             let pins = st.catalog.overrides(u.id).categories;
-            let names = |ids: &[String]| ids.iter().filter(|id| !pins.contains_key(*id)).filter_map(|id| visible.get(id).cloned()).collect::<Vec<_>>();
-            let change = ContentChange { added_categories: names(added), removed_categories: names(removed), ..ContentChange::default() };
+            let names = |ids: &[String]| {
+                ids.iter()
+                    .filter(|id| !pins.contains_key(*id))
+                    .filter_map(|id| visible.get(id).cloned())
+                    .collect::<Vec<_>>()
+            };
+            let change = ContentChange {
+                added_categories: names(added),
+                removed_categories: names(removed),
+                ..ContentChange::default()
+            };
             (u, change)
         })
         .collect();
@@ -797,7 +936,10 @@ async fn delete_plan(State(st): State<AppState>, UrlPath(id): UrlPath<String>) -
     let plan = st.store.plan(&id).ok_or_else(ApiError::not_found)?;
     let assigned = st.store.users().iter().filter(|u| u.plan_id == id).count();
     if assigned > 0 {
-        return Err(ApiError::conflict(format!("plan is assigned to {assigned} user{}", if assigned == 1 { "" } else { "s" })));
+        return Err(ApiError::conflict(format!(
+            "plan is assigned to {assigned} user{}",
+            if assigned == 1 { "" } else { "s" }
+        )));
     }
     st.store.remove_plan(&id).await?;
     tracing::info!(target: "admin", plan_id = %id, name = %plan.name, "plan deleted");
@@ -830,7 +972,10 @@ fn provider_news_response(st: &AppState) -> ApiResult {
 
 async fn update_provider_news(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
     let patch = validate_provider_news(&body(b)).map_err(ApiError::bad)?;
-    let wants_fetch = patch.enabled == Some(true) || patch.url.is_some() || patch.cookie.as_ref().is_some_and(|c| !c.is_empty()) || patch.ai_key.is_some();
+    let wants_fetch = patch.enabled == Some(true)
+        || patch.url.is_some()
+        || patch.cookie.as_ref().is_some_and(|c| !c.is_empty())
+        || patch.ai_key.is_some();
     st.news.update_settings(patch).await;
     tracing::info!(target: "admin", "provider news settings updated");
     if st.news.settings().enabled && wants_fetch {
@@ -846,7 +991,9 @@ async fn refresh_provider_news(State(st): State<AppState>) -> ApiResult {
 
 /// Which URL NEW playlists carry. No regeneration: the `.m3u` is per request.
 async fn toggle_gateway(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
-    let Some(enabled) = body(b).get("enabled").and_then(Value::as_bool) else { return Err(ApiError::bad("enabled must be a boolean")) };
+    let Some(enabled) = body(b).get("enabled").and_then(Value::as_bool) else {
+        return Err(ApiError::bad("enabled must be a boolean"));
+    };
     st.store.set_setting("gateway_enabled", json!(enabled)).await?;
     st.config.set_gateway_enabled(enabled);
     tracing::info!(target: "admin", enabled, "stream gateway toggled");
@@ -868,7 +1015,11 @@ async fn create_incident(State(st): State<AppState>, b: Option<Json<Value>>) -> 
     created(incident_json(&inc))
 }
 
-async fn update_incident(State(st): State<AppState>, UrlPath(id): UrlPath<String>, b: Option<Json<Value>>) -> ApiResult {
+async fn update_incident(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    b: Option<Json<Value>>,
+) -> ApiResult {
     let existing = st.store.incident(&id).ok_or_else(ApiError::not_found)?;
     let v = validate_incident(&body(b), true).map_err(ApiError::bad)?;
     let start = v.starts_on.clone().flatten().or_else(|| existing.starts_on.clone());
@@ -878,7 +1029,11 @@ async fn update_incident(State(st): State<AppState>, UrlPath(id): UrlPath<String
     {
         return Err(ApiError::bad("ends_on cannot be before starts_on"));
     }
-    let inc = st.store.update_incident(&id, v).await?.ok_or_else(ApiError::not_found)?;
+    let inc = st
+        .store
+        .update_incident(&id, v)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     tracing::info!(target: "admin", incident_id = %inc.id, "incident updated");
     spawn_regen_all(&st.channels, "admin incident updated");
     // First time an ongoing incident gets an end date -> "service restored".
@@ -923,7 +1078,9 @@ async fn notifications(State(st): State<AppState>) -> ApiResult {
 
 /// The QR on the intro slide appears/disappears, so this rebuilds everything.
 async fn toggle_notifications(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
-    let Some(enabled) = body(b).get("enabled").and_then(Value::as_bool) else { return Err(ApiError::bad("enabled must be a boolean")) };
+    let Some(enabled) = body(b).get("enabled").and_then(Value::as_bool) else {
+        return Err(ApiError::bad("enabled must be a boolean"));
+    };
     st.store.set_setting("notify_enabled", json!(enabled)).await?;
     st.config.set_notify_enabled(enabled);
     tracing::info!(target: "admin", enabled, "notifications toggled");
@@ -932,7 +1089,10 @@ async fn toggle_notifications(State(st): State<AppState>, b: Option<Json<Value>>
 }
 
 async fn test_email(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
-    st.notifier.send_test(&str_of(body(b).get("email"))).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    st.notifier
+        .send_test(&str_of(body(b).get("email")))
+        .await
+        .map_err(|e| ApiError::bad(e.to_string()))?;
     ok(json!({ "ok": true }))
 }
 
@@ -958,7 +1118,9 @@ async fn put_subscriber(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, b
         sent_verification = true;
     }
     tracing::info!(target: "admin", user_id = id, verified = sub.verified, vouch, "subscriber saved");
-    ok(json!({ "ok": true, "email": sub.email, "options": sub.options, "verified": sub.verified, "sentVerification": sent_verification }))
+    ok(
+        json!({ "ok": true, "email": sub.email, "options": sub.options, "verified": sub.verified, "sentVerification": sent_verification }),
+    )
 }
 
 async fn delete_subscriber(State(st): State<AppState>, UrlPath(id): UrlPath<i64>) -> ApiResult {
@@ -977,12 +1139,16 @@ async fn list_newsletters(State(st): State<AppState>) -> ApiResult {
 async fn send_newsletter(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
     let draft = validate_newsletter(&body(b)).map_err(ApiError::bad)?;
     if !st.config.notify_enabled() {
-        return Err(ApiError::conflict("уведомления выключены — включите их, чтобы отправить рассылку"));
+        return Err(ApiError::conflict(
+            "уведомления выключены — включите их, чтобы отправить рассылку",
+        ));
     }
     let (users, subs) = (st.store.users(), st.store.subscribers());
     let recipients = newsletter_recipients(draft.audience.as_ref(), &users, &subs).len();
     if recipients == 0 {
-        return Err(ApiError::conflict("нет получателей: никто из выбранных клиентов не подписан на новости"));
+        return Err(ApiError::conflict(
+            "нет получателей: никто из выбранных клиентов не подписан на новости",
+        ));
     }
     let n = st
         .store
@@ -1005,15 +1171,19 @@ async fn send_newsletter(State(st): State<AppState>, b: Option<Json<Value>>) -> 
         let writer = tokio::spawn(async move {
             while let Some(c) = rx.recv().await {
                 let c: crate::notify::notify::SendCounts = c;
-                let _ = progress_store.update_newsletter(&progress_id, |n| {
-                    n.sent = c.sent;
-                    n.failed = c.failed;
-                }).await;
+                let _ = progress_store
+                    .update_newsletter(&progress_id, |n| {
+                        n.sent = c.sent;
+                        n.failed = c.failed;
+                    })
+                    .await;
             }
         });
-        let result = notifier.send_newsletter(&draft, |c| {
-            let _ = tx.send(c);
-        }).await;
+        let result = notifier
+            .send_newsletter(&draft, |c| {
+                let _ = tx.send(c);
+            })
+            .await;
         drop(tx);
         let _ = writer.await;
         let update = store
@@ -1041,7 +1211,10 @@ async fn send_newsletter(State(st): State<AppState>, b: Option<Json<Value>>) -> 
 async fn test_newsletter(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
     let b = body(b);
     let draft = validate_newsletter(&b).map_err(ApiError::bad)?;
-    st.notifier.send_newsletter_test(&str_of(b.get("email")), &draft).await.map_err(|e| ApiError::bad(e.to_string()))?;
+    st.notifier
+        .send_newsletter_test(&str_of(b.get("email")), &draft)
+        .await
+        .map_err(|e| ApiError::bad(e.to_string()))?;
     ok(json!({ "ok": true }))
 }
 
@@ -1063,29 +1236,83 @@ mod tests {
     use super::*;
 
     fn plan(period: &str, price: i64) -> Plan {
-        Plan { id: "p".into(), name: "P".into(), price_cents: price, currency: "EUR".into(), billing_period: period.into(), sort: 1.0, category_ids: vec![], max_devices: 0, extra: Map::new() }
+        Plan {
+            id: "p".into(),
+            name: "P".into(),
+            price_cents: price,
+            currency: "EUR".into(),
+            billing_period: period.into(),
+            sort: 1.0,
+            category_ids: vec![],
+            max_devices: 0,
+            extra: Map::new(),
+        }
     }
 
     #[test]
     fn payment_validation_and_expiry() {
         let v = validate_payment(&json!({}), Some(&plan("month", 1))).unwrap();
-        assert_eq!(v, PaymentRequest { count: 1, period: "month".into(), from: "expiry".into() });
-        assert_eq!(validate_payment(&json!({"count": 3}), Some(&plan("year", 1))).unwrap().period, "year");
-        assert_eq!(validate_payment(&json!({}), Some(&plan("", 1))).unwrap().period, "month");
+        assert_eq!(
+            v,
+            PaymentRequest {
+                count: 1,
+                period: "month".into(),
+                from: "expiry".into()
+            }
+        );
+        assert_eq!(
+            validate_payment(&json!({"count": 3}), Some(&plan("year", 1)))
+                .unwrap()
+                .period,
+            "year"
+        );
+        assert_eq!(
+            validate_payment(&json!({}), Some(&plan("", 1))).unwrap().period,
+            "month"
+        );
         assert_eq!(validate_payment(&json!({}), None).unwrap().period, "month");
-        assert_eq!(validate_payment(&json!({"period": "day"}), Some(&plan("month", 1))).unwrap().period, "day");
+        assert_eq!(
+            validate_payment(&json!({"period": "day"}), Some(&plan("month", 1)))
+                .unwrap()
+                .period,
+            "day"
+        );
         for bad in [json!({"count": 0}), json!({"count": 2.5}), json!({"count": 999})] {
             assert!(validate_payment(&bad, None).unwrap_err().contains("between 1 and"));
         }
-        assert!(validate_payment(&json!({"period": "week"}), None).unwrap_err().contains("period must be one of"));
-        assert!(validate_payment(&json!({"from": "yesterday"}), None).unwrap_err().contains("from must be"));
+        assert!(
+            validate_payment(&json!({"period": "week"}), None)
+                .unwrap_err()
+                .contains("period must be one of")
+        );
+        assert!(
+            validate_payment(&json!({"from": "yesterday"}), None)
+                .unwrap_err()
+                .contains("from must be")
+        );
 
-        let r = |p: &str, c: i64, from: &str| PaymentRequest { count: c, period: p.into(), from: from.into() };
+        let r = |p: &str, c: i64, from: &str| PaymentRequest {
+            count: c,
+            period: p.into(),
+            from: from.into(),
+        };
         let today = "2026-08-10";
-        assert_eq!(payment_expiry(Some("2026-09-01"), &r("month", 1, "expiry"), today).as_deref(), Some("2026-10-01"));
-        assert_eq!(payment_expiry(Some("2026-05-01"), &r("month", 1, "expiry"), today).as_deref(), Some("2026-09-10"));
-        assert_eq!(payment_expiry(None, &r("year", 1, "expiry"), today).as_deref(), Some("2027-08-10"));
-        assert_eq!(payment_expiry(Some("2026-12-01"), &r("month", 1, "today"), today).as_deref(), Some("2026-09-10"));
+        assert_eq!(
+            payment_expiry(Some("2026-09-01"), &r("month", 1, "expiry"), today).as_deref(),
+            Some("2026-10-01")
+        );
+        assert_eq!(
+            payment_expiry(Some("2026-05-01"), &r("month", 1, "expiry"), today).as_deref(),
+            Some("2026-09-10")
+        );
+        assert_eq!(
+            payment_expiry(None, &r("year", 1, "expiry"), today).as_deref(),
+            Some("2027-08-10")
+        );
+        assert_eq!(
+            payment_expiry(Some("2026-12-01"), &r("month", 1, "today"), today).as_deref(),
+            Some("2026-09-10")
+        );
     }
 
     #[test]
@@ -1096,9 +1323,18 @@ mod tests {
             assert!(parse_price_cents(Some(&bad)).is_err(), "{bad}");
         }
         let known: HashSet<String> = ["a".into(), "b".into()].into();
-        assert_eq!(parse_plan_categories(&json!(["a", " a ", "b", ""]), &known), Ok(vec!["a".into(), "b".into()]));
-        assert_eq!(parse_plan_categories(&json!(["zz"]), &known).unwrap_err(), "unknown category: zz");
-        assert_eq!(plan_category_diff(&["a".into(), "b".into()], &["b".into(), "c".into()]), (vec!["c".into()], vec!["a".into()]));
+        assert_eq!(
+            parse_plan_categories(&json!(["a", " a ", "b", ""]), &known),
+            Ok(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(
+            parse_plan_categories(&json!(["zz"]), &known).unwrap_err(),
+            "unknown category: zz"
+        );
+        assert_eq!(
+            plan_category_diff(&["a".into(), "b".into()], &["b".into(), "c".into()]),
+            (vec!["c".into()], vec!["a".into()])
+        );
         let plans = [plan("", 1)];
         assert!(duplicate_plan_name(&plans, " p ", None) && !duplicate_plan_name(&plans, "p", Some("p")));
         assert_eq!(parse_max_devices(&json!(0), false), Ok(Some(0)));
@@ -1111,46 +1347,110 @@ mod tests {
 
     #[test]
     fn payment_amounts_and_summary() {
-        assert_eq!(suggested_payment_cents(Some(&plan("month", 500)), 3, "month"), Some(1500));
-        assert_eq!(suggested_payment_cents(Some(&plan("month", 500)), 1, "year"), Some(6000));
-        assert_eq!(suggested_payment_cents(Some(&plan("year", 6000)), 2, "month"), Some(1000));
+        assert_eq!(
+            suggested_payment_cents(Some(&plan("month", 500)), 3, "month"),
+            Some(1500)
+        );
+        assert_eq!(
+            suggested_payment_cents(Some(&plan("month", 500)), 1, "year"),
+            Some(6000)
+        );
+        assert_eq!(
+            suggested_payment_cents(Some(&plan("year", 6000)), 2, "month"),
+            Some(1000)
+        );
         assert_eq!(suggested_payment_cents(Some(&plan("", 500)), 2, "month"), Some(1000));
         assert_eq!(suggested_payment_cents(Some(&plan("month", 500)), 10, "day"), None);
         assert_eq!(suggested_payment_cents(None, 1, "month"), None);
         assert_eq!(validate_payment_record(&json!({})), Ok((None, String::new())));
-        assert_eq!(validate_payment_record(&json!({"amount_eur": "12.5"})).unwrap().0, Some(1250));
+        assert_eq!(
+            validate_payment_record(&json!({"amount_eur": "12.5"})).unwrap().0,
+            Some(1250)
+        );
         assert_eq!(validate_payment_record(&json!({"amount_eur": 0})).unwrap().0, Some(0));
         assert!(validate_payment_record(&json!({"amount_eur": -1})).is_err());
         assert!(validate_payment_record(&json!({"note": "x".repeat(201)})).is_err());
 
-        let p = |at: &str, c: Option<i64>| Payment { at: at.into(), amount_cents: c, ..Payment::default() };
-        let list = [p("2026-10-08T10:00:00Z", Some(500)), p("2026-10-01T10:00:00Z", None), p("2026-09-20T10:00:00Z", Some(700)), p("2026-08-01T10:00:00Z", Some(900))];
+        let p = |at: &str, c: Option<i64>| Payment {
+            at: at.into(),
+            amount_cents: c,
+            ..Payment::default()
+        };
+        let list = [
+            p("2026-10-08T10:00:00Z", Some(500)),
+            p("2026-10-01T10:00:00Z", None),
+            p("2026-09-20T10:00:00Z", Some(700)),
+            p("2026-08-01T10:00:00Z", Some(900)),
+        ];
         let s = payments_summary(&list, "2026-10-09", &jiff::tz::TimeZone::UTC);
-        assert_eq!((s["month_count"].as_u64(), s["month_cents"].as_i64()), (Some(2), Some(500)));
-        assert_eq!((s["last30_count"].as_u64(), s["last30_cents"].as_i64()), (Some(3), Some(1200)));
+        assert_eq!(
+            (s["month_count"].as_u64(), s["month_cents"].as_i64()),
+            (Some(2), Some(500))
+        );
+        assert_eq!(
+            (s["last30_count"].as_u64(), s["last30_cents"].as_i64()),
+            (Some(3), Some(1200))
+        );
     }
 
     #[test]
     fn incident_validation() {
-        let v = validate_incident(&json!({"title": "CDN", "severity": "outage", "starts_on": "2026-06-01"}), false).unwrap();
+        let v = validate_incident(
+            &json!({"title": "CDN", "severity": "outage", "starts_on": "2026-06-01"}),
+            false,
+        )
+        .unwrap();
         assert_eq!((v.ends_on, v.note.as_deref()), (Some(None), Some("")));
-        for bad in [json!({"title": "", "severity": "outage", "starts_on": "2026-06-01"}), json!({"title": "x", "severity": "meh", "starts_on": "2026-06-01"}), json!({"title": "x", "severity": "outage", "starts_on": "06/01"})] {
+        for bad in [
+            json!({"title": "", "severity": "outage", "starts_on": "2026-06-01"}),
+            json!({"title": "x", "severity": "meh", "starts_on": "2026-06-01"}),
+            json!({"title": "x", "severity": "outage", "starts_on": "06/01"}),
+        ] {
             assert!(validate_incident(&bad, false).is_err(), "{bad}");
         }
         let p = validate_incident(&json!({"note": "n"}), true).unwrap();
         assert!(p.title.is_none() && p.severity.is_none() && p.ends_on.is_none() && p.note.as_deref() == Some("n"));
-        let open = incident_json(&Incident { id: "1".into(), severity: "outage".into(), starts_on: Some("2026-06-01".into()), ..Incident::default() });
-        assert_eq!((open["ongoing"].as_bool(), open["ends_pretty"].is_null()), (Some(true), true));
+        let open = incident_json(&Incident {
+            id: "1".into(),
+            severity: "outage".into(),
+            starts_on: Some("2026-06-01".into()),
+            ..Incident::default()
+        });
+        assert_eq!(
+            (open["ongoing"].as_bool(), open["ends_pretty"].is_null()),
+            (Some(true), true)
+        );
     }
 
     #[test]
     fn provider_news_and_public_settings() {
-        let v = validate_provider_news(&json!({"enabled": true, "url": " https://tv.team/v3/news?page=1 ", "cookie": "Cookie: a=1;\n b=2"})).unwrap();
-        assert_eq!((v.enabled, v.url.as_deref(), v.cookie.as_deref()), (Some(true), Some("https://tv.team/v3/news?page=1"), Some("a=1; b=2")));
-        assert_eq!(validate_provider_news(&json!({"enabled": "yes"})).unwrap_err(), "enabled must be a boolean");
-        assert_eq!(validate_provider_news(&json!({"url": "file:///etc/passwd"})).unwrap_err(), "url must be an http(s) URL");
-        assert_eq!(validate_provider_news(&json!({"ai_key": " sk-or-v1-abc "})).unwrap().ai_key.as_deref(), Some("sk-or-v1-abc"));
-        assert_eq!(validate_provider_news(&json!({"ai_key": "sk or"})).unwrap_err(), "ai_key is not a valid API key");
+        let v = validate_provider_news(
+            &json!({"enabled": true, "url": " https://tv.team/v3/news?page=1 ", "cookie": "Cookie: a=1;\n b=2"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (v.enabled, v.url.as_deref(), v.cookie.as_deref()),
+            (Some(true), Some("https://tv.team/v3/news?page=1"), Some("a=1; b=2"))
+        );
+        assert_eq!(
+            validate_provider_news(&json!({"enabled": "yes"})).unwrap_err(),
+            "enabled must be a boolean"
+        );
+        assert_eq!(
+            validate_provider_news(&json!({"url": "file:///etc/passwd"})).unwrap_err(),
+            "url must be an http(s) URL"
+        );
+        assert_eq!(
+            validate_provider_news(&json!({"ai_key": " sk-or-v1-abc "}))
+                .unwrap()
+                .ai_key
+                .as_deref(),
+            Some("sk-or-v1-abc")
+        );
+        assert_eq!(
+            validate_provider_news(&json!({"ai_key": "sk or"})).unwrap_err(),
+            "ai_key is not a valid API key"
+        );
         let mut s = Map::new();
         s.insert("brand_name".into(), json!("X"));
         s.insert("provider_news".into(), json!({"cookie": "secret=1"}));

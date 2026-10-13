@@ -35,7 +35,8 @@ use crate::news::providernews::ProviderNews;
 use crate::notify::notify::Notifier;
 use crate::playlist::catalog::Catalog;
 use crate::render::overlay::{
-    Branding, PlanCard, RenderCtx, build_body_svg, build_brand_slide1_svg, build_device_limit_svg, build_status_slide_svg,
+    Branding, PlanCard, RenderCtx, build_body_svg, build_brand_slide1_svg, build_device_limit_svg,
+    build_status_slide_svg,
 };
 use crate::render::raster::Rasterizer;
 use crate::render::status::{StatusSummary, status_summary, with_provider_notices};
@@ -142,7 +143,9 @@ fn mtime_ms(path: &Path) -> f64 {
 }
 
 fn read_sig(dir: &Path) -> Option<String> {
-    std::fs::read_to_string(dir.join(SIG_FILE)).ok().map(|s| s.trim().to_owned())
+    std::fs::read_to_string(dir.join(SIG_FILE))
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 /// Starting counters past the previous generation's window.
@@ -293,7 +296,11 @@ impl ChannelEncoder {
     pub fn generation_status(&self) -> serde_json::Value {
         let jobs = self.jobs();
         let users: Vec<&UserJob> = jobs.in_flight.values().map(|(_, _, j)| j).collect();
-        let started = users.iter().map(|j| j.started_at.clone()).chain(jobs.bulk.iter().map(|(_, b)| b.started_at.clone())).min();
+        let started = users
+            .iter()
+            .map(|j| j.started_at.clone())
+            .chain(jobs.bulk.iter().map(|(_, b)| b.started_at.clone()))
+            .min();
         let latest_bulk = jobs.bulk.last().map(|(_, b)| b);
         json!({
             "active": !users.is_empty() || !jobs.bulk.is_empty(),
@@ -316,7 +323,12 @@ impl ChannelEncoder {
             }
             jobs.seq += 1;
             let id = jobs.seq;
-            let job = UserJob { user_id, username: user.username.clone(), reason: reason.to_owned(), started_at: iso_now() };
+            let job = UserJob {
+                user_id,
+                username: user.username.clone(),
+                reason: reason.to_owned(),
+                started_at: iso_now(),
+            };
             jobs.in_flight.insert(user_id, (id, cancel.clone(), job));
             id
         };
@@ -328,14 +340,25 @@ impl ChannelEncoder {
         result
     }
 
-    async fn encode_user(&self, user_id: i64, reason: &str, force: bool, cancel: &CancellationToken) -> Result<PathBuf, GenError> {
+    async fn encode_user(
+        &self,
+        user_id: i64,
+        reason: &str,
+        force: bool,
+        cancel: &CancellationToken,
+    ) -> Result<PathBuf, GenError> {
         let started = Instant::now();
         // Re-read so the latest values are encoded, not a caller's snapshot.
         let user = self.store.user(user_id).ok_or(GenError::UserNotFound)?;
         let settings = self.store.settings();
-        let brand = setting_str(&settings, "brand_name").filter(|s| !s.is_empty()).unwrap_or("Мой IPTV-сервис").to_owned();
-        let tagline =
-            setting_str(&settings, "tagline").filter(|s| !s.is_empty()).unwrap_or("Информационный канал аккаунта").to_owned();
+        let brand = setting_str(&settings, "brand_name")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Мой IPTV-сервис")
+            .to_owned();
+        let tagline = setting_str(&settings, "tagline")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Информационный канал аккаунта")
+            .to_owned();
         let plans = self.plan_cards();
         let music = self.ensure_music().await?;
         let now = Timestamp::now();
@@ -345,15 +368,28 @@ impl ChannelEncoder {
             (self.config.intro.enabled && self.notifier.enabled()).then(|| self.notifier.subscribe_url_for(&user));
 
         let ctx = self.ctx(now);
-        let b = Branding { brand: &brand, tagline: &tagline };
-        let slide_svg = self.config.intro.enabled.then(|| build_brand_slide1_svg(&ctx, b, subscribe_url.as_deref()));
+        let b = Branding {
+            brand: &brand,
+            tagline: &tagline,
+        };
+        let slide_svg = self
+            .config
+            .intro
+            .enabled
+            .then(|| build_brand_slide1_svg(&ctx, b, subscribe_url.as_deref()));
         let body_svg = build_body_svg(&ctx, &user, &plans, b);
         let status_svg = summary.as_ref().map(|s| build_status_slide_svg(&ctx, s, &brand));
-        let svgs: Vec<String> = slide_svg.iter().chain([&body_svg]).chain(status_svg.iter()).cloned().collect();
+        let svgs: Vec<String> = slide_svg
+            .iter()
+            .chain([&body_svg])
+            .chain(status_svg.iter())
+            .cloned()
+            .collect();
 
         let final_dir = self.user_hls_dir(user.id);
         let signature = self.stream_signature(&svgs, &music, summary.is_some());
-        if !force && self.playlist_path(user.id).exists() && read_sig(&final_dir).as_deref() == Some(signature.as_str()) {
+        if !force && self.playlist_path(user.id).exists() && read_sig(&final_dir).as_deref() == Some(signature.as_str())
+        {
             tracing::info!(target: "channel", user_id = user.id, username = %user.username, %reason, "stream up to date; skipping encode");
             return Ok(self.playlist_path(user.id));
         }
@@ -400,27 +436,41 @@ impl ChannelEncoder {
         let (w, h) = (self.config.channel.width, self.config.channel.height);
         let raster = self.raster.clone();
         let dir = tmp.to_path_buf();
-        let frames = tokio::task::spawn_blocking(move || -> anyhow::Result<(Option<PathBuf>, PathBuf, Option<PathBuf>)> {
-            let render = |svg: &str, name: &str| -> anyhow::Result<PathBuf> {
-                let path = dir.join(name);
-                raster.render_to_file(svg, w, h, &path)?;
-                Ok(path)
-            };
-            let slide = slide_svg.as_deref().map(|s| render(s, "slide1.png")).transpose()?;
-            let card = render(&body_svg, "card.png")?;
-            let status = status_svg.as_deref().map(|s| render(s, "status.png")).transpose()?;
-            Ok((slide, card, status))
-        })
-        .await
-        .map_err(anyhow::Error::from)??;
+        let frames =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(Option<PathBuf>, PathBuf, Option<PathBuf>)> {
+                let render = |svg: &str, name: &str| -> anyhow::Result<PathBuf> {
+                    let path = dir.join(name);
+                    raster.render_to_file(svg, w, h, &path)?;
+                    Ok(path)
+                };
+                let slide = slide_svg.as_deref().map(|s| render(s, "slide1.png")).transpose()?;
+                let card = render(&body_svg, "card.png")?;
+                let status = status_svg.as_deref().map(|s| render(s, "status.png")).transpose()?;
+                Ok((slide, card, status))
+            })
+            .await
+            .map_err(anyhow::Error::from)??;
 
         let params = EncodeParams::from_config(&self.config);
         let args = match &frames {
-            (Some(slide), card, status) => {
-                intro_ffmpeg_args(&params, &Slides { slide1: slide, card, status: status.as_deref() }, music, tmp)
-            }
+            (Some(slide), card, status) => intro_ffmpeg_args(
+                &params,
+                &Slides {
+                    slide1: slide,
+                    card,
+                    status: status.as_deref(),
+                },
+                music,
+                tmp,
+            ),
             (None, card, status) => {
-                let extras: Vec<Extra<'_>> = status.iter().map(|f| Extra { file: f, seconds: params.status_seconds }).collect();
+                let extras: Vec<Extra<'_>> = status
+                    .iter()
+                    .map(|f| Extra {
+                        file: f,
+                        seconds: params.status_seconds,
+                    })
+                    .collect();
                 still_ffmpeg_args(&params, card, &extras, music, tmp)
             }
         };
@@ -436,7 +486,15 @@ impl ChannelEncoder {
             let mut jobs = self.jobs();
             jobs.bulk_seq += 1;
             let id = jobs.bulk_seq;
-            jobs.bulk.push((id, BulkJob { reason: reason.to_owned(), total: users.len(), completed: 0, started_at: iso_now() }));
+            jobs.bulk.push((
+                id,
+                BulkJob {
+                    reason: reason.to_owned(),
+                    total: users.len(),
+                    completed: 0,
+                    started_at: iso_now(),
+                },
+            ));
             id
         };
         if users.len() > 1 {
@@ -453,7 +511,11 @@ impl ChannelEncoder {
             if let Err(e) = &result {
                 tracing::error!(target: "channel", user_id = user.id, username = %user.username, error = %e, "generation failed");
             }
-            results.push(GenResult { id: user.id, ok: result.is_ok(), error: result.err().map(|e| e.to_string()) });
+            results.push(GenResult {
+                id: user.id,
+                ok: result.is_ok(),
+                error: result.err().map(|e| e.to_string()),
+            });
             if let Some((_, b)) = self.jobs().bulk.iter_mut().find(|(id, _)| *id == bulk_id) {
                 b.completed += 1;
             }
@@ -484,7 +546,10 @@ impl ChannelEncoder {
     pub async fn ensure_device_notice(&self, force: bool) -> Result<PathBuf, GenError> {
         let _guard = self.notice_lock.lock().await;
         let settings = self.store.settings();
-        let brand = setting_str(&settings, "brand_name").filter(|s| !s.is_empty()).unwrap_or("Мой IPTV-сервис").to_owned();
+        let brand = setting_str(&settings, "brand_name")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Мой IPTV-сервис")
+            .to_owned();
         let music = self.ensure_music().await?;
         let now = Timestamp::now();
         let idle = self.config.gateway.device_idle_seconds;
@@ -501,18 +566,32 @@ impl ChannelEncoder {
             .as_bytes(),
         ));
         let final_dir = self.notice_hls_dir();
-        if !force && final_dir.join("index.m3u8").exists() && read_sig(&final_dir).as_deref() == Some(signature.as_str()) {
+        if !force
+            && final_dir.join("index.m3u8").exists()
+            && read_sig(&final_dir).as_deref() == Some(signature.as_str())
+        {
             return Ok(final_dir);
         }
-        let previous = c.live_loop.then(|| current_loop_position(&final_dir, now_ms())).flatten();
+        let previous = c
+            .live_loop
+            .then(|| current_loop_position(&final_dir, now_ms()))
+            .flatten();
         let tmp = make_build_dir(&self.config.hls_dir, ".build-devices-")?;
         let result: Result<(), GenError> = async {
             let png = tmp.join("notice.png");
             let raster = self.raster.clone();
             let (w, h, p) = (c.width, c.height, png.clone());
-            tokio::task::spawn_blocking(move || raster.render_to_file(&svg, w, h, &p)).await.map_err(anyhow::Error::from)??;
+            tokio::task::spawn_blocking(move || raster.render_to_file(&svg, w, h, &p))
+                .await
+                .map_err(anyhow::Error::from)??;
             let args = still_ffmpeg_args(&EncodeParams::from_config(&self.config), &png, &[], &music, &tmp);
-            run(&self.config.ffmpeg_path, &args, "HLS encode for the device-limit notice", None).await?;
+            run(
+                &self.config.ffmpeg_path,
+                &args,
+                "HLS encode for the device-limit notice",
+                None,
+            )
+            .await?;
             if c.live_loop {
                 write_loop_state(&tmp, next_loop_start(previous), now_ms())?;
             }
@@ -557,7 +636,10 @@ mod tests {
     #[test]
     fn next_generation_skips_past_the_window() {
         assert_eq!(next_loop_start(None).base_seq, 0);
-        let s = next_loop_start(Some(Position { media_sequence: 10, discontinuity_sequence: 2 }));
+        let s = next_loop_start(Some(Position {
+            media_sequence: 10,
+            discontinuity_sequence: 2,
+        }));
         assert_eq!((s.base_seq, s.base_discontinuity), (18, 3));
     }
 

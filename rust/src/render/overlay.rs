@@ -13,8 +13,8 @@ use qrcode::{Color, EcLevel, QrCode};
 
 use super::status::{PROVIDER_COLOR, PROVIDER_LABEL, StatusState, StatusSummary, format_uptime};
 use crate::core::util::{
-    AccountStatus, account_status, days_left, format_date, format_price, format_time, local_date_string,
-    parse_instant, period_label, plural_days, xml_escape,
+    AccountStatus, account_status, days_left, format_date, format_price, format_time, local_date_string, parse_instant,
+    period_label, plural_days, xml_escape,
 };
 use crate::data::model::{DecoratedUser, Incident, Severity};
 use crate::news::notices::ProviderNotice;
@@ -73,7 +73,9 @@ const SHARED_DEFS: &str = r##"
   </defs>"##;
 
 fn bg() -> String {
-    let lines: String = (0..12).map(|i| format!(r#"<line x1="{x}" y1="0" x2="{x}" y2="720"/>"#, x = i * 110)).collect();
+    let lines: String = (0..12)
+        .map(|i| format!(r#"<line x1="{x}" y1="0" x2="{x}" y2="720"/>"#, x = i * 110))
+        .collect();
     format!(
         r##"
   <rect width="1280" height="720" fill="url(#bg)"/>
@@ -134,7 +136,11 @@ pub fn wrap_text(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> 
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
-        let next = if current.is_empty() { word.to_owned() } else { format!("{current} {word}") };
+        let next = if current.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{current} {word}")
+        };
         if next.chars().count() <= max_chars || current.is_empty() {
             current = next;
         } else {
@@ -155,7 +161,11 @@ pub fn wrap_text(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> 
 }
 
 fn logo_mark(brand: &str, cx: f64, cy: f64, size: f64) -> String {
-    let initial = brand.trim().chars().next().map_or_else(|| "I".to_owned(), |c| c.to_uppercase().collect());
+    let initial = brand
+        .trim()
+        .chars()
+        .next()
+        .map_or_else(|| "I".to_owned(), |c| c.to_uppercase().collect());
     let half = size / 2.0;
     format!(
         r##"
@@ -176,7 +186,9 @@ fn logo_mark(brand: &str, cx: f64, cy: f64, size: f64) -> String {
 /// A white QR panel (with caption) for `url`, quiet zone included so any
 /// phone camera resolves it.
 fn qr_panel_svg(url: &str, x: f64, y: f64, size: f64) -> String {
-    let Ok(qr) = QrCode::with_error_correction_level(url, EcLevel::M) else { return String::new() };
+    let Ok(qr) = QrCode::with_error_correction_level(url, EcLevel::M) else {
+        return String::new();
+    };
     let count = qr.width();
     let colors = qr.to_colors();
     let pad = 18.0;
@@ -249,7 +261,13 @@ pub fn build_brand_slide1_svg(ctx: &RenderCtx<'_>, b: Branding<'_>, subscribe_ur
 }
 
 fn user_status(ctx: &RenderCtx<'_>, user: &DecoratedUser) -> AccountStatus {
-    account_status(user.active, user.expires_at.as_deref(), ctx.expiring_threshold_days, ctx.now, ctx.tz)
+    account_status(
+        user.active,
+        user.expires_at.as_deref(),
+        ctx.expiring_threshold_days,
+        ctx.now,
+        ctx.tz,
+    )
 }
 
 fn price_with_period(cents: i64, currency: &str, period: &str, period_size: &str) -> String {
@@ -257,7 +275,10 @@ fn price_with_period(cents: i64, currency: &str, period: &str, period_size: &str
     let tail = if p.is_empty() {
         String::new()
     } else {
-        format!(r#"<tspan font-size="{period_size}" font-weight="600">{}</tspan>"#, xml_escape(p))
+        format!(
+            r#"<tspan font-size="{period_size}" font-weight="600">{}</tspan>"#,
+            xml_escape(p)
+        )
     };
     format!("{}{tail}", xml_escape(&format_price(cents, currency)))
 }
@@ -351,7 +372,7 @@ pub fn slot_free_text(idle_seconds: u64) -> String {
     let s = idle_seconds.max(1);
     if s == 60 {
         "через минуту".to_owned()
-    } else if s % 60 == 0 {
+    } else if s.is_multiple_of(60) {
         format!("через {} мин.", s / 60)
     } else {
         format!("через {s} сек.")
@@ -445,11 +466,19 @@ fn build_renewing_card_svg(
     d: i64,
     status_font: i32,
 ) -> String {
-    let urgent = if d == 0 { "Последний день".to_owned() } else { format!("{d} {}", plural_days(d)) };
+    let urgent = if d == 0 {
+        "Последний день".to_owned()
+    } else {
+        format!("{d} {}", plural_days(d))
+    };
     let visible = &plans[..plans.len().min(4)];
     let (grid_x, grid_w, chip_h, chip_y, gap) = (104.0, 1072.0, 74.0, 548.0, 16.0);
     let n = visible.len() as f64;
-    let chip_w = if visible.is_empty() { grid_w } else { (grid_w - gap * (n - 1.0)) / n };
+    let chip_w = if visible.is_empty() {
+        grid_w
+    } else {
+        (grid_w - gap * (n - 1.0)) / n
+    };
     let chips = if visible.is_empty() {
         format!(
             r##"<text x="{}" y="{}" fill="#9fb3d1" font-family="Inter, sans-serif" font-size="22">Свяжитесь с администратором для продления подписки</text>"##,
@@ -460,7 +489,16 @@ fn build_renewing_card_svg(
         visible
             .iter()
             .enumerate()
-            .map(|(i, p)| compact_plan_chip(p, grid_x + i as f64 * (chip_w + gap), chip_y, chip_w, chip_h, p.id == user.plan_id))
+            .map(|(i, p)| {
+                compact_plan_chip(
+                    p,
+                    grid_x + i as f64 * (chip_w + gap),
+                    chip_y,
+                    chip_w,
+                    chip_h,
+                    p.id == user.plan_id,
+                )
+            })
             .collect()
     };
     let today = format_date(Some(&local_date_string(ctx.now, ctx.tz)));
@@ -700,7 +738,11 @@ pub fn build_expired_plans_svg(
         ""
     };
     let extra = plans.len() - visible.len();
-    let extra_text = if extra > 0 { format!(" · Ещё тарифов: {extra}") } else { String::new() };
+    let extra_text = if extra > 0 {
+        format!(" · Ещё тарифов: {extra}")
+    } else {
+        String::new()
+    };
     let badge_w = 40.0 + badge.chars().count() as f64 * 15.0;
     let badge_x = 1216.0 - badge_w;
     svg_doc(
@@ -800,7 +842,11 @@ fn megaphone_icon(cx: f64, cy: f64, r: f64) -> String {
 
 fn notice_when(notice: &ProviderNotice, tz: &TimeZone) -> String {
     parse_instant(&notice.published_at).map_or_else(String::new, |t| {
-        format!("{} · {}", format_date(Some(&local_date_string(t, tz))), format_time(t, tz))
+        format!(
+            "{} · {}",
+            format_date(Some(&local_date_string(t, tz))),
+            format_time(t, tz)
+        )
     })
 }
 
@@ -821,11 +867,19 @@ struct EventItem<'a> {
 }
 
 fn event_height(item: &EventItem<'_>) -> f64 {
-    62.0 + if item.lines > 0 { item.lines as f64 * BODY_LINE + 8.0 } else { 0.0 }
+    62.0 + if item.lines > 0 {
+        item.lines as f64 * BODY_LINE + 8.0
+    } else {
+        0.0
+    }
 }
 
 fn events_height(items: &[&EventItem<'_>]) -> f64 {
-    items.iter().enumerate().map(|(i, it)| event_height(it) + if i > 0 { EVENT_GAP } else { 0.0 }).sum()
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, it)| event_height(it) + if i > 0 { EVENT_GAP } else { 0.0 })
+        .sum()
 }
 
 fn sorted_incidents(list: &[Incident]) -> Vec<&Incident> {
@@ -842,7 +896,11 @@ fn layout_events<'a>(summary: &'a StatusSummary) -> (Vec<EventItem<'a>>, usize) 
         .into_iter()
         .map(|inc| {
             let l = usize::from(!inc.note.is_empty());
-            EventItem { kind: EventKind::Incident(inc), lines: l, max_lines: l }
+            EventItem {
+                kind: EventKind::Incident(inc),
+                lines: l,
+                max_lines: l,
+            }
         })
         .collect();
     items.extend(summary.provider_notices.iter().map(|n| EventItem {
@@ -1009,7 +1067,11 @@ fn build_status_with_events_svg(ctx: &RenderCtx<'_>, summary: &StatusSummary, br
     } else {
         String::new()
     };
-    let icon = if provider { megaphone_icon(112.0, 86.0, 30.0) } else { status_icon(state_severity(summary.state), 112.0, 86.0, 30.0) };
+    let icon = if provider {
+        megaphone_icon(112.0, 86.0, 30.0)
+    } else {
+        status_icon(state_severity(summary.state), 112.0, 86.0, 30.0)
+    };
     svg_doc(
         ctx,
         &format!(
@@ -1119,24 +1181,38 @@ mod tests {
     }
 
     fn ctx(tz: &TimeZone) -> RenderCtx<'_> {
-        RenderCtx { width: 1280, height: 720, now: "2026-09-14T12:00:00Z".parse().unwrap(), tz, expiring_threshold_days: 7 }
+        RenderCtx {
+            width: 1280,
+            height: 720,
+            now: "2026-09-14T12:00:00Z".parse().unwrap(),
+            tz,
+            expiring_threshold_days: 7,
+        }
     }
 
     fn plans() -> Vec<PlanCard> {
-        [("standard", "Standard", 499, "Estonian channels"), ("sport", "Sport", 699, "Sport channels"), ("premium", "Premium", 999, "Movie channels"), ("max", "Max", 1299, "All channel groups")]
-            .iter()
-            .map(|(id, name, price, f)| PlanCard {
-                id: (*id).into(),
-                name: (*name).into(),
-                price_cents: *price,
-                currency: "EUR".into(),
-                billing_period: String::new(),
-                features: vec![(*f).into()],
-            })
-            .collect()
+        [
+            ("standard", "Standard", 499, "Estonian channels"),
+            ("sport", "Sport", 699, "Sport channels"),
+            ("premium", "Premium", 999, "Movie channels"),
+            ("max", "Max", 1299, "All channel groups"),
+        ]
+        .iter()
+        .map(|(id, name, price, f)| PlanCard {
+            id: (*id).into(),
+            name: (*name).into(),
+            price_cents: *price,
+            currency: "EUR".into(),
+            billing_period: String::new(),
+            features: vec![(*f).into()],
+        })
+        .collect()
     }
 
-    const B: Branding<'static> = Branding { brand: "IPTV Test", tagline: "t" };
+    const B: Branding<'static> = Branding {
+        brand: "IPTV Test",
+        tagline: "t",
+    };
 
     #[test]
     fn expired_body_shows_every_plan() {
@@ -1190,9 +1266,23 @@ mod tests {
         let c = ctx(&tz);
         let summary = status_summary(&[], c.now, &tz, 90);
         let plain = build_status_slide_svg(&c, &summary, "IPTV Test");
-        assert_eq!(build_status_slide_svg(&c, &with_provider_notices(summary.clone(), &[], &tz), "IPTV Test"), plain);
-        let other = ProviderNotice { id: "2".into(), published_at: "2026-09-14T08:00:00.000Z".into(), kind: NoticeKind::Outage, headline: "Перебои".into(), body: "x".into(), ..ProviderNotice::default() };
-        let svg = build_status_slide_svg(&c, &with_provider_notices(summary, &[notice(), other], &tz), "IPTV Test");
+        assert_eq!(
+            build_status_slide_svg(&c, &with_provider_notices(summary.clone(), &[], &tz), "IPTV Test"),
+            plain
+        );
+        let other = ProviderNotice {
+            id: "2".into(),
+            published_at: "2026-09-14T08:00:00.000Z".into(),
+            kind: NoticeKind::Outage,
+            headline: "Перебои".into(),
+            body: "x".into(),
+            ..ProviderNotice::default()
+        };
+        let svg = build_status_slide_svg(
+            &c,
+            &with_provider_notices(summary, &[notice(), other], &tz),
+            "IPTV Test",
+        );
         assert!(svg.contains(">Технические работы у провайдера<"));
         assert!(!svg.contains(">Все сервисы работают<"));
         assert!(svg.contains(">Провайдер<"));
@@ -1213,8 +1303,16 @@ mod tests {
             note: n.into(),
             ..Incident::default()
         };
-        let incidents = [inc("Сбой <EPG>", "outage", "2026-09-14", "Чиним"), inc("Медленно", "degraded", "2026-09-13", "Смотрим"), inc("Ещё", "degraded", "2026-09-12", "Тоже")];
-        let svg = build_status_slide_svg(&c, &with_provider_notices(status_summary(&incidents, c.now, &tz, 90), &[notice()], &tz), "IPTV Test");
+        let incidents = [
+            inc("Сбой <EPG>", "outage", "2026-09-14", "Чиним"),
+            inc("Медленно", "degraded", "2026-09-13", "Смотрим"),
+            inc("Ещё", "degraded", "2026-09-12", "Тоже"),
+        ];
+        let svg = build_status_slide_svg(
+            &c,
+            &with_provider_notices(status_summary(&incidents, c.now, &tz, 90), &[notice()], &tz),
+            "IPTV Test",
+        );
         assert!(svg.contains(">Сбой в работе сервиса<"));
         assert!(svg.contains("Сбой &lt;EPG&gt;"));
         assert!(svg.contains(">Технические работы<"));
@@ -1256,24 +1354,53 @@ mod preview {
     #[test]
     #[ignore = "writes PNG files for manual inspection"]
     fn dump_previews() {
-        let Ok(dir) = std::env::var("OVERLAY_PREVIEW_DIR") else { return };
+        let Ok(dir) = std::env::var("OVERLAY_PREVIEW_DIR") else {
+            return;
+        };
         let dir = std::path::PathBuf::from(dir);
         let tz = TimeZone::get("Europe/Tallinn").unwrap();
-        let ctx = RenderCtx { width: 1280, height: 720, now: Timestamp::now(), tz: &tz, expiring_threshold_days: 7 };
-        let b = Branding { brand: "Мой IPTV-сервис", tagline: "Информационный канал аккаунта" };
+        let ctx = RenderCtx {
+            width: 1280,
+            height: 720,
+            now: Timestamp::now(),
+            tz: &tz,
+            expiring_threshold_days: 7,
+        };
+        let b = Branding {
+            brand: "Мой IPTV-сервис",
+            tagline: "Информационный канал аккаунта",
+        };
         let raster = crate::render::raster::Rasterizer::new(std::path::Path::new("/usr/share/fonts"));
-        let plans = vec![PlanCard { id: "basic".into(), name: "Базовый".into(), price_cents: 499, currency: "EUR".into(), billing_period: "month".into(), features: vec!["Спорт".into(), "Кино".into()] }];
+        let plans = vec![PlanCard {
+            id: "basic".into(),
+            name: "Базовый".into(),
+            price_cents: 499,
+            currency: "EUR".into(),
+            billing_period: "month".into(),
+            features: vec!["Спорт".into(), "Кино".into()],
+        }];
         let mut active = user("t", "Иван Петров", Some("2099-01-01"), true, true);
         active.device_limit = 2;
         let frames = [
-            ("intro", build_brand_slide1_svg(&ctx, b, Some("https://iptv.example/sub/abc"))),
+            (
+                "intro",
+                build_brand_slide1_svg(&ctx, b, Some("https://iptv.example/sub/abc")),
+            ),
             ("card", build_body_svg(&ctx, &active, &plans, b)),
-            ("expired", build_body_svg(&ctx, &user("t", "Иван", Some("2020-01-01"), true, true), &plans, b)),
-            ("status", build_status_slide_svg(&ctx, &status_summary(&[], ctx.now, &tz, 90), b.brand)),
+            (
+                "expired",
+                build_body_svg(&ctx, &user("t", "Иван", Some("2020-01-01"), true, true), &plans, b),
+            ),
+            (
+                "status",
+                build_status_slide_svg(&ctx, &status_summary(&[], ctx.now, &tz, 90), b.brand),
+            ),
             ("devices", build_device_limit_svg(&ctx, b.brand, 60)),
         ];
         for (name, svg) in frames {
-            raster.render_to_file(&svg, 1280, 720, &dir.join(format!("{name}.png"))).unwrap();
+            raster
+                .render_to_file(&svg, 1280, 720, &dir.join(format!("{name}.png")))
+                .unwrap();
         }
     }
 }

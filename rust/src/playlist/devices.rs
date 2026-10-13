@@ -97,19 +97,8 @@ impl DeviceTracker {
         }
     }
 
-    pub fn set_idle_ms(&mut self, idle_ms: i64) {
-        self.idle_ms = idle_ms;
-    }
-
     /// Ask for a slot. `limit` 0 = unlimited.
-    pub fn admit(
-        &mut self,
-        user: i64,
-        key: &str,
-        limit: i64,
-        info: DeviceInfo,
-        now: i64,
-    ) -> Admission {
+    pub fn admit(&mut self, user: i64, key: &str, limit: i64, info: DeviceInfo, now: i64) -> Admission {
         prune(&mut self.users, user, now, self.idle_ms);
         let active = self.users.get(&user).map_or(0, HashMap::len);
 
@@ -118,10 +107,7 @@ impl DeviceTracker {
         {
             // Oldest first: a device keeps its slot only while it is among the
             // first `limit` arrivals still watching (matters after lowering it).
-            let rank = devices
-                .values()
-                .filter(|d| d.first_seen < first_seen)
-                .count() as i64;
+            let rank = devices.values().filter(|d| d.first_seen < first_seen).count() as i64;
             if limit > 0 && rank >= limit {
                 return Admission {
                     allowed: false,
@@ -213,15 +199,6 @@ impl DeviceTracker {
         self.users.get(&user).map_or(0, HashMap::len)
     }
 
-    /// Every customer with a device right now.
-    pub fn users(&self) -> Vec<i64> {
-        self.users
-            .keys()
-            .chain(self.refused.keys())
-            .copied()
-            .collect()
-    }
-
     /// Drop every device of one customer (deleted account, rotated token).
     pub fn forget(&mut self, user: i64) {
         self.users.remove(&user);
@@ -246,10 +223,7 @@ mod tests {
     fn first_devices_get_slots() {
         let mut t = DeviceTracker::new(60_000);
         assert!(t.admit(1, "tv", 2, DeviceInfo::default(), T0).allowed);
-        assert!(
-            t.admit(1, "phone", 2, DeviceInfo::default(), T0 + 1)
-                .allowed
-        );
+        assert!(t.admit(1, "phone", 2, DeviceInfo::default(), T0 + 1).allowed);
         assert_eq!(
             t.admit(1, "tablet", 2, DeviceInfo::default(), T0 + 2),
             Admission {
@@ -259,10 +233,7 @@ mod tests {
             }
         );
         assert!(t.admit(1, "tv", 2, DeviceInfo::default(), T0 + 3).allowed);
-        assert!(
-            t.admit(1, "phone", 2, DeviceInfo::default(), T0 + 4)
-                .allowed
-        );
+        assert!(t.admit(1, "phone", 2, DeviceInfo::default(), T0 + 4).allowed);
     }
 
     #[test]
@@ -270,20 +241,11 @@ mod tests {
         let mut t = DeviceTracker::new(60_000);
         t.admit(1, "tv", 1, DeviceInfo::default(), T0);
         for i in 1..=5 {
-            assert!(
-                !t.admit(1, "phone", 1, DeviceInfo::default(), T0 + i * 1000)
-                    .allowed
-            );
+            assert!(!t.admit(1, "phone", 1, DeviceInfo::default(), T0 + i * 1000).allowed);
         }
         assert_eq!(t.count(1, T0 + 5000), 1);
-        assert!(
-            t.admit(1, "phone", 1, DeviceInfo::default(), T0 + 60_001)
-                .allowed
-        );
-        assert!(
-            !t.admit(1, "tv", 1, DeviceInfo::default(), T0 + 60_002)
-                .allowed
-        );
+        assert!(t.admit(1, "phone", 1, DeviceInfo::default(), T0 + 60_001).allowed);
+        assert!(!t.admit(1, "tv", 1, DeviceInfo::default(), T0 + 60_002).allowed);
     }
 
     fn summary(t: &mut DeviceTracker, now: i64) -> Vec<(String, bool)> {
@@ -299,10 +261,7 @@ mod tests {
         t.admit(1, "tv", 1, ch("A"), T0);
         t.admit(1, "phone", 1, ch("B"), T0 + 1000);
         t.admit(1, "tv", 1, ch("A"), T0 + 2000);
-        assert_eq!(
-            summary(&mut t, T0 + 3000),
-            [("A".into(), true), ("B".into(), false)]
-        );
+        assert_eq!(summary(&mut t, T0 + 3000), [("A".into(), true), ("B".into(), false)]);
         assert_eq!(t.count(1, T0 + 3000), 1);
         assert!(t.admit(1, "phone", 1, ch("B"), T0 + 62_001).allowed);
         assert_eq!(summary(&mut t, T0 + 62_002), [("B".into(), true)]);
@@ -321,10 +280,7 @@ mod tests {
         assert!(t.admit(1, "a", 2, DeviceInfo::default(), T0 + 4).allowed);
         assert!(t.admit(1, "b", 2, DeviceInfo::default(), T0 + 5).allowed);
         assert_eq!(
-            t.list(1, 2, T0 + 6)
-                .iter()
-                .map(|d| d.allowed)
-                .collect::<Vec<_>>(),
+            t.list(1, 2, T0 + 6).iter().map(|d| d.allowed).collect::<Vec<_>>(),
             [true, true, false]
         );
     }
@@ -333,10 +289,7 @@ mod tests {
     fn zero_is_unlimited_and_customers_separate() {
         let mut t = DeviceTracker::new(60_000);
         for i in 0..20 {
-            assert!(
-                t.admit(1, &format!("d{i}"), 0, DeviceInfo::default(), T0)
-                    .allowed
-            );
+            assert!(t.admit(1, &format!("d{i}"), 0, DeviceInfo::default(), T0).allowed);
         }
         assert!(t.admit(2, "tv", 1, DeviceInfo::default(), T0).allowed);
         assert_eq!(t.count(1, T0), 20);
@@ -354,13 +307,7 @@ mod tests {
             device_key("1.2.3.4", &tag, "okhttp/4.12"),
             device_key("1.2.3.4", &tag, "ExoPlayerLib/2.19")
         );
-        assert_ne!(
-            device_key("1.2.3.4", &tag, ""),
-            device_key("5.6.7.8", &tag, "")
-        );
-        assert_ne!(
-            device_key("1.2.3.4", "", "VLC"),
-            device_key("1.2.3.4", "", "Kodi")
-        );
+        assert_ne!(device_key("1.2.3.4", &tag, ""), device_key("5.6.7.8", &tag, ""));
+        assert_ne!(device_key("1.2.3.4", "", "VLC"), device_key("1.2.3.4", "", "Kodi"));
     }
 }

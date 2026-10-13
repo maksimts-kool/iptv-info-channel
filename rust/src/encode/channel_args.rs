@@ -9,6 +9,7 @@
 //! code, with `UPDATE_GOLDEN=1 cargo test channel_args`. Never rewrite the
 //! snapshot silently just to make a red test go green.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use super::ffmpeg::{js_fixed, js_num};
@@ -117,7 +118,9 @@ fn video_encode_args(p: &EncodeParams, fps: u32) -> Vec<String> {
 }
 
 fn audio_encode_args() -> Vec<String> {
-    ["-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100"].map(s).to_vec()
+    ["-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100"]
+        .map(s)
+        .to_vec()
 }
 
 fn intro_output_args(p: &EncodeParams, audio_index: usize, a_out: &str, tmp: &Path) -> Vec<String> {
@@ -146,7 +149,11 @@ fn slide_timer_filters(p: &EncodeParams, boundaries: &[f64]) -> Option<String> {
     if !p.timer_enabled || boundaries.is_empty() {
         return None;
     }
-    let font = if p.timer_font_file.is_empty() { s("font=Inter") } else { format!("fontfile='{}'", p.timer_font_file) };
+    let font = if p.timer_font_file.is_empty() {
+        s("font=Inter")
+    } else {
+        format!("fontfile='{}'", p.timer_font_file)
+    };
     let mut prev = 0.0;
     let parts: Vec<String> = boundaries
         .iter()
@@ -164,7 +171,9 @@ fn slide_timer_filters(p: &EncodeParams, boundaries: &[f64]) -> Option<String> {
 fn with_slide_timer(p: &EncodeParams, filter: String, boundaries: &[f64]) -> String {
     match slide_timer_filters(p, boundaries) {
         Some(timer) => {
-            let base = filter.strip_suffix("[v]").map_or_else(|| filter.clone(), |b| format!("{b}[vbase]"));
+            let base = filter
+                .strip_suffix("[v]")
+                .map_or_else(|| filter.clone(), |b| format!("{b}[vbase]"));
             format!("{base};[vbase]{timer}[v]")
         }
         None => filter,
@@ -187,7 +196,14 @@ const XF: f64 = 0.8;
 
 /// Animated channel: brand slide -> (xfade) -> card -> [status], with music.
 pub fn intro_ffmpeg_args(p: &EncodeParams, slides: &Slides<'_>, music: &Path, tmp: &Path) -> Vec<String> {
-    let extras: Vec<Extra<'_>> = slides.status.iter().map(|f| Extra { file: f, seconds: p.status_seconds }).collect();
+    let extras: Vec<Extra<'_>> = slides
+        .status
+        .iter()
+        .map(|f| Extra {
+            file: f,
+            seconds: p.status_seconds,
+        })
+        .collect();
     if extras.is_empty() {
         intro_card_only_args(p, slides, music, tmp)
     } else {
@@ -196,7 +212,10 @@ pub fn intro_ffmpeg_args(p: &EncodeParams, slides: &Slides<'_>, music: &Path, tm
 }
 
 fn frame_filter(p: &EncodeParams, i: usize, fade: &str) -> String {
-    format!("[{i}:v]scale={}:{},setsar=1,fps={},format=yuv420p{fade}", p.width, p.height, p.fps)
+    format!(
+        "[{i}:v]scale={}:{},setsar=1,fps={},format=yuv420p{fade}",
+        p.width, p.height, p.fps
+    )
 }
 
 fn intro_card_only_args(p: &EncodeParams, slides: &Slides<'_>, music: &Path, tmp: &Path) -> Vec<String> {
@@ -217,9 +236,31 @@ fn intro_card_only_args(p: &EncodeParams, slides: &Slides<'_>, music: &Path, tmp
     );
     let filter = with_slide_timer(p, base, &[slide - XF, slide + card_hold - XF]);
 
-    let mut v = vec![s("-y"), s("-loop"), s("1"), s("-t"), js_num(slide), s("-i"), path(slides.slide1)];
-    v.extend([s("-loop"), s("1"), s("-t"), js_fixed(card_hold, 2), s("-i"), path(slides.card)]);
-    v.extend([s("-stream_loop"), s("-1"), s("-i"), path(music), s("-filter_complex"), filter]);
+    let mut v = vec![
+        s("-y"),
+        s("-loop"),
+        s("1"),
+        s("-t"),
+        js_num(slide),
+        s("-i"),
+        path(slides.slide1),
+    ];
+    v.extend([
+        s("-loop"),
+        s("1"),
+        s("-t"),
+        js_fixed(card_hold, 2),
+        s("-i"),
+        path(slides.card),
+    ]);
+    v.extend([
+        s("-stream_loop"),
+        s("-1"),
+        s("-i"),
+        path(music),
+        s("-filter_complex"),
+        filter,
+    ]);
     v.extend(intro_output_args(p, 2, &a_out, tmp));
     v
 }
@@ -240,7 +281,10 @@ fn intro_with_extras_args(
     let total = tile_to_segments(p, slide + card_dur + sum_extras - (k + 1.0) * XF);
     let card_hold = total - slide - sum_extras + (k + 1.0) * XF;
 
-    let lens: Vec<f64> = [slide, card_hold].into_iter().chain(extra_lens.iter().copied()).collect();
+    let lens: Vec<f64> = [slide, card_hold]
+        .into_iter()
+        .chain(extra_lens.iter().copied())
+        .collect();
     let n = lens.len();
     let frames: String = lens
         .iter()
@@ -274,25 +318,48 @@ fn intro_with_extras_args(
         } else {
             format!("vx{f}")
         };
-        xfades.push_str(&format!(
+        let _ = write!(
+            xfades,
             "[{prev}][v{f}]xfade=transition={}:duration={}:offset={}[{out}]{}",
             p.transition,
             js_num(XF),
             js_fixed(offset, 2),
             if f < n - 1 { ";" } else { "" }
-        ));
+        );
         prev = out;
     }
     boundaries.push(total);
     let a_out = js_fixed((total - 2.0).max(0.0), 2);
     let filter = with_slide_timer(p, frames + &xfades, &boundaries);
 
-    let mut v = vec![s("-y"), s("-loop"), s("1"), s("-t"), js_num(slide), s("-i"), path(slide1)];
+    let mut v = vec![
+        s("-y"),
+        s("-loop"),
+        s("1"),
+        s("-t"),
+        js_num(slide),
+        s("-i"),
+        path(slide1),
+    ];
     v.extend([s("-loop"), s("1"), s("-t"), js_fixed(card_hold, 2), s("-i"), path(card)]);
     for (extra, len) in extras.iter().zip(&extra_lens) {
-        v.extend([s("-loop"), s("1"), s("-t"), js_fixed(*len, 2), s("-i"), path(extra.file)]);
+        v.extend([
+            s("-loop"),
+            s("1"),
+            s("-t"),
+            js_fixed(*len, 2),
+            s("-i"),
+            path(extra.file),
+        ]);
     }
-    v.extend([s("-stream_loop"), s("-1"), s("-i"), path(music), s("-filter_complex"), filter]);
+    v.extend([
+        s("-stream_loop"),
+        s("-1"),
+        s("-i"),
+        path(music),
+        s("-filter_complex"),
+        filter,
+    ]);
     v.extend(intro_output_args(p, n, &a_out, tmp));
     v
 }
@@ -302,8 +369,25 @@ pub fn still_ffmpeg_args(p: &EncodeParams, card: &Path, extras: &[Extra<'_>], mu
     let fps = p.still_fps;
     let card_dur = p.account_slide_seconds.max(6.0);
     if extras.is_empty() {
-        let mut v = vec![s("-y"), s("-loop"), s("1"), s("-i"), path(card), s("-stream_loop"), s("-1"), s("-i"), path(music)];
-        v.extend([s("-t"), js_num(tile_to_segments(p, card_dur)), s("-map"), s("0:v"), s("-map"), s("1:a")]);
+        let mut v = vec![
+            s("-y"),
+            s("-loop"),
+            s("1"),
+            s("-i"),
+            path(card),
+            s("-stream_loop"),
+            s("-1"),
+            s("-i"),
+            path(music),
+        ];
+        v.extend([
+            s("-t"),
+            js_num(tile_to_segments(p, card_dur)),
+            s("-map"),
+            s("0:v"),
+            s("-map"),
+            s("1:a"),
+        ]);
         v.extend(video_encode_args(p, fps));
         v.extend(audio_encode_args());
         v.extend(hls_out_args(p, tmp));
@@ -316,7 +400,9 @@ pub fn still_ffmpeg_args(p: &EncodeParams, card: &Path, extras: &[Extra<'_>], mu
     let lens: Vec<f64> = std::iter::once(card_hold).chain(extra_lens.iter().copied()).collect();
     let m = lens.len();
 
-    let frames: String = (0..m).map(|i| format!("[{i}:v]fps={fps},format=yuv420p,setsar=1[c{i}];")).collect();
+    let frames: String = (0..m)
+        .map(|i| format!("[{i}:v]fps={fps},format=yuv420p,setsar=1[c{i}];"))
+        .collect();
     let inputs: String = (0..m).map(|i| format!("[c{i}]")).collect();
     let base = format!("{frames}{inputs}concat=n={m}:v=1:a=0[v]");
     let boundaries: Vec<f64> = lens
@@ -328,11 +414,33 @@ pub fn still_ffmpeg_args(p: &EncodeParams, card: &Path, extras: &[Extra<'_>], mu
         .collect();
     let filter = with_slide_timer(p, base, &boundaries);
 
-    let mut v = vec![s("-y"), s("-loop"), s("1"), s("-t"), js_fixed(card_hold, 2), s("-i"), path(card)];
+    let mut v = vec![
+        s("-y"),
+        s("-loop"),
+        s("1"),
+        s("-t"),
+        js_fixed(card_hold, 2),
+        s("-i"),
+        path(card),
+    ];
     for (extra, len) in extras.iter().zip(&extra_lens) {
-        v.extend([s("-loop"), s("1"), s("-t"), js_fixed(*len, 2), s("-i"), path(extra.file)]);
+        v.extend([
+            s("-loop"),
+            s("1"),
+            s("-t"),
+            js_fixed(*len, 2),
+            s("-i"),
+            path(extra.file),
+        ]);
     }
-    v.extend([s("-stream_loop"), s("-1"), s("-i"), path(music), s("-filter_complex"), filter]);
+    v.extend([
+        s("-stream_loop"),
+        s("-1"),
+        s("-i"),
+        path(music),
+        s("-filter_complex"),
+        filter,
+    ]);
     v.extend([s("-map"), s("[v]"), s("-map"), format!("{m}:a")]);
     v.extend(video_encode_args(p, fps));
     v.extend(audio_encode_args());
@@ -363,8 +471,14 @@ mod tests {
             status_seconds: 12.0,
         };
         match name {
-            "timerOff" => EncodeParams { timer_enabled: false, ..base },
-            "fontFile" => EncodeParams { timer_font_file: "/fonts/Inter.ttf".into(), ..base },
+            "timerOff" => EncodeParams {
+                timer_enabled: false,
+                ..base
+            },
+            "fontFile" => EncodeParams {
+                timer_font_file: "/fonts/Inter.ttf".into(),
+                ..base
+            },
             "alt" => EncodeParams {
                 account_slide_seconds: 90.0,
                 width: 1920,
@@ -383,14 +497,32 @@ mod tests {
     }
 
     fn compute() -> Map<String, Value> {
-        let (slide1, card, status) = (Path::new("/t/slide1.png"), Path::new("/t/card.png"), Path::new("/t/status.png"));
+        let (slide1, card, status) = (
+            Path::new("/t/slide1.png"),
+            Path::new("/t/card.png"),
+            Path::new("/t/status.png"),
+        );
         let (music, tmp) = (Path::new("/m/music.mp3"), Path::new("/t"));
-        let plain = Slides { slide1, card, status: None };
-        let with_status = Slides { status: Some(status), ..plain.clone() };
+        let plain = Slides {
+            slide1,
+            card,
+            status: None,
+        };
+        let with_status = Slides {
+            status: Some(status),
+            ..plain.clone()
+        };
         let intro = |name: &str, slides: &Slides<'_>| intro_ffmpeg_args(&profile(name), slides, music, tmp);
         let still = |name: &str, with: bool| {
             let p = profile(name);
-            let extras: Vec<Extra<'_>> = if with { vec![Extra { file: status, seconds: p.status_seconds }] } else { vec![] };
+            let extras: Vec<Extra<'_>> = if with {
+                vec![Extra {
+                    file: status,
+                    seconds: p.status_seconds,
+                }]
+            } else {
+                vec![]
+            };
             still_ffmpeg_args(&p, card, &extras, music, tmp)
         };
         let cases: Vec<(&str, Vec<String>)> = vec![
@@ -405,7 +537,10 @@ mod tests {
             ("still-status-timerOff", still("timerOff", true)),
             ("still-status-alt", still("alt", true)),
         ];
-        cases.into_iter().map(|(k, v)| (k.to_owned(), serde_json::json!(v))).collect()
+        cases
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), serde_json::json!(v)))
+            .collect()
     }
 
     const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ffmpeg-args.golden.json");
@@ -419,21 +554,32 @@ mod tests {
         }
         let golden: Map<String, Value> = serde_json::from_str(&std::fs::read_to_string(GOLDEN).unwrap()).unwrap();
         for (name, expected) in &golden {
-            assert_eq!(computed.get(name), Some(expected), "case {name} differs from the golden argv");
+            assert_eq!(
+                computed.get(name),
+                Some(expected),
+                "case {name} differs from the golden argv"
+            );
         }
         assert_eq!(computed.len(), golden.len());
     }
 
     #[test]
     fn live_loop_never_shorter_than_window() {
-        let mut p = EncodeParams { account_slide_seconds: 6.0, ..profile("default") };
+        let mut p = EncodeParams {
+            account_slide_seconds: 6.0,
+            ..profile("default")
+        };
         let floor = LIVE_WINDOW_SEGMENTS as f64 * f64::from(p.hls_time);
         assert!((floor - 48.0).abs() < f64::EPSILON);
         let (card, music, tmp) = (Path::new("/t/card.png"), Path::new("/m/music.mp3"), Path::new("/t"));
         let still = still_ffmpeg_args(&p, card, &[], music, tmp);
         let t = still.iter().position(|a| a == "-t").unwrap();
         assert_eq!(still[t + 1], "48");
-        let slides = Slides { slide1: Path::new("/t/slide1.png"), card, status: Some(Path::new("/t/status.png")) };
+        let slides = Slides {
+            slide1: Path::new("/t/slide1.png"),
+            card,
+            status: Some(Path::new("/t/status.png")),
+        };
         let intro = intro_ffmpeg_args(&p, &slides, music, tmp);
         let af = intro.iter().position(|a| a == "-af").unwrap();
         assert!(intro[af + 1].contains("afade=t=out:st=46.00"));

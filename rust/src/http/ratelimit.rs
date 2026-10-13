@@ -14,7 +14,11 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(window_ms: i64, max_hits: usize) -> Self {
-        Self { window_ms, max_hits, hits: Mutex::default() }
+        Self {
+            window_ms,
+            max_hits,
+            hits: Mutex::default(),
+        }
     }
 
     /// Record a hit for `key`; `true` when it is over the limit.

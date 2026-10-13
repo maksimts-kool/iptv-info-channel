@@ -71,19 +71,10 @@ fn parse_meta(text: &str) -> Option<LoopMeta> {
     // exact multiple of the segment time). Listing one stalls strict decoders.
     let longest = segments.iter().map(|s| s.duration).fold(0.0, f64::max);
     let runt = (longest * 0.5).min(1.0);
-    let usable: Vec<Segment> = segments
-        .iter()
-        .filter(|s| s.duration >= runt)
-        .cloned()
-        .collect();
+    let usable: Vec<Segment> = segments.iter().filter(|s| s.duration >= runt).cloned().collect();
     let segments = if usable.is_empty() { segments } else { usable };
     let total_duration = segments.iter().map(|s| s.duration).sum();
-    let target_duration = (segments
-        .iter()
-        .map(|s| s.duration)
-        .fold(0.0, f64::max)
-        .ceil() as i64)
-        .max(1);
+    let target_duration = (segments.iter().map(|s| s.duration).fold(0.0, f64::max).ceil() as i64).max(1);
     Some(LoopMeta {
         segments,
         total_duration,
@@ -96,9 +87,7 @@ pub fn parse_float_prefix(s: &str) -> Option<f64> {
     let s = s.trim_start();
     let end = s
         .char_indices()
-        .take_while(|(i, c)| {
-            c.is_ascii_digit() || *c == '.' || (*i == 0 && (*c == '-' || *c == '+'))
-        })
+        .take_while(|(i, c)| c.is_ascii_digit() || *c == '.' || (*i == 0 && (*c == '-' || *c == '+')))
         .last()
         .map_or(0, |(i, c)| i + c.len_utf8());
     s[..end].parse().ok().filter(|f: &f64| f.is_finite())
@@ -108,9 +97,7 @@ fn read_loop_meta(dir: &Path) -> Option<Arc<LoopMeta>> {
     let path = dir.join(PLAYLIST_FILE);
     let stat = fs::metadata(&path).ok()?;
     let mtime = stat.modified().ok()?;
-    let mut cache = META_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = META_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((m, size, meta)) = cache.get(&path)
         && *m == mtime
         && *size == stat.len()
@@ -136,9 +123,7 @@ fn read_state(dir: &Path) -> Option<LoopState> {
 }
 
 fn preroll_ms(meta: &LoopMeta) -> i64 {
-    let count = (LIVE_WINDOW_SEGMENTS - 1)
-        .min(meta.segments.len() as i64 - 1)
-        .max(0) as usize;
+    let count = (LIVE_WINDOW_SEGMENTS - 1).min(meta.segments.len() as i64 - 1).max(0) as usize;
     meta.segments[..count]
         .iter()
         .map(|s| (s.duration * 1000.0) as i64)
@@ -170,8 +155,7 @@ fn position(meta: &LoopMeta, state: &LoopState, now_ms: i64) -> Position {
     let offset = segment_offset(meta, elapsed);
     Position {
         media_sequence: state.base_seq + offset,
-        discontinuity_sequence: state.base_discontinuity
-            + offset.div_euclid(meta.segments.len() as i64),
+        discontinuity_sequence: state.base_discontinuity + offset.div_euclid(meta.segments.len() as i64),
     }
 }
 
@@ -201,9 +185,7 @@ fn random_version(now_ms: i64) -> String {
         }
     }
     stamp.reverse();
-    let suffix: String = (0..6)
-        .map(|_| ALPHABET[rand::random_range(0..36)] as char)
-        .collect();
+    let suffix: String = (0..6).map(|_| ALPHABET[rand::random_range(0..36)] as char).collect();
     format!("{}-{suffix}", String::from_utf8_lossy(&stamp))
 }
 
@@ -246,9 +228,7 @@ pub fn build_live_playlist(dir: &Path, now_ms: i64) -> Option<String> {
     let n = meta.segments.len() as i64;
 
     let current = position(&meta, &state, now_ms);
-    let first = state
-        .base_seq
-        .max(current.media_sequence - LIVE_WINDOW_SEGMENTS + 1);
+    let first = state.base_seq.max(current.media_sequence - LIVE_WINDOW_SEGMENTS + 1);
     let playback_offset = first - state.base_seq;
     let discontinuity = state.base_discontinuity + playback_offset.div_euclid(n);
     let count = current.media_sequence - first + 1;
@@ -335,9 +315,7 @@ mod tests {
         write_loop_state(d.path(), start("one"), 100_000).unwrap();
         let p = build_live_playlist(d.path(), 118_000).unwrap();
         assert!(p.contains("#EXT-X-MEDIA-SEQUENCE:0"));
-        assert!(p.contains(
-            "seg_004.ts?v=one&s=4\n#EXT-X-DISCONTINUITY\n#EXTINF:6.000000,\nseg_000.ts?v=one&s=5"
-        ));
+        assert!(p.contains("seg_004.ts?v=one&s=4\n#EXT-X-DISCONTINUITY\n#EXTINF:6.000000,\nseg_000.ts?v=one&s=5"));
         assert_eq!(
             current_loop_position(d.path(), 118_000),
             Some(Position {
@@ -414,8 +392,7 @@ mod tests {
 
     #[test]
     fn runt_segment_dropped() {
-        let meta =
-            parse_meta("#EXTINF:6.0,\na.ts\n#EXTINF:6.0,\nb.ts\n#EXTINF:0.04,\nc.ts\n").unwrap();
+        let meta = parse_meta("#EXTINF:6.0,\na.ts\n#EXTINF:6.0,\nb.ts\n#EXTINF:0.04,\nc.ts\n").unwrap();
         assert_eq!(meta.segments.len(), 2);
         assert_eq!(meta.target_duration, 6);
     }

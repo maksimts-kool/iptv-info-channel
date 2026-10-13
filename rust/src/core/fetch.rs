@@ -18,19 +18,11 @@ pub enum FetchError {
     Http(#[from] reqwest::Error),
 }
 
-impl FetchError {
-    pub fn is_timeout(&self) -> bool {
-        matches!(self, Self::Http(e) if e.is_timeout())
-    }
-}
-
 /// A fetched body plus where it finally came from (after redirects) — HLS
 /// relative URIs resolve against the final URL, not the requested one.
 #[derive(Debug)]
 pub struct Fetched {
     pub final_url: String,
-    pub status: u16,
-    pub headers: HeaderMap,
     pub body: Vec<u8>,
 }
 
@@ -55,15 +47,13 @@ pub async fn fetch_bounded(
 /// Read a response body under a byte cap. With `require_ok`, a non-2xx
 /// status is an error.
 pub async fn read_bounded(res: reqwest::Response, max_bytes: usize, require_ok: bool) -> Result<Fetched, FetchError> {
-    let status = res.status().as_u16();
     if require_ok && !res.status().is_success() {
-        return Err(FetchError::Status(status));
+        return Err(FetchError::Status(res.status().as_u16()));
     }
     if res.content_length().is_some_and(|n| n > max_bytes as u64) {
         return Err(FetchError::TooLarge(max_bytes));
     }
     let final_url = res.url().to_string();
-    let headers = res.headers().clone();
     let mut body = Vec::new();
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -73,5 +63,5 @@ pub async fn read_bounded(res: reqwest::Response, max_bytes: usize, require_ok: 
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(Fetched { final_url, status, headers, body })
+    Ok(Fetched { final_url, body })
 }

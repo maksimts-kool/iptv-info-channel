@@ -96,19 +96,10 @@ fn calendar_window(today: Date, days: i64) -> Vec<String> {
         .collect()
 }
 
-pub fn status_summary(
-    incidents: &[Incident],
-    now: Timestamp,
-    tz: &TimeZone,
-    days: i64,
-) -> StatusSummary {
+pub fn status_summary(incidents: &[Incident], now: Timestamp, tz: &TimeZone, days: i64) -> StatusSummary {
     let today_date = local_date(now, tz);
     let today = today_date.to_string();
-    let valid: Vec<Incident> = incidents
-        .iter()
-        .filter(|i| span(i).is_some())
-        .cloned()
-        .collect();
+    let valid: Vec<Incident> = incidents.iter().filter(|i| span(i).is_some()).cloned().collect();
 
     let cells: Vec<DayCell> = calendar_window(today_date, days)
         .into_iter()
@@ -122,10 +113,7 @@ pub fn status_summary(
             }
         })
         .collect();
-    let operational = cells
-        .iter()
-        .filter(|c| c.severity == Severity::Operational)
-        .count();
+    let operational = cells.iter().filter(|c| c.severity == Severity::Operational).count();
 
     // Incidents covering "today" drive the headline.
     let active: Vec<Incident> = valid
@@ -153,11 +141,7 @@ pub fn status_summary(
 /// Mix the provider's service notices into a summary: same event list, in
 /// blue; when our own state is operational the overall state becomes
 /// `Provider`. Our degraded/outage still wins; uptime is untouched.
-pub fn with_provider_notices(
-    mut summary: StatusSummary,
-    notices: &[ProviderNotice],
-    tz: &TimeZone,
-) -> StatusSummary {
+pub fn with_provider_notices(mut summary: StatusSummary, notices: &[ProviderNotice], tz: &TimeZone) -> StatusSummary {
     if notices.is_empty() {
         summary.provider_notices.clear();
         return summary;
@@ -252,12 +236,7 @@ mod tests {
 
     #[test]
     fn open_ended_incident_active_today() {
-        let s = status_summary(
-            &[inc("degraded", Some("2026-06-12"), None)],
-            now(),
-            &tz(),
-            90,
-        );
+        let s = status_summary(&[inc("degraded", Some("2026-06-12"), None)], now(), &tz(), 90);
         assert_eq!(s.state, StatusState::Degraded);
         assert_eq!(s.active_incidents.len(), 1);
         assert_eq!(by_date(&s, "2026-06-13"), Severity::Degraded);
@@ -276,10 +255,7 @@ mod tests {
         );
         assert_eq!(s.state, StatusState::Outage);
         let s = status_summary(
-            &[
-                inc("unknown", Some("2026-06-13"), None),
-                inc("outage", None, None),
-            ],
+            &[inc("unknown", Some("2026-06-13"), None), inc("outage", None, None)],
             now(),
             &tz(),
             90,
@@ -321,20 +297,12 @@ mod tests {
         assert_eq!(s.state, StatusState::Provider);
         assert_eq!(s.label, "Перебои у провайдера");
         assert_eq!(s.days.last().unwrap().color, PROVIDER_COLOR);
-        assert_eq!(
-            s.days[s.days.len() - 2].color,
-            Severity::Operational.color()
-        );
+        assert_eq!(s.days[s.days.len() - 2].color, Severity::Operational.color());
     }
 
     #[test]
     fn own_incident_outranks_provider() {
-        let base = status_summary(
-            &[inc("degraded", Some("2026-06-13"), None)],
-            now(),
-            &tz(),
-            90,
-        );
+        let base = status_summary(&[inc("degraded", Some("2026-06-13"), None)], now(), &tz(), 90);
         let s = with_provider_notices(base.clone(), &[notice(NoticeKind::Maintenance)], &tz());
         assert_eq!(s.state, StatusState::Degraded);
         assert_eq!(s.days.last().unwrap().color, Severity::Degraded.color());

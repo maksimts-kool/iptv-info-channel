@@ -78,12 +78,16 @@ impl MediaDirs {
 
     /// Every variant loop on disk (not the public one).
     pub fn variant_dirs(&self) -> Vec<PathBuf> {
-        let Ok(entries) = std::fs::read_dir(&self.hls) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&self.hls) else {
+            return Vec::new();
+        };
         entries
             .filter_map(Result::ok)
             .filter(|e| {
                 e.file_name().to_str().is_some_and(|n| {
-                    n.strip_prefix("_media-").is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+                    n.strip_prefix("_media-").is_some_and(|h| {
+                        !h.is_empty() && h.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                    })
                 })
             })
             .map(|e| e.path())
@@ -91,11 +95,17 @@ impl MediaDirs {
     }
 
     pub fn asset_file(&self, asset: &Asset) -> Option<PathBuf> {
-        asset.file.as_deref().map(|f| self.files.join(Path::new(f).file_name().unwrap_or_default()))
+        asset
+            .file
+            .as_deref()
+            .map(|f| self.files.join(Path::new(f).file_name().unwrap_or_default()))
     }
 
     pub fn asset_thumb(&self, asset: &Asset) -> Option<PathBuf> {
-        asset.thumb.as_deref().map(|f| self.thumbs.join(Path::new(f).file_name().unwrap_or_default()))
+        asset
+            .thumb
+            .as_deref()
+            .map(|f| self.thumbs.join(Path::new(f).file_name().unwrap_or_default()))
     }
 
     pub fn remove_asset_files(&self, asset: &Asset) {
@@ -113,8 +123,14 @@ impl MediaDirs {
 /// useful for .mkv) its extension.
 pub fn upload_kind(mime: &str, filename: &str) -> Option<AssetKind> {
     let mime = mime.to_lowercase();
-    let ext = Path::new(filename).extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
-    if ["image/jpeg", "image/png", "image/webp"].contains(&mime.as_str()) || ["jpg", "jpeg", "png", "webp"].contains(&ext.as_str()) {
+    let ext = Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    if ["image/jpeg", "image/png", "image/webp"].contains(&mime.as_str())
+        || ["jpg", "jpeg", "png", "webp"].contains(&ext.as_str())
+    {
         return Some(AssetKind::Image);
     }
     if ["video/mp4", "video/x-matroska", "video/quicktime", "video/webm"].contains(&mime.as_str())
@@ -147,7 +163,15 @@ pub fn validate_article_fields(b: &Value, partial: bool) -> Result<ArticlePatch,
     let has = |k: &str| b.get(k).is_some();
     let mut out = ArticlePatch::default();
     if !partial || has("title") {
-        out.title = Some(str_of(b.get("title")).split_whitespace().collect::<Vec<_>>().join(" ").chars().take(TITLE_CHARS).collect());
+        out.title = Some(
+            str_of(b.get("title"))
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(TITLE_CHARS)
+                .collect(),
+        );
     }
     if !partial || has("doc") {
         out.doc = Some(match b.get("doc") {
@@ -173,7 +197,9 @@ pub fn validate_article_fields(b: &Value, partial: bool) -> Result<ArticlePatch,
 
 /// A reorder must name exactly the existing articles, each once.
 pub fn validate_order(ids: Option<&Value>, existing: &[String]) -> Result<Vec<String>, String> {
-    let list = ids.and_then(Value::as_array).ok_or_else(|| "ids must be an array".to_owned())?;
+    let list = ids
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ids must be an array".to_owned())?;
     let ids: Vec<String> = list.iter().map(|v| str_of(Some(v))).collect();
     let wanted: HashSet<&String> = existing.iter().collect();
     let unique: HashSet<&String> = ids.iter().collect();
@@ -242,7 +268,11 @@ async fn load(pool: &PgPool) -> anyhow::Result<MediaData> {
         d.assets.push(Asset {
             id: r.try_get("id")?,
             article_id: r.try_get("article_id")?,
-            kind: if kind == "video" { AssetKind::Video } else { AssetKind::Image },
+            kind: if kind == "video" {
+                AssetKind::Video
+            } else {
+                AssetKind::Image
+            },
             status: match status.as_str() {
                 "processing" => AssetStatus::Processing,
                 "error" => AssetStatus::Error,
@@ -280,10 +310,22 @@ fn status_str(s: AssetStatus) -> &'static str {
 }
 
 /// Persist exactly what differs between two states.
-pub(crate) async fn persist_diff(tx: &mut Transaction<'_, Postgres>, old: &MediaData, new: &MediaData) -> anyhow::Result<()> {
-    let before: HashMap<&str, (usize, &Article)> = old.articles.iter().enumerate().map(|(i, a)| (a.id.as_str(), (i, a))).collect();
+pub(crate) async fn persist_diff(
+    tx: &mut Transaction<'_, Postgres>,
+    old: &MediaData,
+    new: &MediaData,
+) -> anyhow::Result<()> {
+    let before: HashMap<&str, (usize, &Article)> = old
+        .articles
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.id.as_str(), (i, a)))
+        .collect();
     for (position, a) in new.articles.iter().enumerate() {
-        if before.get(a.id.as_str()).is_some_and(|(i, b)| *i == position && *b == a) {
+        if before
+            .get(a.id.as_str())
+            .is_some_and(|(i, b)| *i == position && *b == a)
+        {
             continue;
         }
         sqlx::query(
@@ -306,13 +348,25 @@ pub(crate) async fn persist_diff(tx: &mut Transaction<'_, Postgres>, old: &Media
         .await?;
     }
     let kept: HashSet<&str> = new.articles.iter().map(|a| a.id.as_str()).collect();
-    let gone: Vec<String> = old.articles.iter().filter(|a| !kept.contains(a.id.as_str())).map(|a| a.id.clone()).collect();
+    let gone: Vec<String> = old
+        .articles
+        .iter()
+        .filter(|a| !kept.contains(a.id.as_str()))
+        .map(|a| a.id.clone())
+        .collect();
     if !gone.is_empty() {
-        sqlx::query("DELETE FROM media_articles WHERE id = ANY($1)").bind(&gone).execute(&mut **tx).await?;
+        sqlx::query("DELETE FROM media_articles WHERE id = ANY($1)")
+            .bind(&gone)
+            .execute(&mut **tx)
+            .await?;
     }
 
     let before: HashMap<&str, &Asset> = old.assets.iter().map(|a| (a.id.as_str(), a)).collect();
-    for a in new.assets.iter().filter(|a| before.get(a.id.as_str()).is_none_or(|b| *b != *a)) {
+    for a in new
+        .assets
+        .iter()
+        .filter(|a| before.get(a.id.as_str()).is_none_or(|b| *b != *a))
+    {
         sqlx::query(
             "INSERT INTO media_assets (id, article_id, kind, status, error, file, thumb, width, height, duration, has_audio, size, original_name, enc, created_at)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE(NULLIF($15,'')::timestamptz, now()))
@@ -339,9 +393,17 @@ pub(crate) async fn persist_diff(tx: &mut Transaction<'_, Postgres>, old: &Media
         .await?;
     }
     let kept: HashSet<&str> = new.assets.iter().map(|a| a.id.as_str()).collect();
-    let gone: Vec<String> = old.assets.iter().filter(|a| !kept.contains(a.id.as_str())).map(|a| a.id.clone()).collect();
+    let gone: Vec<String> = old
+        .assets
+        .iter()
+        .filter(|a| !kept.contains(a.id.as_str()))
+        .map(|a| a.id.clone())
+        .collect();
     if !gone.is_empty() {
-        sqlx::query("DELETE FROM media_assets WHERE id = ANY($1)").bind(&gone).execute(&mut **tx).await?;
+        sqlx::query("DELETE FROM media_assets WHERE id = ANY($1)")
+            .bind(&gone)
+            .execute(&mut **tx)
+            .await?;
     }
     Ok(())
 }
@@ -352,7 +414,7 @@ fn dir_size(dir: &Path) -> u64 {
         .filter_map(Result::ok)
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_size(&e.path()),
-            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => e.metadata().map_or(0, |m| m.len()),
         })
         .sum()
 }
@@ -364,7 +426,12 @@ fn age_ms(stamp: &str, now: i64) -> i64 {
 impl MediaStore {
     pub async fn open(pool: PgPool, dirs: MediaDirs) -> anyhow::Result<Self> {
         let data = load(&pool).await.context("loading media articles")?;
-        Ok(Self { pool, cache: RwLock::new(Arc::new(data)), writes: AsyncMutex::new(()), dirs })
+        Ok(Self {
+            pool,
+            cache: RwLock::new(Arc::new(data)),
+            writes: AsyncMutex::new(()),
+            dirs,
+        })
     }
 
     pub fn read(&self) -> Arc<MediaData> {
@@ -451,7 +518,8 @@ impl MediaStore {
             let saved = a.clone();
             if doc_changed {
                 let used: HashSet<String> = d.articles.iter().flat_map(|a| doc_asset_ids(&a.doc)).collect();
-                d.assets.retain(|asset| asset.article_id != id || used.contains(&asset.id));
+                d.assets
+                    .retain(|asset| asset.article_id != id || used.contains(&asset.id));
             }
             Some(saved)
         })
@@ -484,10 +552,9 @@ impl MediaStore {
             let article = d.articles.remove(pos);
             let still_used: HashSet<String> = d.articles.iter().flat_map(|a| doc_asset_ids(&a.doc)).collect();
             let owners: HashSet<&str> = d.articles.iter().map(|a| a.id.as_str()).collect();
-            let (mine, rest): (Vec<Asset>, Vec<Asset>) = d
-                .assets
-                .drain(..)
-                .partition(|a| (a.article_id == id || !owners.contains(a.article_id.as_str())) && !still_used.contains(&a.id));
+            let (mine, rest): (Vec<Asset>, Vec<Asset>) = d.assets.drain(..).partition(|a| {
+                (a.article_id == id || !owners.contains(a.article_id.as_str())) && !still_used.contains(&a.id)
+            });
             d.assets = rest;
             Some((article, mine))
         })
@@ -544,7 +611,9 @@ impl MediaStore {
             let used: HashSet<String> = d.articles.iter().flat_map(|a| doc_asset_ids(&a.doc)).collect();
             let before = d.assets.len();
             d.assets.retain(|a| {
-                used.contains(&a.id) || age_ms(&a.created_at, now) < min_age_ms || (a.status == AssetStatus::Processing && min_age_ms > 0)
+                used.contains(&a.id)
+                    || age_ms(&a.created_at, now) < min_age_ms
+                    || (a.status == AssetStatus::Processing && min_age_ms > 0)
             });
             before - d.assets.len()
         })
@@ -552,8 +621,15 @@ impl MediaStore {
     }
 
     pub fn usage(&self, cfg: &crate::config::Media) -> Usage {
-        let used = dir_size(&self.dirs.root) + dir_size(&self.dirs.loop_dir()) + self.dirs.variant_dirs().iter().map(|d| dir_size(d)).sum::<u64>();
-        Usage { used, quota: cfg.quota_mb * 1024 * 1024, max_video: cfg.max_video_mb * 1024 * 1024, max_image: cfg.max_image_mb * 1024 * 1024 }
+        let used = dir_size(&self.dirs.root)
+            + dir_size(&self.dirs.loop_dir())
+            + self.dirs.variant_dirs().iter().map(|d| dir_size(d)).sum::<u64>();
+        Usage {
+            used,
+            quota: cfg.quota_mb * 1024 * 1024,
+            max_video: cfg.max_video_mb * 1024 * 1024,
+            max_image: cfg.max_image_mb * 1024 * 1024,
+        }
     }
 
     /// Startup housekeeping: drop half-received uploads, half-built clips,
@@ -589,7 +665,11 @@ impl MediaStore {
         for dir in [&self.dirs.files, &self.dirs.thumbs] {
             for e in std::fs::read_dir(dir)?.filter_map(Result::ok) {
                 if !keep.contains(&*e.file_name().to_string_lossy()) {
-                    let _ = if e.path().is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+                    let _ = if e.path().is_dir() {
+                        std::fs::remove_dir_all(e.path())
+                    } else {
+                        std::fs::remove_file(e.path())
+                    };
                     removed += 1;
                 }
             }
@@ -617,9 +697,21 @@ mod tests {
     fn image(store: &MediaStore, id: &str, article: &str) -> Asset {
         std::fs::write(store.dirs.files.join(format!("{id}.jpg")), b"x").unwrap();
         Asset {
-            id: id.into(), article_id: article.into(), kind: AssetKind::Image, status: AssetStatus::Ready, error: None,
-            file: Some(format!("{id}.jpg")), thumb: None, width: 1, height: 1, duration: 0.0, has_audio: false, size: 1,
-            original_name: String::new(), enc: None, created_at: iso_now(),
+            id: id.into(),
+            article_id: article.into(),
+            kind: AssetKind::Image,
+            status: AssetStatus::Ready,
+            error: None,
+            file: Some(format!("{id}.jpg")),
+            thumb: None,
+            width: 1,
+            height: 1,
+            duration: 0.0,
+            has_audio: false,
+            size: 1,
+            original_name: String::new(),
+            enc: None,
+            created_at: iso_now(),
         }
     }
 
@@ -634,7 +726,12 @@ mod tests {
         assert!(validate_article_fields(&json!({"seconds": 2}), true).is_err());
         assert!(validate_article_fields(&json!({"scroll_speed": 500}), true).is_err());
         assert!(validate_article_fields(&json!({"audience": "x"}), true).is_err());
-        assert_eq!(validate_article_fields(&json!({"audience": null}), true).unwrap().audience, Some(None));
+        assert_eq!(
+            validate_article_fields(&json!({"audience": null}), true)
+                .unwrap()
+                .audience,
+            Some(None)
+        );
         let ids = ["a".to_owned(), "b".to_owned()];
         assert!(validate_order(Some(&json!(["b", "a"])), &ids).is_ok());
         assert!(validate_order(Some(&json!(["a"])), &ids).is_err());
@@ -647,20 +744,47 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = open(&t, dir.path()).await;
         let a = store.create_article(ArticlePatch::default()).await.unwrap();
-        let b = store.create_article(ArticlePatch { title: Some("B".into()), ..ArticlePatch::default() }).await.unwrap();
+        let b = store
+            .create_article(ArticlePatch {
+                title: Some("B".into()),
+                ..ArticlePatch::default()
+            })
+            .await
+            .unwrap();
         store.create_asset(image(&store, "img111111", &a.id)).await.unwrap();
         store.create_asset(image(&store, "img222222", &a.id)).await.unwrap();
-        store.update_article(&a.id, ArticlePatch { doc: Some(with_image("img111111")), ..ArticlePatch::default() }).await.unwrap();
+        store
+            .update_article(
+                &a.id,
+                ArticlePatch {
+                    doc: Some(with_image("img111111")),
+                    ..ArticlePatch::default()
+                },
+            )
+            .await
+            .unwrap();
         assert!(store.asset("img222222").is_none(), "dropped from its article = deleted");
         assert!(!store.dirs.files.join("img222222.jpg").exists());
         // An image pasted into another article survives its first article.
-        store.update_article(&b.id, ArticlePatch { doc: Some(with_image("img111111")), ..ArticlePatch::default() }).await.unwrap();
+        store
+            .update_article(
+                &b.id,
+                ArticlePatch {
+                    doc: Some(with_image("img111111")),
+                    ..ArticlePatch::default()
+                },
+            )
+            .await
+            .unwrap();
         store.reorder(&[b.id.clone(), a.id.clone()]).await.unwrap();
         let (_, removed) = store.remove_article(&a.id).await.unwrap().unwrap();
         assert!(removed.is_empty() && store.asset("img111111").is_some());
 
         let again = open(&t, dir.path()).await;
-        assert_eq!(again.articles().iter().map(|x| x.id.clone()).collect::<Vec<_>>(), [b.id.clone()]);
+        assert_eq!(
+            again.articles().iter().map(|x| x.id.clone()).collect::<Vec<_>>(),
+            [b.id.clone()]
+        );
         assert_eq!(again.articles()[0].doc, with_image("img111111"));
         assert!(again.asset("img111111").is_some());
 
@@ -675,7 +799,12 @@ mod tests {
         assert!(again.sweep_orphans().await.unwrap() >= 1);
         assert!(!again.dirs.files.join("stray.bin").exists());
         assert_eq!(again.asset("vid333333").unwrap().status, AssetStatus::Error);
-        assert!(again.usage(&crate::config::Config::load(dir.path().to_path_buf()).media).used > 0);
+        assert!(
+            again
+                .usage(&crate::config::Config::load(dir.path().to_path_buf()).media)
+                .used
+                > 0
+        );
         t.drop().await;
     }
 }

@@ -229,9 +229,7 @@ pub fn ensure_builtins(state: &mut CatalogData, info_category_name: &str) {
     }
     if !state.channels.iter().any(|c| c.id == INFO_CHANNEL_ID) {
         // Empty name => the playlist builder uses "<brand> — <username>".
-        state
-            .channels
-            .push(builtin_channel(INFO_CHANNEL_ID, "", INFO_SORT));
+        state.channels.push(builtin_channel(INFO_CHANNEL_ID, "", INFO_SORT));
     }
     if !state.channels.iter().any(|c| c.id == INFO_MEDIA_CHANNEL_ID) {
         state.channels.push(builtin_channel(
@@ -256,10 +254,7 @@ pub fn source_due_at(source: &Source, default_hours: f64) -> Option<i64> {
     let Some(last) = source.last_sync_ms.filter(|ms| *ms != 0) else {
         return Some(0);
     };
-    let hours = source
-        .interval_hours
-        .filter(|h| *h > 0.0)
-        .unwrap_or(default_hours);
+    let hours = source.interval_hours.filter(|h| *h > 0.0).unwrap_or(default_hours);
     Some(last + (hours * 3_600_000.0) as i64)
 }
 
@@ -267,11 +262,7 @@ pub fn source_is_due(source: &Source, now_ms: i64, default_hours: f64) -> bool {
     source_due_at(source, default_hours).is_some_and(|due| now_ms >= due)
 }
 
-fn upsert_category(
-    state: &mut CatalogData,
-    name: &str,
-    make_id: &mut impl FnMut() -> String,
-) -> String {
+fn upsert_category(state: &mut CatalogData, name: &str, make_id: &mut impl FnMut() -> String) -> String {
     let mut clean = normalize_name(name);
     if clean.is_empty() {
         "Без категории".clone_into(&mut clean);
@@ -402,11 +393,7 @@ pub fn effective_enabled(enabled: bool, pin: Option<bool>) -> bool {
 /// Effective visibility of a CATEGORY. Precedence, highest first: a personal
 /// pin, the global enable, the plan. `plan` = `None` resolves without a plan
 /// restriction (admin previews).
-pub fn category_enabled_for(
-    category: &Category,
-    pin: Option<bool>,
-    plan: Option<&HashSet<String>>,
-) -> bool {
+pub fn category_enabled_for(category: &Category, pin: Option<bool>, plan: Option<&HashSet<String>>) -> bool {
     if let Some(p) = pin {
         return p;
     }
@@ -452,8 +439,7 @@ pub fn resolve_user_channels<'a>(catalog: &'a CatalogData, opts: Resolve<'_>) ->
         .categories
         .iter()
         .filter(|c| {
-            c.id == INFO_CATEGORY_ID
-                || (!opts.locked && category_enabled_for(c, opts.category_pin(&c.id), opts.plan))
+            c.id == INFO_CATEGORY_ID || (!opts.locked && category_enabled_for(c, opts.category_pin(&c.id), opts.plan))
         })
         .map(|c| (c.id.as_str(), c))
         .collect();
@@ -464,29 +450,13 @@ pub fn resolve_user_channels<'a>(catalog: &'a CatalogData, opts: Resolve<'_>) ->
         .filter(|ch| !ch.missing)
         .filter_map(|ch| {
             let category = *visible.get(ch.category_id.as_str())?;
-            let allowed =
-                ch.id == INFO_CHANNEL_ID || effective_enabled(ch.enabled, opts.channel_pin(&ch.id));
-            allowed.then_some(Entry {
-                channel: ch,
-                category,
-            })
+            let allowed = ch.id == INFO_CHANNEL_ID || effective_enabled(ch.enabled, opts.channel_pin(&ch.id));
+            allowed.then_some(Entry { channel: ch, category })
         })
         .collect();
     entries.sort_by(|a, b| {
-        by_order(
-            a.category.sort,
-            &a.category.name,
-            b.category.sort,
-            &b.category.name,
-        )
-        .then_with(|| {
-            by_order(
-                a.channel.sort,
-                &a.channel.name,
-                b.channel.sort,
-                &b.channel.name,
-            )
-        })
+        by_order(a.category.sort, &a.category.name, b.category.sort, &b.category.name)
+            .then_with(|| by_order(a.channel.sort, &a.channel.name, b.channel.sort, &b.channel.name))
     });
     entries
 }
@@ -523,7 +493,6 @@ impl AccessReason {
 #[derive(Debug, Clone, Copy)]
 pub struct Access<'a> {
     pub channel: Option<&'a Channel>,
-    pub category: Option<&'a Category>,
     pub allowed: bool,
     pub reason: AccessReason,
 }
@@ -532,26 +501,17 @@ pub struct Access<'a> {
 /// decision [`resolve_user_channels`] makes for the whole list. The stream
 /// gateway asks this on every manifest fetch, so it must agree with the
 /// `.m3u` exactly.
-pub fn resolve_channel_access<'a>(
-    catalog: &'a CatalogData,
-    channel_id: &str,
-    opts: Resolve<'_>,
-) -> Access<'a> {
+pub fn resolve_channel_access<'a>(catalog: &'a CatalogData, channel_id: &str, opts: Resolve<'_>) -> Access<'a> {
     let Some(channel) = catalog.channels.iter().find(|c| c.id == channel_id) else {
         return Access {
             channel: None,
-            category: None,
             allowed: false,
             reason: AccessReason::Unknown,
         };
     };
-    let category = catalog
-        .categories
-        .iter()
-        .find(|c| c.id == channel.category_id);
+    let category = catalog.categories.iter().find(|c| c.id == channel.category_id);
     let verdict = |allowed, reason| Access {
         channel: Some(channel),
-        category,
         allowed,
         reason,
     };
@@ -633,12 +593,7 @@ mod tests {
         s
     }
 
-    fn merge(
-        state: &mut CatalogData,
-        src: &str,
-        text: &str,
-        mk: &mut impl FnMut() -> String,
-    ) -> MergeStats {
+    fn merge(state: &mut CatalogData, src: &str, text: &str, mk: &mut impl FnMut() -> String) -> MergeStats {
         merge_source_channels(state, src, &parse_m3u(text), mk, Timestamp::now())
     }
 
@@ -650,12 +605,7 @@ mod tests {
     }
 
     fn cat_id(s: &CatalogData, name: &str) -> String {
-        s.categories
-            .iter()
-            .find(|c| c.name == name)
-            .unwrap()
-            .id
-            .clone()
+        s.categories.iter().find(|c| c.name == name).unwrap().id.clone()
     }
 
     fn ch_mut<'a>(s: &'a mut CatalogData, name: &str) -> &'a mut Channel {
@@ -710,41 +660,17 @@ mod tests {
 
     #[test]
     fn disabled_or_opted_out_never_scheduled() {
-        assert_eq!(
-            source_due_at(&src(false, true, Some(1.0), Some(1)), 24.0),
-            None
-        );
-        assert_eq!(
-            source_due_at(&src(true, false, Some(1.0), Some(1)), 24.0),
-            None
-        );
+        assert_eq!(source_due_at(&src(false, true, Some(1.0), Some(1)), 24.0), None);
+        assert_eq!(source_due_at(&src(true, false, Some(1.0), Some(1)), 24.0), None);
     }
 
     #[test]
     fn builtins_created_once() {
         let mut s = empty();
         ensure_builtins(&mut s, "Информация");
-        assert_eq!(
-            s.categories
-                .iter()
-                .filter(|c| c.id == INFO_CATEGORY_ID)
-                .count(),
-            1
-        );
-        assert_eq!(
-            s.channels
-                .iter()
-                .filter(|c| c.id == INFO_CHANNEL_ID)
-                .count(),
-            1
-        );
-        assert_eq!(
-            s.channels
-                .iter()
-                .filter(|c| c.id == INFO_MEDIA_CHANNEL_ID)
-                .count(),
-            1
-        );
+        assert_eq!(s.categories.iter().filter(|c| c.id == INFO_CATEGORY_ID).count(), 1);
+        assert_eq!(s.channels.iter().filter(|c| c.id == INFO_CHANNEL_ID).count(), 1);
+        assert_eq!(s.channels.iter().filter(|c| c.id == INFO_MEDIA_CHANNEL_ID).count(), 1);
         assert!(s.categories[0].builtin);
         let r: Vec<_> = resolve_user_channels(&s, Resolve::default())
             .iter()
@@ -779,10 +705,7 @@ mod tests {
             &mut mk,
         );
         assert_eq!(
-            s.categories
-                .iter()
-                .filter(|c| category_key(&c.name) == "спорт")
-                .count(),
+            s.categories.iter().filter(|c| category_key(&c.name) == "спорт").count(),
             1
         );
     }
@@ -978,10 +901,7 @@ mod tests {
         );
 
         ch_mut(&mut s, "Sport 1").missing = true;
-        assert_eq!(
-            names(&s, Resolve::default()),
-            ["", "Медиа", "Sport 2", "News 1"]
-        );
+        assert_eq!(names(&s, Resolve::default()), ["", "Медиа", "Sport 2", "News 1"]);
     }
 
     #[test]
@@ -992,13 +912,7 @@ mod tests {
         ch_mut(&mut s, "Sport 2").enabled = false;
         ch_mut(&mut s, "News 1").missing = true;
         let counts = channel_counts(&s);
-        assert_eq!(
-            counts[&sport],
-            Counts {
-                total: 2,
-                enabled: 1
-            }
-        );
+        assert_eq!(counts[&sport], Counts { total: 2, enabled: 1 });
         assert!(!counts.contains_key(&news));
     }
 
@@ -1037,10 +951,7 @@ mod tests {
             );
         }
         let n = s.channels.iter().find(|c| c.category_id == news).unwrap();
-        assert_eq!(
-            resolve_channel_access(&s, &n.id, opts).reason,
-            AccessReason::Category
-        );
+        assert_eq!(resolve_channel_access(&s, &n.id, opts).reason, AccessReason::Category);
     }
 
     #[test]
@@ -1055,15 +966,7 @@ mod tests {
         };
         assert!(resolve_channel_access(&s, &s1, base).allowed);
         assert_eq!(
-            resolve_channel_access(
-                &s,
-                &s1,
-                Resolve {
-                    locked: true,
-                    ..base
-                }
-            )
-            .reason,
+            resolve_channel_access(&s, &s1, Resolve { locked: true, ..base }).reason,
             AccessReason::Locked
         );
         let mut ch_off = UserOverrides::default();
@@ -1094,16 +997,10 @@ mod tests {
             .reason,
             AccessReason::Category
         );
-        assert_eq!(
-            resolve_channel_access(&s, "nope", base).reason,
-            AccessReason::Unknown
-        );
+        assert_eq!(resolve_channel_access(&s, "nope", base).reason, AccessReason::Unknown);
 
         ch_mut(&mut s, "Sport 1").enabled = false;
-        assert_eq!(
-            resolve_channel_access(&s, &s1, base).reason,
-            AccessReason::Channel
-        );
+        assert_eq!(resolve_channel_access(&s, &s1, base).reason, AccessReason::Channel);
         let mut ch_on = UserOverrides::default();
         ch_on.channels.insert(s1.clone(), true);
         assert!(
@@ -1120,10 +1017,7 @@ mod tests {
         let c = ch_mut(&mut s, "Sport 1");
         c.enabled = true;
         c.missing = true;
-        assert_eq!(
-            resolve_channel_access(&s, &s1, base).reason,
-            AccessReason::Missing
-        );
+        assert_eq!(resolve_channel_access(&s, &s1, base).reason, AccessReason::Missing);
 
         let none = set(&[]);
         let info = resolve_channel_access(
@@ -1136,6 +1030,6 @@ mod tests {
             },
         );
         assert!(info.allowed);
-        assert_eq!(info.category.unwrap().id, INFO_CATEGORY_ID);
+        assert_eq!(info.channel.unwrap().category_id, INFO_CATEGORY_ID);
     }
 }

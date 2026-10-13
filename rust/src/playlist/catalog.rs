@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use anyhow::Context;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use serde::Serialize;
 use sqlx::PgPool;
 use tokio::sync::Mutex as AsyncMutex;
-use serde::Serialize;
 
 use super::m3u::{Attrs, parse_m3u};
 use super::model::{
@@ -109,7 +109,13 @@ impl Catalog {
                 source.interval_hours = Some(settings.default_interval_hours);
             }
         }
-        let catalog = Self { pool, data: RwLock::new(Arc::new(data)), settings, client, writes: AsyncMutex::new(()) };
+        let catalog = Self {
+            pool,
+            data: RwLock::new(Arc::new(data)),
+            settings,
+            client,
+            writes: AsyncMutex::new(()),
+        };
         let name = catalog.settings.info_category_name.clone();
         catalog.write(|d| ensure_builtins(d, &name)).await?;
         Ok(catalog)
@@ -128,7 +134,9 @@ impl Catalog {
         let mut next = (*current).clone();
         let result = f(&mut next);
         let mut tx = self.pool.begin().await?;
-        sql::persist_diff(&mut tx, &current, &next).await.context("persisting catalog changes")?;
+        sql::persist_diff(&mut tx, &current, &next)
+            .await
+            .context("persisting catalog changes")?;
         tx.commit().await?;
         *self.data.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
         Ok(result)
@@ -144,7 +152,11 @@ impl Catalog {
     pub fn plan_category_names(&self, granted: &[String]) -> Vec<String> {
         let set: HashSet<&str> = granted.iter().map(String::as_str).collect();
         let data = self.read();
-        let mut cats: Vec<&Category> = data.categories.iter().filter(|c| set.contains(c.id.as_str()) && !c.builtin).collect();
+        let mut cats: Vec<&Category> = data
+            .categories
+            .iter()
+            .filter(|c| set.contains(c.id.as_str()) && !c.builtin)
+            .collect();
         cats.sort_by(|a, b| a.sort.cmp(&b.sort).then_with(|| locale_cmp(&a.name, &b.name)));
         cats.into_iter().map(|c| c.name.clone()).collect()
     }
@@ -181,7 +193,11 @@ impl Catalog {
             url: url.trim().to_owned(),
             enabled,
             auto_refresh,
-            interval_hours: Some(interval_hours.filter(|h| *h > 0.0).unwrap_or(self.settings.default_interval_hours)),
+            interval_hours: Some(
+                interval_hours
+                    .filter(|h| *h > 0.0)
+                    .unwrap_or(self.settings.default_interval_hours),
+            ),
             epg_url: String::new(),
             last_sync_at: None,
             last_sync_ms: None,
@@ -200,7 +216,7 @@ impl Catalog {
                 s.name = name;
             }
             if let Some(url) = patch.url {
-                s.url = url.trim().to_owned();
+                url.trim().clone_into(&mut s.url);
             }
             if let Some(v) = patch.enabled {
                 s.enabled = v;
@@ -212,7 +228,8 @@ impl Catalog {
                 s.interval_hours = Some(h);
             }
             Some(s.clone())
-        }).await
+        })
+        .await
     }
 
     /// Removing a source drops the channels it imported, and any non-builtin
@@ -228,7 +245,8 @@ impl Catalog {
             let used: HashSet<String> = d.channels.iter().map(|c| c.category_id.clone()).collect();
             d.categories.retain(|c| c.builtin || used.contains(&c.id));
             true
-        }).await
+        })
+        .await
     }
 
     /// Fetch one source and merge it. A failure is recorded on the source row
@@ -238,45 +256,70 @@ impl Catalog {
         let url = self.source(id).ok_or_else(|| anyhow::anyhow!("source not found"))?.url;
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("VLC/3.0.20 LibVLC/3.0.20"));
-        let fetched = fetch_bounded(&self.client, &url, headers, self.settings.fetch_timeout, self.settings.max_bytes).await;
+        let fetched = fetch_bounded(
+            &self.client,
+            &url,
+            headers,
+            self.settings.fetch_timeout,
+            self.settings.max_bytes,
+        )
+        .await;
         let parsed = fetched
             .map_err(|e| e.to_string())
             .map(|f| parse_m3u(&f.text()))
-            .and_then(|p| if p.items.is_empty() { Err("no channels found in the playlist".to_owned()) } else { Ok(p) });
+            .and_then(|p| {
+                if p.items.is_empty() {
+                    Err("no channels found in the playlist".to_owned())
+                } else {
+                    Ok(p)
+                }
+            });
 
-        let result = self.write(|d| {
-            let mut make_id = || make_token(12);
-            let stats = parsed.as_ref().ok().map(|p| merge_source_channels(d, id, p, &mut make_id, jiff::Timestamp::now()));
-            let Some(source) = d.sources.iter_mut().find(|s| s.id == id) else {
-                return Err("source not found".to_owned());
-            };
-            // Stamp the attempt either way, so a broken provider is retried on
-            // its interval rather than on every scheduler tick.
-            source.last_sync_at = Some(now_stamp());
-            source.last_sync_ms = Some(now_ms());
-            match (&parsed, stats) {
-                (Ok(p), Some(stats)) => {
-                    source.epg_url = p
-                        .header_attrs
-                        .get("url-tvg")
-                        .or_else(|| p.header_attrs.get("x-tvg-url"))
-                        .cloned()
-                        .unwrap_or_default();
-                    source.last_error = None;
-                    source.last_count = p.items.len();
-                    Ok((stats, p.malformed, p.items.len(), source.name.clone()))
+        let result = self
+            .write(|d| {
+                let mut make_id = || make_token(12);
+                let stats = parsed
+                    .as_ref()
+                    .ok()
+                    .map(|p| merge_source_channels(d, id, p, &mut make_id, jiff::Timestamp::now()));
+                let Some(source) = d.sources.iter_mut().find(|s| s.id == id) else {
+                    return Err("source not found".to_owned());
+                };
+                // Stamp the attempt either way, so a broken provider is retried on
+                // its interval rather than on every scheduler tick.
+                source.last_sync_at = Some(now_stamp());
+                source.last_sync_ms = Some(now_ms());
+                match (&parsed, stats) {
+                    (Ok(p), Some(stats)) => {
+                        source.epg_url = p
+                            .header_attrs
+                            .get("url-tvg")
+                            .or_else(|| p.header_attrs.get("x-tvg-url"))
+                            .cloned()
+                            .unwrap_or_default();
+                        source.last_error = None;
+                        source.last_count = p.items.len();
+                        Ok((stats, p.malformed, p.items.len(), source.name.clone()))
+                    }
+                    (Err(e), _) => {
+                        source.last_error = Some(e.clone());
+                        Err(e.clone())
+                    }
+                    (Ok(_), None) => Err("merge failed".to_owned()),
                 }
-                (Err(e), _) => {
-                    source.last_error = Some(e.clone());
-                    Err(e.clone())
-                }
-                (Ok(_), None) => Err("merge failed".to_owned()),
-            }
-        }).await?;
+            })
+            .await?;
         match result {
             Ok((stats, malformed, total, name)) => {
                 tracing::info!(target: "catalog", source_id = id, %name, added = stats.added, updated = stats.updated, missing = stats.missing, restored = stats.restored, malformed, "source refreshed");
-                Ok(RefreshOutcome { id: id.to_owned(), ok: true, stats: Some(stats), malformed: Some(malformed), total: Some(total), error: None })
+                Ok(RefreshOutcome {
+                    id: id.to_owned(),
+                    ok: true,
+                    stats: Some(stats),
+                    malformed: Some(malformed),
+                    total: Some(total),
+                    error: None,
+                })
             }
             Err(error) => {
                 tracing::error!(target: "catalog", source_id = id, %error, "source refresh failed");
@@ -303,7 +346,13 @@ impl Catalog {
 
     /// Every enabled source now, regardless of interval (the admin button).
     pub async fn refresh_all(&self) -> Vec<RefreshOutcome> {
-        let ids = self.read().sources.iter().filter(|s| s.enabled).map(|s| s.id.clone()).collect();
+        let ids = self
+            .read()
+            .sources
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| s.id.clone())
+            .collect();
         self.refresh_each(ids).await
     }
 
@@ -311,8 +360,13 @@ impl Catalog {
     pub async fn refresh_due(&self) -> Vec<RefreshOutcome> {
         let now = now_ms();
         let hours = self.settings.default_interval_hours;
-        let ids: Vec<String> =
-            self.read().sources.iter().filter(|s| source_is_due(s, now, hours)).map(|s| s.id.clone()).collect();
+        let ids: Vec<String> = self
+            .read()
+            .sources
+            .iter()
+            .filter(|s| source_is_due(s, now, hours))
+            .map(|s| s.id.clone())
+            .collect();
         if ids.is_empty() {
             return Vec::new();
         }
@@ -353,7 +407,8 @@ impl Catalog {
             };
             d.categories.push(c.clone());
             c
-        }).await
+        })
+        .await
     }
 
     /// The built-in Информация stays on and in place — it is what an expired
@@ -373,7 +428,8 @@ impl Catalog {
                 }
             }
             Some(c.clone())
-        }).await
+        })
+        .await
     }
 
     pub async fn reorder_categories(&self, ids: &[String]) -> anyhow::Result<Vec<Category>> {
@@ -384,7 +440,8 @@ impl Catalog {
                 }
             }
             d.categories.clone()
-        }).await
+        })
+        .await
     }
 
     /// Deleting a category deletes its channels. Callers must also drop it
@@ -400,7 +457,8 @@ impl Catalog {
                 entry.categories.remove(id);
             }
             true
-        }).await
+        })
+        .await
     }
 
     // ---- Channels ----
@@ -435,16 +493,27 @@ impl Catalog {
         filtered.sort_by(|a, b| {
             let ca = order.get(a.category_id.as_str()).copied().unwrap_or(0);
             let cb = order.get(b.category_id.as_str()).copied().unwrap_or(0);
-            ca.cmp(&cb).then(a.sort.cmp(&b.sort)).then_with(|| locale_cmp(&a.name, &b.name))
+            ca.cmp(&cb)
+                .then(a.sort.cmp(&b.sort))
+                .then_with(|| locale_cmp(&a.name, &b.name))
         });
         let start = q.page.saturating_sub(1) * q.page_size;
-        let rows = filtered.iter().skip(start).take(q.page_size).map(|c| (*c).clone()).collect();
+        let rows = filtered
+            .iter()
+            .skip(start)
+            .take(q.page_size)
+            .map(|c| (*c).clone())
+            .collect();
         (filtered.len(), rows)
     }
 
     /// Ids of every channel matching a filter (for "select all N" bulk edits).
     pub fn channel_ids_matching(&self, q: &ChannelQuery) -> Vec<String> {
-        let all = ChannelQuery { page: 1, page_size: usize::MAX, ..q.clone() };
+        let all = ChannelQuery {
+            page: 1,
+            page_size: usize::MAX,
+            ..q.clone()
+        };
         self.query_channels(&all).1.into_iter().map(|c| c.id).collect()
     }
 
@@ -453,7 +522,14 @@ impl Catalog {
     }
 
     /// Add a channel by hand (a stream the upstream doesn't carry).
-    pub async fn create_channel(&self, name: &str, url: &str, category_id: &str, attrs: Attrs, enabled: bool) -> anyhow::Result<Channel> {
+    pub async fn create_channel(
+        &self,
+        name: &str,
+        url: &str,
+        category_id: &str,
+        attrs: Attrs,
+        enabled: bool,
+    ) -> anyhow::Result<Channel> {
         self.write(|d| {
             let name = normalize_name(name);
             let c = Channel {
@@ -476,7 +552,8 @@ impl Catalog {
             };
             d.channels.push(c.clone());
             c
-        }).await
+        })
+        .await
     }
 
     pub async fn update_channel(&self, id: &str, patch: &ChannelPatch) -> anyhow::Result<Option<Channel>> {
@@ -485,7 +562,8 @@ impl Catalog {
             let c = d.channels.iter_mut().find(|c| c.id == id)?;
             apply_channel_fields(c, patch, known);
             Some(c.clone())
-        }).await
+        })
+        .await
     }
 
     /// One write for a multi-row edit.
@@ -499,7 +577,8 @@ impl Catalog {
                 changed += 1;
             }
             changed
-        }).await
+        })
+        .await
     }
 
     pub async fn remove_channel(&self, id: &str) -> anyhow::Result<bool> {
@@ -509,13 +588,18 @@ impl Catalog {
             }
             d.channels.retain(|c| c.id != id);
             true
-        }).await
+        })
+        .await
     }
 
     // ---- Per-customer overrides ----
 
     pub fn overrides(&self, user_id: i64) -> UserOverrides {
-        self.read().overrides.get(&user_id.to_string()).cloned().unwrap_or_default()
+        self.read()
+            .overrides
+            .get(&user_id.to_string())
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub async fn patch_overrides(&self, user_id: i64, patch: &OverridePatch) -> anyhow::Result<UserOverrides> {
@@ -538,18 +622,24 @@ impl Catalog {
                 d.overrides.insert(key, entry.clone());
             }
             entry
-        }).await
+        })
+        .await
     }
 
     pub async fn reset_overrides(&self, user_id: i64) -> anyhow::Result<()> {
         self.write(|d| {
             d.overrides.remove(&user_id.to_string());
-        }).await
+        })
+        .await
     }
 
     /// Pinned decisions per user, for the "personalised" badge.
     pub fn override_counts(&self) -> HashMap<i64, usize> {
-        self.read().overrides.iter().filter_map(|(k, v)| Some((k.parse().ok()?, v.len()))).collect()
+        self.read()
+            .overrides
+            .iter()
+            .filter_map(|(k, v)| Some((k.parse().ok()?, v.len())))
+            .collect()
     }
 }
 
@@ -575,7 +665,7 @@ fn apply_channel_fields(c: &mut Channel, patch: &ChannelPatch, category_known: b
         c.category_id.clone_from(cat);
     }
     if let Some(url) = &patch.url {
-        c.url = url.trim().to_owned();
+        url.trim().clone_into(&mut c.url);
     }
 }
 
@@ -615,9 +705,11 @@ pub(crate) mod sql {
                 created_at: r.try_get("created_at")?,
             });
         }
-        for r in sqlx::query("SELECT id, key, name, source_name, enabled, builtin, custom, sort FROM categories ORDER BY sort, id")
-            .fetch_all(pool)
-            .await?
+        for r in sqlx::query(
+            "SELECT id, key, name, source_name, enabled, builtin, custom, sort FROM categories ORDER BY sort, id",
+        )
+        .fetch_all(pool)
+        .await?
         {
             d.categories.push(Category {
                 id: r.try_get("id")?,
@@ -653,8 +745,14 @@ pub(crate) mod sql {
                 added_at: r.try_get("added_at")?,
             });
         }
-        for r in sqlx::query("SELECT user_id, kind, target_id, value FROM user_overrides").fetch_all(pool).await? {
-            let entry = d.overrides.entry(r.try_get::<i64, _>("user_id")?.to_string()).or_default();
+        for r in sqlx::query("SELECT user_id, kind, target_id, value FROM user_overrides")
+            .fetch_all(pool)
+            .await?
+        {
+            let entry = d
+                .overrides
+                .entry(r.try_get::<i64, _>("user_id")?.to_string())
+                .or_default();
             let (target, value): (String, bool) = (r.try_get("target_id")?, r.try_get("value")?);
             if r.try_get::<String, _>("kind")? == "category" {
                 entry.categories.insert(target, value);
@@ -669,8 +767,16 @@ pub(crate) mod sql {
     fn diff<'a, T: PartialEq>(old: &'a [T], new: &'a [T], id: impl Fn(&T) -> &str) -> (Vec<&'a T>, Vec<String>) {
         let before: HashMap<&str, &T> = old.iter().map(|x| (id(x), x)).collect();
         let after: HashSet<&str> = new.iter().map(&id).collect();
-        let changed = new.iter().filter(|x| before.get(id(x)).is_none_or(|b| *b != *x)).collect();
-        let gone = old.iter().map(&id).filter(|k| !after.contains(k)).map(str::to_owned).collect();
+        let changed = new
+            .iter()
+            .filter(|x| before.get(id(x)).is_none_or(|b| *b != *x))
+            .collect();
+        let gone = old
+            .iter()
+            .map(&id)
+            .filter(|k| !after.contains(k))
+            .map(str::to_owned)
+            .collect();
         (changed, gone)
     }
 
@@ -690,7 +796,11 @@ pub(crate) mod sql {
         out
     }
 
-    pub async fn persist_diff(tx: &mut Transaction<'_, Postgres>, old: &CatalogData, new: &CatalogData) -> sqlx::Result<()> {
+    pub async fn persist_diff(
+        tx: &mut Transaction<'_, Postgres>,
+        old: &CatalogData,
+        new: &CatalogData,
+    ) -> sqlx::Result<()> {
         let (sources, gone_sources) = diff(&old.sources, &new.sources, |s| &s.id);
         let (categories, gone_categories) = diff(&old.categories, &new.categories, |c| &c.id);
         let (channels, gone_channels) = diff(&old.channels, &new.channels, |c| &c.id);
@@ -739,13 +849,22 @@ pub(crate) mod sql {
             upsert_channels(tx, chunk).await?;
         }
         if !gone_channels.is_empty() {
-            sqlx::query("DELETE FROM channels WHERE id = ANY($1)").bind(&gone_channels).execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM channels WHERE id = ANY($1)")
+                .bind(&gone_channels)
+                .execute(&mut **tx)
+                .await?;
         }
         if !gone_categories.is_empty() {
-            sqlx::query("DELETE FROM categories WHERE id = ANY($1)").bind(&gone_categories).execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM categories WHERE id = ANY($1)")
+                .bind(&gone_categories)
+                .execute(&mut **tx)
+                .await?;
         }
         if !gone_sources.is_empty() {
-            sqlx::query("DELETE FROM sources WHERE id = ANY($1)").bind(&gone_sources).execute(&mut **tx).await?;
+            sqlx::query("DELETE FROM sources WHERE id = ANY($1)")
+                .bind(&gone_sources)
+                .execute(&mut **tx)
+                .await?;
         }
 
         let (before, after) = (pins(old), pins(new));
@@ -832,7 +951,9 @@ mod tests {
             fetch_timeout: Duration::from_secs(5),
             max_bytes: 1 << 20,
         };
-        Catalog::open(pool.clone(), settings, reqwest::Client::new()).await.unwrap()
+        Catalog::open(pool.clone(), settings, reqwest::Client::new())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -840,10 +961,23 @@ mod tests {
         let t = TestDb::new().await;
         let cat = open(&t.pool).await;
         assert!(!cat.remove_category(INFO_CATEGORY_ID).await.unwrap());
-        let off = CategoryPatch { enabled: Some(false), ..CategoryPatch::default() };
-        assert!(cat.update_category(INFO_CATEGORY_ID, off).await.unwrap().unwrap().enabled);
+        let off = CategoryPatch {
+            enabled: Some(false),
+            ..CategoryPatch::default()
+        };
+        assert!(
+            cat.update_category(INFO_CATEGORY_ID, off)
+                .await
+                .unwrap()
+                .unwrap()
+                .enabled
+        );
         let other = cat.create_category("Спорт", true).await.unwrap();
-        let mv = ChannelPatch { category_id: Some(other.id.clone()), enabled: Some(false), ..ChannelPatch::default() };
+        let mv = ChannelPatch {
+            category_id: Some(other.id.clone()),
+            enabled: Some(false),
+            ..ChannelPatch::default()
+        };
         let info = cat.update_channel(INFO_CHANNEL_ID, &mv).await.unwrap().unwrap();
         assert_eq!(info.category_id, INFO_CATEGORY_ID);
         assert!(info.enabled);
@@ -862,14 +996,23 @@ mod tests {
     async fn overrides_patch_and_persist() {
         let t = TestDb::new().await;
         let store = Store::open(t.pool.clone()).await.unwrap();
-        let u = store.create_user("x".into(), "pro".into(), None, true, None).await.unwrap();
+        let u = store
+            .create_user("x".into(), "pro".into(), None, true, None)
+            .await
+            .unwrap();
         let cat = open(&t.pool).await;
-        let patch = OverridePatch { categories: vec![("c1".into(), Some(true))], channels: vec![("x".into(), Some(false))] };
+        let patch = OverridePatch {
+            categories: vec![("c1".into(), Some(true))],
+            channels: vec![("x".into(), Some(false))],
+        };
         cat.patch_overrides(u.id, &patch).await.unwrap();
         assert_eq!(cat.override_counts()[&u.id], 2);
         let cat = open(&t.pool).await;
         assert_eq!(cat.overrides(u.id).categories["c1"], true);
-        let clear = OverridePatch { categories: vec![("c1".into(), None)], channels: vec![("x".into(), None)] };
+        let clear = OverridePatch {
+            categories: vec![("c1".into(), None)],
+            channels: vec![("x".into(), None)],
+        };
         cat.patch_overrides(u.id, &clear).await.unwrap();
         assert!(open(&t.pool).await.override_counts().is_empty());
         t.drop().await;
@@ -881,12 +1024,25 @@ mod tests {
         let cat = open(&t.pool).await;
         let c = cat.create_category("Кино", true).await.unwrap();
         for i in 0..5 {
-            cat.create_channel(&format!("Film {i}"), "http://x", &c.id, Attrs::new(), i % 2 == 0).await.unwrap();
+            cat.create_channel(&format!("Film {i}"), "http://x", &c.id, Attrs::new(), i % 2 == 0)
+                .await
+                .unwrap();
         }
-        let q = ChannelQuery { category_id: c.id.clone(), page: 1, page_size: 2, ..ChannelQuery::default() };
+        let q = ChannelQuery {
+            category_id: c.id.clone(),
+            page: 1,
+            page_size: 2,
+            ..ChannelQuery::default()
+        };
         let (total, rows) = cat.query_channels(&q);
         assert_eq!((total, rows.len()), (5, 2));
-        let q = ChannelQuery { status: "disabled".into(), q: "film".into(), page: 1, page_size: 50, ..ChannelQuery::default() };
+        let q = ChannelQuery {
+            status: "disabled".into(),
+            q: "film".into(),
+            page: 1,
+            page_size: 50,
+            ..ChannelQuery::default()
+        };
         assert_eq!(cat.query_channels(&q).0, 2);
         assert_eq!(open(&t.pool).await.channel_ids_matching(&q).len(), 2);
         t.drop().await;
@@ -903,11 +1059,29 @@ mod tests {
 
         let t = TestDb::new().await;
         let cat = open(&t.pool).await;
-        let src = cat.create_source("P", &format!("http://{addr}/list.m3u"), true, true, None).await.unwrap();
+        let src = cat
+            .create_source("P", &format!("http://{addr}/list.m3u"), true, true, None)
+            .await
+            .unwrap();
         let out = cat.refresh_source(&src.id).await.unwrap();
         assert_eq!(out.stats.unwrap().added, 2);
-        let sport1 = cat.read().channels.iter().find(|c| c.name == "Sport 1").unwrap().id.clone();
-        cat.update_channel(&sport1, &ChannelPatch { name: Some("Спорт 1".into()), ..ChannelPatch::default() }).await.unwrap();
+        let sport1 = cat
+            .read()
+            .channels
+            .iter()
+            .find(|c| c.name == "Sport 1")
+            .unwrap()
+            .id
+            .clone();
+        cat.update_channel(
+            &sport1,
+            &ChannelPatch {
+                name: Some("Спорт 1".into()),
+                ..ChannelPatch::default()
+            },
+        )
+        .await
+        .unwrap();
         let out = cat.refresh_source(&src.id).await.unwrap();
         assert_eq!(out.stats.unwrap().updated, 2);
 
@@ -919,7 +1093,11 @@ mod tests {
         assert_eq!(s.epg_url, "http://p/epg.xml");
         assert!(s.last_sync_ms.is_some() && s.last_error.is_none());
         assert!(again.remove_source(&src.id).await.unwrap());
-        assert_eq!(open(&t.pool).await.read().channels.len(), 2, "only the two built-ins remain");
+        assert_eq!(
+            open(&t.pool).await.read().channels.len(),
+            2,
+            "only the two built-ins remain"
+        );
         t.drop().await;
     }
 }

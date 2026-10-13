@@ -21,8 +21,8 @@ use crate::notify::notify::ContentChange;
 use crate::playlist::catalog::{CategoryPatch, ChannelPatch, ChannelQuery, OverridePatch, SourcePatch};
 use crate::playlist::m3u::Attrs;
 use crate::playlist::model::{
-    Category, Channel, Counts, INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, REFRESH_INTERVALS, Resolve, Source,
-    UserOverrides, category_enabled_for, effective_enabled, resolve_user_channels,
+    Category, Channel, Counts, INFO_CATEGORY_ID, INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, REFRESH_INTERVALS, Resolve,
+    Source, UserOverrides, category_enabled_for, effective_enabled, resolve_user_channels,
 };
 
 // ===========================================================================
@@ -145,7 +145,11 @@ const MAX_PAGE_SIZE: usize = 500;
 
 pub fn parse_channel_query(q: &HashMap<String, String>) -> ChannelQuery {
     let int = |k: &str| q.get(k).and_then(|v| v.trim().parse::<i64>().ok()).filter(|n| *n > 0);
-    let status = q.get("status").map(String::as_str).filter(|s| ["all", "enabled", "disabled", "missing"].contains(s)).unwrap_or("all");
+    let status = q
+        .get("status")
+        .map(String::as_str)
+        .filter(|s| ["all", "enabled", "disabled", "missing"].contains(s))
+        .unwrap_or("all");
     ChannelQuery {
         q: q.get("q").map(|s| s.chars().take(100).collect()).unwrap_or_default(),
         category_id: q.get("category").cloned().unwrap_or_default(),
@@ -158,7 +162,10 @@ pub fn parse_channel_query(q: &HashMap<String, String>) -> ChannelQuery {
 
 /// Query parameters from a JSON `filter` object (the bulk endpoint).
 fn query_map(filter: &Value) -> HashMap<String, String> {
-    filter.as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), str_of(Some(v)))).collect()).unwrap_or_default()
+    filter
+        .as_object()
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), str_of(Some(v)))).collect())
+        .unwrap_or_default()
 }
 
 /// A per-customer channel row: global value, this customer's pin, result.
@@ -193,14 +200,27 @@ pub fn diff_override_patch(
         let was = category_enabled_for(c, before.categories.get(&c.id).copied(), plan);
         let now = category_enabled_for(c, after.categories.get(&c.id).copied(), plan);
         if was != now {
-            if now { &mut out.added_categories } else { &mut out.removed_categories }.push(c.name.clone());
+            if now {
+                &mut out.added_categories
+            } else {
+                &mut out.removed_categories
+            }
+            .push(c.name.clone());
         }
     }
-    for ch in channel_rows.iter().filter(|c| !c.builtin && category_visible_after(&c.category_id)) {
+    for ch in channel_rows
+        .iter()
+        .filter(|c| !c.builtin && category_visible_after(&c.category_id))
+    {
         let was = effective_enabled(ch.enabled, before.channels.get(&ch.id).copied());
         let now = effective_enabled(ch.enabled, after.channels.get(&ch.id).copied());
         if was != now {
-            if now { &mut out.added_channels } else { &mut out.removed_channels }.push(ch.name.clone());
+            if now {
+                &mut out.added_channels
+            } else {
+                &mut out.removed_channels
+            }
+            .push(ch.name.clone());
         }
     }
     out
@@ -219,7 +239,10 @@ pub fn router() -> Router<AppState> {
         .route("/catalog/refresh", post(refresh_all))
         .route("/catalog/categories", post(create_category))
         .route("/catalog/categories/reorder", post(reorder_categories))
-        .route("/catalog/categories/{id}", patch(update_category).delete(delete_category))
+        .route(
+            "/catalog/categories/{id}",
+            patch(update_category).delete(delete_category),
+        )
         .route("/catalog/channels", get(list_channels).post(create_channel))
         .route("/catalog/channels/bulk", post(bulk_channels))
         .route("/catalog/channels/{id}", patch(update_channel).delete(delete_channel))
@@ -247,7 +270,11 @@ pub fn catalog_overview(st: &AppState) -> Value {
         .map(|c| {
             let mut v = category_json(c, &counts);
             // How many plans sell it; zero means no customer can ever see it.
-            v["plans"] = json!(if c.builtin { plans.len() } else { sold.get(c.id.as_str()).copied().unwrap_or(0) });
+            v["plans"] = json!(if c.builtin {
+                plans.len()
+            } else {
+                sold.get(c.id.as_str()).copied().unwrap_or(0)
+            });
             v
         })
         .collect();
@@ -279,7 +306,13 @@ async fn create_source(State(st): State<AppState>, b: Option<Json<Value>>) -> Ap
     let v = validate_source(&body(b), false).map_err(ApiError::bad)?;
     let s = st
         .catalog
-        .create_source(&v.name.unwrap_or_default(), &v.url.unwrap_or_default(), v.enabled.unwrap_or(true), v.auto_refresh.unwrap_or(true), v.interval_hours)
+        .create_source(
+            &v.name.unwrap_or_default(),
+            &v.url.unwrap_or_default(),
+            v.enabled.unwrap_or(true),
+            v.auto_refresh.unwrap_or(true),
+            v.interval_hours,
+        )
         .await?;
     tracing::info!(target: "admin", source_id = %s.id, name = %s.name, "playlist source created");
     created(source_json(&s, st.catalog.source_due_at(&s)))
@@ -290,7 +323,11 @@ async fn update_source(State(st): State<AppState>, UrlPath(id): UrlPath<String>,
         return Err(ApiError::not_found());
     }
     let v = validate_source(&body(b), true).map_err(ApiError::bad)?;
-    let s = st.catalog.update_source(&id, v).await?.ok_or_else(ApiError::not_found)?;
+    let s = st
+        .catalog
+        .update_source(&id, v)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ok(source_json(&s, st.catalog.source_due_at(&s)))
 }
 
@@ -320,23 +357,40 @@ async fn refresh_all(State(st): State<AppState>) -> ApiResult {
 
 async fn create_category(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
     let v = validate_category(&body(b), false).map_err(ApiError::bad)?;
-    let c = st.catalog.create_category(&v.name.unwrap_or_default(), v.enabled.unwrap_or(true)).await?;
+    let c = st
+        .catalog
+        .create_category(&v.name.unwrap_or_default(), v.enabled.unwrap_or(true))
+        .await?;
     created(category_json(&c, &st.catalog.category_counts()))
 }
 
-async fn update_category(State(st): State<AppState>, UrlPath(id): UrlPath<String>, b: Option<Json<Value>>) -> ApiResult {
+async fn update_category(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<String>,
+    b: Option<Json<Value>>,
+) -> ApiResult {
     let existing = st.catalog.category(&id).ok_or_else(ApiError::not_found)?;
     let v = validate_category(&body(b), true).map_err(ApiError::bad)?;
     if existing.builtin && v.enabled == Some(false) {
         return Err(ApiError::bad("the info category cannot be switched off"));
     }
-    let c = st.catalog.update_category(&id, v).await?.ok_or_else(ApiError::not_found)?;
+    let c = st
+        .catalog
+        .update_category(&id, v)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ok(category_json(&c, &st.catalog.category_counts()))
 }
 
 async fn reorder_categories(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
     let b = body(b);
-    let ids: Vec<String> = b.get("ids").and_then(Value::as_array).ok_or_else(|| ApiError::bad("ids must be an array"))?.iter().map(|v| str_of(Some(v))).collect();
+    let ids: Vec<String> = b
+        .get("ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::bad("ids must be an array"))?
+        .iter()
+        .map(|v| str_of(Some(v)))
+        .collect();
     st.catalog.reorder_categories(&ids).await?;
     ok(catalog_overview(&st))
 }
@@ -356,7 +410,9 @@ async fn delete_category(State(st): State<AppState>, UrlPath(id): UrlPath<String
 async fn list_channels(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
     let params = parse_channel_query(&q);
     let (total, rows) = st.catalog.query_channels(&params);
-    ok(json!({ "total": total, "page": params.page, "pageSize": params.page_size, "rows": rows.iter().map(channel_json).collect::<Vec<_>>() }))
+    ok(
+        json!({ "total": total, "page": params.page, "pageSize": params.page_size, "rows": rows.iter().map(channel_json).collect::<Vec<_>>() }),
+    )
 }
 
 async fn create_channel(State(st): State<AppState>, b: Option<Json<Value>>) -> ApiResult {
@@ -373,7 +429,10 @@ async fn create_channel(State(st): State<AppState>, b: Option<Json<Value>>) -> A
     if st.catalog.category(&category).is_none() {
         return Err(ApiError::bad("unknown category"));
     }
-    let c = st.catalog.create_channel(&name, &url, &category, Attrs::new(), true).await?;
+    let c = st
+        .catalog
+        .create_channel(&name, &url, &category, Attrs::new(), true)
+        .await?;
     created(channel_json(&c))
 }
 
@@ -385,7 +444,11 @@ async fn update_channel(State(st): State<AppState>, UrlPath(id): UrlPath<String>
     if v.category_id.as_ref().is_some_and(|c| st.catalog.category(c).is_none()) {
         return Err(ApiError::bad("unknown category"));
     }
-    let c = st.catalog.update_channel(&id, &v).await?.ok_or_else(ApiError::not_found)?;
+    let c = st
+        .catalog
+        .update_channel(&id, &v)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     ok(channel_json(&c))
 }
 
@@ -418,7 +481,11 @@ async fn delete_channel(State(st): State<AppState>, UrlPath(id): UrlPath<String>
 
 /// One customer's view of the catalog: every category and a page of channels
 /// with the global value, their pin and the effective result.
-async fn user_channels(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, Query(q): Query<HashMap<String, String>>) -> ApiResult {
+async fn user_channels(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult {
     let user = st.store.user(id).ok_or_else(ApiError::not_found)?;
     let locked = is_locked(&st, &user);
     let overrides = st.catalog.overrides(user.id);
@@ -435,24 +502,34 @@ async fn user_channels(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, Qu
             v
         })
         .collect();
-    let category_effective: HashMap<String, bool> =
-        categories.iter().map(|c| (str_of(c.get("id")), c["effective"].as_bool().unwrap_or(false))).collect();
+    let category_effective: HashMap<String, bool> = categories
+        .iter()
+        .map(|c| (str_of(c.get("id")), c["effective"].as_bool().unwrap_or(false)))
+        .collect();
     let params = parse_channel_query(&q);
     let (total, rows) = st.catalog.query_channels(&params);
     let has_media = st.media.loop_dir_for(&user).is_some();
     let visible = {
         let data = st.catalog.read();
-        resolve_user_channels(&data, Resolve { overrides: Some(&overrides), locked, plan: Some(&plan) })
-            .iter()
-            .filter(|e| e.channel.id != INFO_MEDIA_CHANNEL_ID || has_media)
-            .count()
+        resolve_user_channels(
+            &data,
+            Resolve {
+                overrides: Some(&overrides),
+                locked,
+                plan: Some(&plan),
+            },
+        )
+        .iter()
+        .filter(|e| e.channel.id != INFO_MEDIA_CHANNEL_ID || has_media)
+        .count()
     };
     let rows: Vec<Value> = rows
         .iter()
         .map(|ch| {
             let mut v = channel_json(ch);
             let personal = personal_row_json(ch.enabled, overrides.channels.get(&ch.id).copied(), locked, ch.builtin);
-            let effective = personal["effective"].as_bool().unwrap_or(false) && category_effective.get(&ch.category_id).copied() != Some(false);
+            let effective = personal["effective"].as_bool().unwrap_or(false)
+                && category_effective.get(&ch.category_id).copied() != Some(false);
             if let (Some(o), Some(p)) = (v.as_object_mut(), personal.as_object()) {
                 o.extend(p.clone());
                 o.insert("effective".into(), json!(effective));
@@ -460,7 +537,13 @@ async fn user_channels(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, Qu
             v
         })
         .collect();
-    let status = account_status(user.active, user.expires_at.as_deref(), st.config.expiring_threshold_days, jiff::Timestamp::now(), &st.config.tz);
+    let status = account_status(
+        user.active,
+        user.expires_at.as_deref(),
+        st.config.expiring_threshold_days,
+        jiff::Timestamp::now(),
+        &st.config.tz,
+    );
     ok(json!({
         "locked": locked,
         "status": status,
@@ -474,7 +557,9 @@ async fn user_channels(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, Qu
 
 fn pin_map(v: Option<&Value>) -> Result<Vec<(String, Option<bool>)>, ApiError> {
     let Some(v) = v else { return Ok(Vec::new()) };
-    let obj = v.as_object().ok_or_else(|| ApiError::bad("override values must be true, false or null"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| ApiError::bad("override values must be true, false or null"))?;
     obj.iter()
         .map(|(k, v)| match v {
             Value::Bool(b) => Ok((k.clone(), Some(*b))),
@@ -485,11 +570,22 @@ fn pin_map(v: Option<&Value>) -> Result<Vec<(String, Option<bool>)>, ApiError> {
 }
 
 /// Pin/unpin exceptions: `true`/`false` pins, `null` inherits again.
-async fn patch_user_channels(State(st): State<AppState>, UrlPath(id): UrlPath<i64>, b: Option<Json<Value>>) -> ApiResult {
+async fn patch_user_channels(
+    State(st): State<AppState>,
+    UrlPath(id): UrlPath<i64>,
+    b: Option<Json<Value>>,
+) -> ApiResult {
     let user = st.store.user(id).ok_or_else(ApiError::not_found)?;
     let b = body(b);
-    let patch = OverridePatch { categories: pin_map(b.get("categories"))?, channels: pin_map(b.get("channels"))? };
-    if patch.categories.iter().any(|(k, v)| k == INFO_CATEGORY_ID && *v == Some(false)) {
+    let patch = OverridePatch {
+        categories: pin_map(b.get("categories"))?,
+        channels: pin_map(b.get("channels"))?,
+    };
+    if patch
+        .categories
+        .iter()
+        .any(|(k, v)| k == INFO_CATEGORY_ID && *v == Some(false))
+    {
         return Err(ApiError::bad("the info category cannot be withheld from a customer"));
     }
     let before = st.catalog.overrides(user.id);
@@ -500,12 +596,29 @@ async fn patch_user_channels(State(st): State<AppState>, UrlPath(id): UrlPath<i6
     // their playlist is Информация either way until they renew).
     if !is_locked(&st, &user) {
         let plan = user.plan_category_set();
-        let category_rows: Vec<Category> = patch.categories.iter().filter_map(|(id, _)| st.catalog.category(id)).collect();
-        let channel_rows: Vec<Channel> = patch.channels.iter().filter_map(|(id, _)| st.catalog.channel(id)).collect();
+        let category_rows: Vec<Category> = patch
+            .categories
+            .iter()
+            .filter_map(|(id, _)| st.catalog.category(id))
+            .collect();
+        let channel_rows: Vec<Channel> = patch
+            .channels
+            .iter()
+            .filter_map(|(id, _)| st.catalog.channel(id))
+            .collect();
         let visible_after = |cid: &str| {
-            st.catalog.category(cid).is_some_and(|c| c.builtin || category_enabled_for(&c, saved.categories.get(cid).copied(), Some(&plan)))
+            st.catalog
+                .category(cid)
+                .is_some_and(|c| c.builtin || category_enabled_for(&c, saved.categories.get(cid).copied(), Some(&plan)))
         };
-        let diff = diff_override_patch(&category_rows, &channel_rows, &before, &saved, Some(&plan), visible_after);
+        let diff = diff_override_patch(
+            &category_rows,
+            &channel_rows,
+            &before,
+            &saved,
+            Some(&plan),
+            visible_after,
+        );
         let notifier = std::sync::Arc::clone(&st.notifier);
         tokio::spawn(async move {
             notifier.notify_content_change(&user, &diff, &user.plan_name).await;
@@ -526,32 +639,82 @@ mod tests {
     use super::*;
 
     fn cat(id: &str, name: &str) -> Category {
-        Category { id: id.into(), key: id.into(), name: name.into(), source_name: None, enabled: true, builtin: false, custom: false, sort: 0 }
+        Category {
+            id: id.into(),
+            key: id.into(),
+            name: name.into(),
+            source_name: None,
+            enabled: true,
+            builtin: false,
+            custom: false,
+            sort: 0,
+        }
     }
 
     #[test]
     fn source_validation() {
         let v = validate_source(&json!({"auto_refresh": true, "interval_hours": 6}), true).unwrap();
         assert_eq!((v.auto_refresh, v.interval_hours), (Some(true), Some(6.0)));
-        assert_eq!(validate_source(&json!({"auto_refresh": "yes"}), true).unwrap_err(), "auto_refresh must be a boolean");
-        assert!(validate_source(&json!({"interval_hours": 5}), true).unwrap_err().starts_with("interval_hours must be one of"));
+        assert_eq!(
+            validate_source(&json!({"auto_refresh": "yes"}), true).unwrap_err(),
+            "auto_refresh must be a boolean"
+        );
+        assert!(
+            validate_source(&json!({"interval_hours": 5}), true)
+                .unwrap_err()
+                .starts_with("interval_hours must be one of")
+        );
         assert!(validate_source(&json!({"interval_hours": 0}), true).is_err());
         let v = validate_source(&json!({"name": " Провайдер ", "url": "https://p/list.m3u"}), false).unwrap();
-        assert_eq!((v.name.as_deref(), v.url.as_deref()), (Some("Провайдер"), Some("https://p/list.m3u")));
-        assert_eq!(validate_source(&json!({"name": "", "url": "https://p"}), false).unwrap_err(), "source name required");
-        assert_eq!(validate_source(&json!({"name": "x", "url": "not a url"}), false).unwrap_err(), "playlist URL is not valid");
-        assert_eq!(validate_source(&json!({"name": "x", "url": "file:///etc/passwd"}), false).unwrap_err(), "playlist URL must be http(s)");
-        assert_eq!(validate_source(&json!({"enabled": false}), true).unwrap().enabled, Some(false));
+        assert_eq!(
+            (v.name.as_deref(), v.url.as_deref()),
+            (Some("Провайдер"), Some("https://p/list.m3u"))
+        );
+        assert_eq!(
+            validate_source(&json!({"name": "", "url": "https://p"}), false).unwrap_err(),
+            "source name required"
+        );
+        assert_eq!(
+            validate_source(&json!({"name": "x", "url": "not a url"}), false).unwrap_err(),
+            "playlist URL is not valid"
+        );
+        assert_eq!(
+            validate_source(&json!({"name": "x", "url": "file:///etc/passwd"}), false).unwrap_err(),
+            "playlist URL must be http(s)"
+        );
+        assert_eq!(
+            validate_source(&json!({"enabled": false}), true).unwrap().enabled,
+            Some(false)
+        );
     }
 
     #[test]
     fn category_channel_and_query_validation() {
-        assert_eq!(validate_category(&json!({"name": "  Спорт "}), false).unwrap().name.as_deref(), Some("Спорт"));
-        assert_eq!(validate_category(&json!({"name": "   "}), false).unwrap_err(), "category name required");
-        assert_eq!(validate_category(&json!({"name": "x", "enabled": 1}), false).unwrap_err(), "enabled must be a boolean");
-        assert_eq!(validate_channel_patch(&json!({}), false).unwrap_err(), "nothing to update");
-        let p = validate_channel_patch(&json!({"name": " НТВ ", "enabled": false, "category_id": "c1"}), false).unwrap();
-        assert_eq!((p.name.as_deref(), p.enabled, p.category_id.as_deref()), (Some("НТВ"), Some(false), Some("c1")));
+        assert_eq!(
+            validate_category(&json!({"name": "  Спорт "}), false)
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Спорт")
+        );
+        assert_eq!(
+            validate_category(&json!({"name": "   "}), false).unwrap_err(),
+            "category name required"
+        );
+        assert_eq!(
+            validate_category(&json!({"name": "x", "enabled": 1}), false).unwrap_err(),
+            "enabled must be a boolean"
+        );
+        assert_eq!(
+            validate_channel_patch(&json!({}), false).unwrap_err(),
+            "nothing to update"
+        );
+        let p =
+            validate_channel_patch(&json!({"name": " НТВ ", "enabled": false, "category_id": "c1"}), false).unwrap();
+        assert_eq!(
+            (p.name.as_deref(), p.enabled, p.category_id.as_deref()),
+            (Some("НТВ"), Some(false), Some("c1"))
+        );
         let q = parse_channel_query(&HashMap::new());
         assert_eq!((q.page, q.page_size, q.status.as_str()), (1, 50, "all"));
         let m = |k: &str, v: &str| HashMap::from([(k.to_owned(), v.to_owned())]);
@@ -563,7 +726,10 @@ mod tests {
 
     #[test]
     fn personal_rows() {
-        assert_eq!(personal_row_json(true, None, false, false), json!({"global_enabled": true, "override": null, "effective": true}));
+        assert_eq!(
+            personal_row_json(true, None, false, false),
+            json!({"global_enabled": true, "override": null, "effective": true})
+        );
         assert_eq!(personal_row_json(true, Some(false), false, false)["effective"], false);
         assert_eq!(personal_row_json(true, Some(true), true, false)["effective"], false);
         assert_eq!(personal_row_json(true, None, true, true)["effective"], true);
@@ -579,26 +745,61 @@ mod tests {
             o.categories.insert(id.into(), v);
             o
         };
-        assert!(diff_override_patch(&[sport.clone()], &[], &empty, &pin("sport", true), Some(&plan), |_| true).added_categories.is_empty());
-        assert_eq!(diff_override_patch(&[kids], &[], &empty, &pin("kids", true), Some(&plan), |_| true).added_categories, ["Дети"]);
-        assert_eq!(diff_override_patch(&[sport], &[], &empty, &pin("sport", false), Some(&plan), |_| true).removed_categories, ["Спорт"]);
+        assert!(
+            diff_override_patch(&[sport.clone()], &[], &empty, &pin("sport", true), Some(&plan), |_| {
+                true
+            })
+            .added_categories
+            .is_empty()
+        );
+        assert_eq!(
+            diff_override_patch(&[kids], &[], &empty, &pin("kids", true), Some(&plan), |_| true).added_categories,
+            ["Дети"]
+        );
+        assert_eq!(
+            diff_override_patch(&[sport], &[], &empty, &pin("sport", false), Some(&plan), |_| true).removed_categories,
+            ["Спорт"]
+        );
 
         let ch = Channel {
-            id: "c1".into(), key: "c1".into(), source_id: None, category_id: "kids".into(), name: "НТВ".into(),
-            original_name: String::new(), upstream_group: None, url: String::new(), attrs: Attrs::new(), extras: vec![],
-            enabled: false, builtin: false, custom: false, missing: false, sort: 0, added_at: None,
+            id: "c1".into(),
+            key: "c1".into(),
+            source_id: None,
+            category_id: "kids".into(),
+            name: "НТВ".into(),
+            original_name: String::new(),
+            upstream_group: None,
+            url: String::new(),
+            attrs: Attrs::new(),
+            extras: vec![],
+            enabled: false,
+            builtin: false,
+            custom: false,
+            missing: false,
+            sort: 0,
+            added_at: None,
         };
         let mut on = UserOverrides::default();
         on.channels.insert("c1".into(), true);
-        assert!(diff_override_patch(&[], &[ch.clone()], &empty, &on, Some(&plan), |_| false).added_channels.is_empty());
-        assert_eq!(diff_override_patch(&[], &[ch], &empty, &on, None, |_| true).added_channels, ["НТВ"]);
+        assert!(
+            diff_override_patch(&[], &[ch.clone()], &empty, &on, Some(&plan), |_| false)
+                .added_channels
+                .is_empty()
+        );
+        assert_eq!(
+            diff_override_patch(&[], &[ch], &empty, &on, None, |_| true).added_channels,
+            ["НТВ"]
+        );
     }
 
     #[test]
     fn views() {
         let counts = HashMap::from([("c1".to_owned(), Counts { total: 12, enabled: 9 })]);
         let v = category_json(&cat("c1", "Спорт"), &counts);
-        assert_eq!((v["channels"].as_u64(), v["channels_enabled"].as_u64()), (Some(12), Some(9)));
+        assert_eq!(
+            (v["channels"].as_u64(), v["channels_enabled"].as_u64()),
+            (Some(12), Some(9))
+        );
         assert_eq!(category_json(&cat("zz", "X"), &counts)["channels"], 0);
     }
 }

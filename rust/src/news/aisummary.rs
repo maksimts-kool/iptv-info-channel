@@ -38,7 +38,11 @@ pub type SummaryCache = HashMap<String, CachedSummary>;
 
 /// The text a summary is made from; its hash decides whether to ask again.
 pub fn notice_source(n: &ProviderNotice) -> &str {
-    if n.text.trim().is_empty() { n.body.trim() } else { n.text.trim() }
+    if n.text.trim().is_empty() {
+        n.body.trim()
+    } else {
+        n.text.trim()
+    }
 }
 
 pub fn text_hash(text: &str) -> String {
@@ -58,7 +62,11 @@ pub fn summary_messages(n: &ProviderNotice) -> Value {
 /// nothing usable is left.
 pub fn clean_summary(raw: &str, max_chars: usize) -> String {
     let no_think = regex!(r"(?is)<think>.*?</think>").replace_all(raw, "");
-    let first = regex!(r"\n\s*\n").split(&no_think).map(str::trim).find(|p| !p.is_empty()).unwrap_or("");
+    let first = regex!(r"\n\s*\n")
+        .split(&no_think)
+        .map(str::trim)
+        .find(|p| !p.is_empty())
+        .unwrap_or("");
     let text = regex!(r"[*_`#>]+").replace_all(first, "");
     let text = fancy_regex!(r"[\p{Extended_Pictographic}\x{FE0F}\x{200D}]").replace_all(&text, "");
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -123,7 +131,11 @@ impl AiClient<'_> {
             .and_then(Value::as_str)
             .unwrap_or("");
         let summary = clean_summary(content, SUMMARY_MAX_CHARS);
-        if summary.is_empty() { Err("OpenRouter: empty answer".to_owned()) } else { Ok(summary) }
+        if summary.is_empty() {
+            Err("OpenRouter: empty answer".to_owned())
+        } else {
+            Ok(summary)
+        }
     }
 }
 
@@ -138,14 +150,27 @@ pub struct Summarized {
 
 /// A notice whose text matches its cached hash reuses the summary; a new or
 /// changed one is sent to the model. `client` = `None` means no key.
-pub async fn apply_summaries(notices: Vec<ProviderNotice>, cache: &SummaryCache, client: Option<&AiClient<'_>>) -> Summarized {
-    let Some(client) = client else { return Summarized { notices, cache: SummaryCache::new(), error: None } };
+pub async fn apply_summaries(
+    notices: Vec<ProviderNotice>,
+    cache: &SummaryCache,
+    client: Option<&AiClient<'_>>,
+) -> Summarized {
+    let Some(client) = client else {
+        return Summarized {
+            notices,
+            cache: SummaryCache::new(),
+            error: None,
+        };
+    };
     let mut next = SummaryCache::new();
     let mut errors = Vec::new();
     let mut out = Vec::with_capacity(notices.len());
     for mut notice in notices {
         let hash = text_hash(notice_source(&notice));
-        if let Some(cached) = cache.get(&notice.id).filter(|c| c.hash == hash && !c.summary.is_empty()) {
+        if let Some(cached) = cache
+            .get(&notice.id)
+            .filter(|c| c.hash == hash && !c.summary.is_empty())
+        {
             notice.body.clone_from(&cached.summary);
             notice.ai = true;
             next.insert(notice.id.clone(), cached.clone());
@@ -154,7 +179,13 @@ pub async fn apply_summaries(notices: Vec<ProviderNotice>, cache: &SummaryCache,
         }
         match client.summarize(&notice).await {
             Ok(summary) => {
-                next.insert(notice.id.clone(), CachedSummary { hash, summary: summary.clone() });
+                next.insert(
+                    notice.id.clone(),
+                    CachedSummary {
+                        hash,
+                        summary: summary.clone(),
+                    },
+                );
                 notice.body = summary;
                 notice.ai = true;
             }
@@ -162,7 +193,11 @@ pub async fn apply_summaries(notices: Vec<ProviderNotice>, cache: &SummaryCache,
         }
         out.push(notice);
     }
-    Summarized { notices: out, cache: next, error: errors.into_iter().next() }
+    Summarized {
+        notices: out,
+        cache: next,
+        error: errors.into_iter().next(),
+    }
 }
 
 #[cfg(test)]
@@ -171,8 +206,14 @@ mod tests {
 
     #[test]
     fn cleans_model_output() {
-        assert_eq!(clean_summary("**Кратко:** «Часть каналов недоступна до 18:00.»", 160), "Часть каналов недоступна до 18:00.");
-        assert_eq!(clean_summary("<think>hmm</think>\n\nАрхив недоступен ⚠️\n\nВторой абзац", 160), "Архив недоступен");
+        assert_eq!(
+            clean_summary("**Кратко:** «Часть каналов недоступна до 18:00.»", 160),
+            "Часть каналов недоступна до 18:00."
+        );
+        assert_eq!(
+            clean_summary("<think>hmm</think>\n\nАрхив недоступен ⚠️\n\nВторой абзац", 160),
+            "Архив недоступен"
+        );
         let long = clean_summary(&"слово ".repeat(60), 40);
         assert!(long.chars().count() <= 40 && long.ends_with('…'), "{long}");
         assert_eq!(clean_summary("   ", 160), "");
@@ -180,7 +221,11 @@ mod tests {
 
     #[test]
     fn prompt_carries_headline_and_text() {
-        let n = ProviderNotice { headline: "Технические работы".into(), text: "в течение нескольких часов".into(), ..ProviderNotice::default() };
+        let n = ProviderNotice {
+            headline: "Технические работы".into(),
+            text: "в течение нескольких часов".into(),
+            ..ProviderNotice::default()
+        };
         let m = summary_messages(&n);
         assert_eq!(m[0]["role"], "system");
         let user = m[1]["content"].as_str().unwrap();
@@ -189,9 +234,19 @@ mod tests {
 
     #[tokio::test]
     async fn without_key_nothing_changes() {
-        let n = ProviderNotice { id: "1".into(), body: "b".into(), ..ProviderNotice::default() };
+        let n = ProviderNotice {
+            id: "1".into(),
+            body: "b".into(),
+            ..ProviderNotice::default()
+        };
         let mut cache = SummaryCache::new();
-        cache.insert("1".into(), CachedSummary { hash: "x".into(), summary: "y".into() });
+        cache.insert(
+            "1".into(),
+            CachedSummary {
+                hash: "x".into(),
+                summary: "y".into(),
+            },
+        );
         let out = apply_summaries(vec![n.clone()], &cache, None).await;
         assert_eq!(out.notices, [n]);
         assert!(out.cache.is_empty());

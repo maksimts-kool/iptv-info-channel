@@ -73,13 +73,7 @@ pub fn parse_ymd(s: &str) -> Option<Date> {
 
 /// Convert a local wall-clock time in a timezone to a real instant (DST-aware;
 /// a time in a spring-forward gap resolves forward, as the JS version did).
-pub fn local_time_to_timestamp(
-    date: Date,
-    hour: i8,
-    minute: i8,
-    second: i8,
-    tz: &TimeZone,
-) -> Timestamp {
+pub fn local_time_to_timestamp(date: Date, hour: i8, minute: i8, second: i8, tz: &TimeZone) -> Timestamp {
     tz.to_ambiguous_timestamp(date.at(hour, minute, second, 0))
         .compatible()
         .unwrap_or(Timestamp::UNIX_EPOCH)
@@ -95,20 +89,11 @@ pub fn local_date_string(now: Timestamp, tz: &TimeZone) -> String {
     local_date(now, tz).to_string()
 }
 
-/// `YYYY-MM-DD` as the final second of that calendar day in `tz`.
-pub fn parse_expiry(date_str: &str, tz: &TimeZone) -> Option<Timestamp> {
-    let date = parse_ymd_prefix(date_str)?;
-    Some(local_time_to_timestamp(date, 23, 59, 59, tz))
-}
-
 /// Calendar days remaining in `tz`. The expiry date itself returns 0.
 pub fn days_left(date_str: Option<&str>, now: Timestamp, tz: &TimeZone) -> Option<i64> {
     let expiry = parse_ymd_prefix(date_str?)?;
     let today = local_date(now, tz);
-    today
-        .until(expiry)
-        .ok()
-        .map(|span| i64::from(span.get_days()))
+    today.until(expiry).ok().map(|span| i64::from(span.get_days()))
 }
 
 /// Billing period for [`add_period`].
@@ -158,15 +143,6 @@ pub enum AccountStatus {
 }
 
 impl AccountStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Expiring => "expiring",
-            Self::Expired => "expired",
-            Self::Disabled => "disabled",
-        }
-    }
-
     /// On-screen label (`STATUS_META.label`).
     pub fn label(self) -> &'static str {
         match self {
@@ -229,14 +205,7 @@ const MONTHS_SHORT: [&str; 12] = [
 pub fn format_date(date_str: Option<&str>) -> String {
     date_str.and_then(parse_ymd_prefix).map_or_else(
         || "—".to_owned(),
-        |d| {
-            format!(
-                "{:02} {} {}",
-                d.day(),
-                MONTHS_SHORT[(d.month() - 1) as usize],
-                d.year()
-            )
-        },
+        |d| format!("{:02} {} {}", d.day(), MONTHS_SHORT[(d.month() - 1) as usize], d.year()),
     )
 }
 
@@ -278,15 +247,15 @@ pub fn now_ms() -> i64 {
 /// Case-insensitive ordering with a stable tie-break — the stand-in for JS
 /// `String.prototype.localeCompare` used to sort names for display.
 pub fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    a.to_lowercase()
-        .cmp(&b.to_lowercase())
-        .then_with(|| a.cmp(b))
+    a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b))
 }
 
 /// URL-safe random token without ambiguous characters (no 0/1/i/l/o).
 pub fn make_token(len: usize) -> String {
     const ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
-    (0..len).map(|_| ALPHABET[rand::random_range(0..ALPHABET.len())] as char).collect()
+    (0..len)
+        .map(|_| ALPHABET[rand::random_range(0..ALPHABET.len())] as char)
+        .collect()
 }
 
 #[cfg(test)]
@@ -306,14 +275,8 @@ mod tests {
         let m = |d, n| add_period(d, Period::Month, n);
         assert_eq!(m("2026-08-10", 1).as_deref(), Some("2026-09-10"));
         assert_eq!(m("2026-08-10", 3).as_deref(), Some("2026-11-10"));
-        assert_eq!(
-            add_period("2026-08-10", Period::Year, 1).as_deref(),
-            Some("2027-08-10")
-        );
-        assert_eq!(
-            add_period("2026-08-10", Period::Day, 14).as_deref(),
-            Some("2026-08-24")
-        );
+        assert_eq!(add_period("2026-08-10", Period::Year, 1).as_deref(), Some("2027-08-10"));
+        assert_eq!(add_period("2026-08-10", Period::Day, 14).as_deref(), Some("2026-08-24"));
         assert_eq!(Period::parse(""), Some(Period::Month));
         assert_eq!(m("2026-12-15", 2).as_deref(), Some("2027-02-15"));
     }
@@ -332,10 +295,7 @@ mod tests {
             add_period("2026-08-31", Period::Month, 1).as_deref(),
             Some("2026-09-30")
         );
-        assert_eq!(
-            add_period("2028-02-29", Period::Year, 1).as_deref(),
-            Some("2029-02-28")
-        );
+        assert_eq!(add_period("2028-02-29", Period::Year, 1).as_deref(), Some("2029-02-28"));
     }
 
     #[test]
@@ -346,22 +306,14 @@ mod tests {
 
     #[test]
     fn local_date_string_uses_configured_zone() {
-        assert_eq!(
-            local_date_string(ts("2026-06-09T21:30:00Z"), &tallinn()),
-            "2026-06-10"
-        );
+        assert_eq!(local_date_string(ts("2026-06-09T21:30:00Z"), &tallinn()), "2026-06-10");
     }
 
     #[test]
-    fn expiry_is_final_second_of_local_date() {
-        assert_eq!(
-            iso(parse_expiry("2026-06-09", &tallinn()).unwrap()),
-            "2026-06-09T20:59:59.000Z"
-        );
-        assert_eq!(
-            iso(parse_expiry("2026-01-09", &tallinn()).unwrap()),
-            "2026-01-09T21:59:59.000Z"
-        );
+    fn local_wall_clock_to_instant_follows_dst() {
+        let last_second = |d: &str| iso(local_time_to_timestamp(parse_ymd(d).unwrap(), 23, 59, 59, &tallinn()));
+        assert_eq!(last_second("2026-06-09"), "2026-06-09T20:59:59.000Z");
+        assert_eq!(last_second("2026-01-09"), "2026-01-09T21:59:59.000Z");
     }
 
     #[test]

@@ -53,14 +53,21 @@ async fn page(State(st): State<AppState>, UrlPath(token): UrlPath<String>) -> Re
     }
     // Embedded as a JSON string literal; the page renders all state through
     // textContent, so nothing is reflected as HTML.
-    let literal = serde_json::to_string(&token).unwrap_or_else(|_| "\"\"".into()).replace('<', "\\u003c");
+    let literal = serde_json::to_string(&token)
+        .unwrap_or_else(|_| "\"\"".into())
+        .replace('<', "\\u003c");
     Html(PAGE.replace("__TOKEN_JSON__", &literal)).into_response()
 }
 
 async fn status(State(st): State<AppState>, UrlPath(token): UrlPath<String>) -> Response {
-    let Some(user) = st.store.user_by_notify_token(&token) else { return error(StatusCode::NOT_FOUND, "not found") };
+    let Some(user) = st.store.user_by_notify_token(&token) else {
+        return error(StatusCode::NOT_FOUND, "not found");
+    };
     let sub = st.store.subscriber(user.id);
-    let brand = setting_str(&st.store.settings(), "brand_name").filter(|b| !b.is_empty()).unwrap_or("IPTV-сервис").to_owned();
+    let brand = setting_str(&st.store.settings(), "brand_name")
+        .filter(|b| !b.is_empty())
+        .unwrap_or("IPTV-сервис")
+        .to_owned();
     let options = sub.as_ref().map_or_else(
         || json!({ "server": false, "expiry": true, "content": true, "news": true, "renewal": true }),
         |s| json!(s.options),
@@ -82,10 +89,15 @@ async fn subscribe(
     UrlPath(token): UrlPath<String>,
     body: Option<Json<Value>>,
 ) -> Response {
-    let Some(user) = st.store.user_by_notify_token(&token) else { return error(StatusCode::NOT_FOUND, "not found") };
+    let Some(user) = st.store.user_by_notify_token(&token) else {
+        return error(StatusCode::NOT_FOUND, "not found");
+    };
     let ip = client_ip(&headers, peer, st.config.trust_proxy);
     if LIMITER.hit(&format!("ip:{ip}")) || LIMITER.hit(&format!("uid:{}", user.id)) {
-        return error(StatusCode::TOO_MANY_REQUESTS, "Слишком много попыток. Попробуйте позже.");
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Слишком много попыток. Попробуйте позже.",
+        );
     }
     let body = body.map_or(Value::Null, |Json(v)| v);
     let (email, options) = match validate_subscription(&body) {
@@ -110,13 +122,21 @@ async fn subscribe(
 /// The link from the verification email (a single-use token of its own).
 async fn verify(State(st): State<AppState>, UrlPath(vtoken): UrlPath<String>) -> Response {
     let Some(sub) = st.store.subscriber_by_verify_token(&vtoken) else {
-        return (StatusCode::NOT_FOUND, Html(result_page("Ссылка недействительна или уже использована."))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Html(result_page("Ссылка недействительна или уже использована.")),
+        )
+            .into_response();
     };
     let verified = match st.store.mark_verified(sub.user_id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(target: "subscribe", error = %e, "verification failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, Html(result_page("Не удалось подтвердить адрес. Попробуйте позже."))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(result_page("Не удалось подтвердить адрес. Попробуйте позже.")),
+            )
+                .into_response();
         }
     };
     tracing::info!(target: "subscribe", user_id = sub.user_id, "email verified");
@@ -127,13 +147,21 @@ async fn verify(State(st): State<AppState>, UrlPath(vtoken): UrlPath<String>) ->
             notifier.send_confirmation(&user, &v).await;
         });
     }
-    Html(result_page("Адрес подтверждён. Подписка активна — теперь вы будете получать уведомления.")).into_response()
+    Html(result_page(
+        "Адрес подтверждён. Подписка активна — теперь вы будете получать уведомления.",
+    ))
+    .into_response()
 }
 
 async fn unsubscribe(State(st): State<AppState>, UrlPath(token): UrlPath<String>) -> Response {
-    let Some(user) = st.store.user_by_notify_token(&token) else { return error(StatusCode::NOT_FOUND, "not found") };
+    let Some(user) = st.store.user_by_notify_token(&token) else {
+        return error(StatusCode::NOT_FOUND, "not found");
+    };
     if LIMITER.hit(&format!("uid:{}", user.id)) {
-        return error(StatusCode::TOO_MANY_REQUESTS, "Слишком много попыток. Попробуйте позже.");
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Слишком много попыток. Попробуйте позже.",
+        );
     }
     if let Err(e) = st.store.remove_subscriber(user.id).await {
         tracing::error!(target: "subscribe", error = %e, "unsubscribe failed");

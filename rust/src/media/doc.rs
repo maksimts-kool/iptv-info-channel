@@ -194,17 +194,27 @@ impl Node {
 
 /// An empty article: one empty paragraph.
 pub fn empty_doc() -> Node {
-    Node::Doc { content: vec![Node::Paragraph { content: vec![] }] }
+    Node::Doc {
+        content: vec![Node::Paragraph { content: vec![] }],
+    }
 }
 
 fn short(value: Option<&Value>, max: usize) -> String {
     let s = value.and_then(Value::as_str).unwrap_or("");
-    s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(max).collect()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
 }
 
 fn clean_media(node: &Value, video: bool) -> Option<Node> {
     let attrs = node.get("attrs");
-    let id = attrs.and_then(|a| a.get("assetId")).and_then(Value::as_str).unwrap_or("");
+    let id = attrs
+        .and_then(|a| a.get("assetId"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if !regex!(r"^[a-z0-9]{6,32}$").is_match(id) {
         return None;
     }
@@ -213,8 +223,16 @@ fn clean_media(node: &Value, video: bool) -> Option<Node> {
         Some("small") => MediaSize::Small,
         _ => MediaSize::Full,
     };
-    let attrs = MediaAttrs { asset_id: id.to_owned(), size, caption: short(attrs.and_then(|a| a.get("caption")), 200) };
-    Some(if video { Node::MediaVideo { attrs } } else { Node::MediaImage { attrs } })
+    let attrs = MediaAttrs {
+        asset_id: id.to_owned(),
+        size,
+        caption: short(attrs.and_then(|a| a.get("caption")), 200),
+    };
+    Some(if video {
+        Node::MediaVideo { attrs }
+    } else {
+        Node::MediaImage { attrs }
+    })
 }
 
 fn clean_text(node: &Value) -> Option<Node> {
@@ -237,7 +255,10 @@ fn clean_text(node: &Value) -> Option<Node> {
                 .collect()
         })
         .unwrap_or_default();
-    Some(Node::Text { text: text.to_owned(), marks })
+    Some(Node::Text {
+        text: text.to_owned(),
+        marks,
+    })
 }
 
 /// A cleaned child may expand to several: a private section nested in
@@ -245,7 +266,11 @@ fn clean_text(node: &Value) -> Option<Node> {
 fn clean_children(node: &Value, depth: usize, in_private: bool) -> Children {
     node.get("content")
         .and_then(Value::as_array)
-        .map(|c| c.iter().flat_map(|child| clean_node(child, depth + 1, in_private)).collect())
+        .map(|c| {
+            c.iter()
+                .flat_map(|child| clean_node(child, depth + 1, in_private))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -264,8 +289,15 @@ fn clean_node(node: &Value, depth: usize, in_private: bool) -> Vec<Node> {
             if content.is_empty() {
                 return vec![];
             }
-            let audience = node.get("attrs").and_then(|a| a.get("audience")).and_then(clean_audience).unwrap_or_default();
-            one(Node::PrivateSection { attrs: PrivateAttrs { audience }, content })
+            let audience = node
+                .get("attrs")
+                .and_then(|a| a.get("audience"))
+                .and_then(clean_audience)
+                .unwrap_or_default();
+            one(Node::PrivateSection {
+                attrs: PrivateAttrs { audience },
+                content,
+            })
         }
         "doc" => one(Node::Doc { content: kids() }),
         "paragraph" => one(Node::Paragraph { content: kids() }),
@@ -278,12 +310,26 @@ fn clean_node(node: &Value, depth: usize, in_private: bool) -> Vec<Node> {
         "tableCell" => one(Node::TableCell { content: kids() }),
         "codeBlock" => one(Node::CodeBlock { content: kids() }),
         "heading" => {
-            let level = crate::http::api::num_of(node.get("attrs").and_then(|a| a.get("level"))).filter(|l| *l != 0.0).unwrap_or(1.0);
-            one(Node::Heading { attrs: HeadingAttrs { level: level.clamp(1.0, 3.0) as u8 }, content: kids() })
+            let level = crate::http::api::num_of(node.get("attrs").and_then(|a| a.get("level")))
+                .filter(|l| *l != 0.0)
+                .unwrap_or(1.0);
+            one(Node::Heading {
+                attrs: HeadingAttrs {
+                    level: level.clamp(1.0, 3.0) as u8,
+                },
+                content: kids(),
+            })
         }
         "orderedList" => {
-            let start = crate::http::api::num_of(node.get("attrs").and_then(|a| a.get("start"))).filter(|s| *s != 0.0).unwrap_or(1.0);
-            one(Node::OrderedList { attrs: ListAttrs { start: start.floor().max(1.0) as u32 }, content: kids() })
+            let start = crate::http::api::num_of(node.get("attrs").and_then(|a| a.get("start")))
+                .filter(|s| *s != 0.0)
+                .unwrap_or(1.0);
+            one(Node::OrderedList {
+                attrs: ListAttrs {
+                    start: start.floor().max(1.0) as u32,
+                },
+                content: kids(),
+            })
         }
         "horizontalRule" => one(Node::HorizontalRule),
         "hardBreak" => one(Node::HardBreak),
@@ -292,8 +338,15 @@ fn clean_node(node: &Value, depth: usize, in_private: bool) -> Vec<Node> {
         "mediaVideo" => clean_media(node, true).into_iter().collect(),
         // Unknown wrapper: keep what is inside rather than lose the text.
         _ => {
-            let has = node.get("content").and_then(Value::as_array).is_some_and(|c| !c.is_empty());
-            if has { one(Node::Paragraph { content: kids() }) } else { vec![] }
+            let has = node
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|c| !c.is_empty());
+            if has {
+                one(Node::Paragraph { content: kids() })
+            } else {
+                vec![]
+            }
         }
     }
 }
@@ -306,7 +359,10 @@ pub fn sanitize_doc(doc: &Value) -> Result<Node, String> {
     if doc.to_string().len() > DOC_MAX_BYTES {
         return Err(format!("the article is too long ({} KB max)", DOC_MAX_BYTES / 1000));
     }
-    Ok(clean_node(doc, 0, false).into_iter().next().unwrap_or(Node::Doc { content: vec![] }))
+    Ok(clean_node(doc, 0, false)
+        .into_iter()
+        .next()
+        .unwrap_or(Node::Doc { content: vec![] }))
 }
 
 fn walk<'a>(node: &'a Node, f: &mut impl FnMut(&'a Node)) {
@@ -391,7 +447,11 @@ pub fn doc_sections(doc: &Node) -> Vec<Section<'_>> {
 pub fn filter_private(doc: &Node, can_see: &impl Fn(&Audience) -> bool) -> Node {
     fn resolve(node: &Node, can_see: &impl Fn(&Audience) -> bool) -> Vec<Node> {
         if let Node::PrivateSection { attrs, content } = node {
-            return if can_see(&attrs.audience) { content.iter().flat_map(|c| resolve(c, can_see)).collect() } else { vec![] };
+            return if can_see(&attrs.audience) {
+                content.iter().flat_map(|c| resolve(c, can_see)).collect()
+            } else {
+                vec![]
+            };
         }
         let mut copy = node.clone();
         if let Some(kids) = copy.children_mut() {
@@ -399,7 +459,10 @@ pub fn filter_private(doc: &Node, can_see: &impl Fn(&Audience) -> bool) -> Node 
         }
         vec![copy]
     }
-    resolve(doc, can_see).into_iter().next().unwrap_or(Node::Doc { content: vec![] })
+    resolve(doc, can_see)
+        .into_iter()
+        .next()
+        .unwrap_or(Node::Doc { content: vec![] })
 }
 
 /// The private sections' audiences, in document order.
@@ -438,17 +501,32 @@ mod tests {
         ]}));
         let c = doc.children();
         assert_eq!(c.len(), 5);
-        assert!(matches!(c[0], Node::Heading { attrs: HeadingAttrs { level: 3 }, .. }));
+        assert!(matches!(
+            c[0],
+            Node::Heading {
+                attrs: HeadingAttrs { level: 3 },
+                ..
+            }
+        ));
         let Node::Paragraph { content } = &c[1] else { panic!() };
         assert!(matches!(&content[1], Node::Text { marks, .. } if marks == &[Mark::Italic]));
         assert!(matches!(content[2], Node::HardBreak));
-        assert!(matches!(c[2], Node::OrderedList { attrs: ListAttrs { start: 3 }, .. }));
+        assert!(matches!(
+            c[2],
+            Node::OrderedList {
+                attrs: ListAttrs { start: 3 },
+                ..
+            }
+        ));
         let Node::MediaImage { attrs } = &c[3] else { panic!() };
         assert_eq!((attrs.size, attrs.caption.chars().count()), (MediaSize::Full, 200));
         assert!(serde_json::to_string(&c[4]).unwrap().contains("внутри"));
         // Round-trips as TipTap JSON.
         let v = serde_json::to_value(&doc).unwrap();
-        assert_eq!(v["content"][0], json!({"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Заголовок"}]}));
+        assert_eq!(
+            v["content"][0],
+            json!({"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Заголовок"}]})
+        );
         assert_eq!(serde_json::from_value::<Node>(v).unwrap(), doc);
     }
 
@@ -475,15 +553,26 @@ mod tests {
 
     #[test]
     fn assets_content_summary_sections() {
-        let doc = parse(json!({"type": "doc", "content": [img("img111111"), {"type": "bulletList", "content": [{"type": "listItem", "content": [vid("vid222222")]}]}, img("img111111"), vid("vid333333")]}));
+        let doc = parse(
+            json!({"type": "doc", "content": [img("img111111"), {"type": "bulletList", "content": [{"type": "listItem", "content": [vid("vid222222")]}]}, img("img111111"), vid("vid333333")]}),
+        );
         assert_eq!(doc_asset_ids(&doc), ["img111111", "vid222222", "vid333333"]);
         assert!(!doc_has_content(&empty_doc()));
         assert!(!doc_has_content(&parse(json!({"type": "doc", "content": [p("   ")]}))));
-        assert!(doc_has_content(&parse(json!({"type": "doc", "content": [p("Привет")]}))));
-        let s = parse(json!({"type": "doc", "content": [img("img111111"), {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Как "}, {"type": "text", "text": "настроить", "marks": [{"type": "bold"}]}]}]}));
+        assert!(doc_has_content(&parse(
+            json!({"type": "doc", "content": [p("Привет")]})
+        )));
+        let s = parse(
+            json!({"type": "doc", "content": [img("img111111"), {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Как "}, {"type": "text", "text": "настроить", "marks": [{"type": "bold"}]}]}]}),
+        );
         assert_eq!(doc_summary(&s, 90), "Как настроить");
-        let d = parse(json!({"type": "doc", "content": [p("до"), vid("vid111111"), vid("vid222222"), p("после"), {"type": "blockquote", "content": [vid("vid333333")]}]}));
-        let kinds: Vec<&str> = doc_sections(&d).iter().map(|s| if matches!(s, Section::Flow(_)) { "flow" } else { "video" }).collect();
+        let d = parse(
+            json!({"type": "doc", "content": [p("до"), vid("vid111111"), vid("vid222222"), p("после"), {"type": "blockquote", "content": [vid("vid333333")]}]}),
+        );
+        let kinds: Vec<&str> = doc_sections(&d)
+            .iter()
+            .map(|s| if matches!(s, Section::Flow(_)) { "flow" } else { "video" })
+            .collect();
         assert_eq!(kinds, ["flow", "video", "video", "flow"]);
         assert!(matches!(&doc_sections(&d)[3], Section::Flow(n) if n.len() == 2));
     }
@@ -497,15 +586,31 @@ mod tests {
         ]}));
         let c = doc.children();
         assert_eq!(c.len(), 2);
-        let Node::PrivateSection { attrs, content } = &c[0] else { panic!() };
-        assert_eq!(attrs.audience, Audience { users: vec![4], plans: vec!["pro".into()] });
+        let Node::PrivateSection { attrs, content } = &c[0] else {
+            panic!()
+        };
+        assert_eq!(
+            attrs.audience,
+            Audience {
+                users: vec![4],
+                plans: vec!["pro".into()]
+            }
+        );
         assert_eq!(content.len(), 2);
-        let Node::PrivateSection { attrs, .. } = &c[1] else { panic!() };
+        let Node::PrivateSection { attrs, .. } = &c[1] else {
+            panic!()
+        };
         assert_eq!(attrs.audience, Audience::default());
 
-        let doc = parse(json!({"type": "doc", "content": [p("для всех"), private(json!({"users": [1], "plans": []}), vec![p("секрет"), vid("vid111111")]), {"type": "blockquote", "content": [private(json!({"users": [2], "plans": []}), vec![p("цитата")])]}]}));
+        let doc = parse(
+            json!({"type": "doc", "content": [p("для всех"), private(json!({"users": [1], "plans": []}), vec![p("секрет"), vid("vid111111")]), {"type": "blockquote", "content": [private(json!({"users": [2], "plans": []}), vec![p("цитата")])]}]}),
+        );
         let member = filter_private(&doc, &|a| a.users.contains(&1));
-        let types: Vec<String> = member.children().iter().map(|n| serde_json::to_value(n).unwrap()["type"].as_str().unwrap().to_owned()).collect();
+        let types: Vec<String> = member
+            .children()
+            .iter()
+            .map(|n| serde_json::to_value(n).unwrap()["type"].as_str().unwrap().to_owned())
+            .collect();
         assert_eq!(types, ["paragraph", "paragraph", "mediaVideo", "blockquote"]);
         assert!(member.children()[3].children().is_empty());
         assert_eq!(doc_sections(&member).len(), 3);
