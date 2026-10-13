@@ -16,10 +16,11 @@ use serde_json::Value;
 use crate::core::util::{iso, local_time_to_timestamp, parse_instant};
 use crate::{fancy_regex, regex};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NoticeKind {
     Maintenance,
+    #[default]
     Outage,
 }
 
@@ -33,7 +34,7 @@ impl NoticeKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderNotice {
     pub id: String,
     pub published_at: String,
@@ -43,6 +44,9 @@ pub struct ProviderNotice {
     /// The whole language section, for the AI retelling and the admin.
     #[serde(default)]
     pub text: String,
+    /// The body is an AI retelling of `text`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ai: bool,
 }
 
 // ---- HTML -> text ----
@@ -279,6 +283,7 @@ pub fn extract_service_notices(
             headline,
             body,
             text,
+            ai: false,
         });
     }
     out.sort_by(|a, b| b.published_at.cmp(&a.published_at));
@@ -466,8 +471,7 @@ mod tests {
             published_at: at.into(),
             kind: NoticeKind::Outage,
             headline: String::new(),
-            body: String::new(),
-            text: String::new(),
+            ..ProviderNotice::default()
         };
         let ns = [
             mk("new", "2026-09-14T10:00:00.000Z"),

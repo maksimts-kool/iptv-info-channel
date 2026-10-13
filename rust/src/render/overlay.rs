@@ -1180,7 +1180,7 @@ mod tests {
             kind: NoticeKind::Maintenance,
             headline: "Технические работы".into(),
             body: "Часть телеканалов <архив> & DVR будет временно недоступна в течение нескольких часов в связи с плановой заменой архивных серверов. Обратите внимание: архивы на затрагиваемых каналах будут формироваться заново с момента завершения работ, это займёт время.".into(),
-            text: String::new(),
+            ..ProviderNotice::default()
         }
     }
 
@@ -1191,7 +1191,7 @@ mod tests {
         let summary = status_summary(&[], c.now, &tz, 90);
         let plain = build_status_slide_svg(&c, &summary, "IPTV Test");
         assert_eq!(build_status_slide_svg(&c, &with_provider_notices(summary.clone(), &[], &tz), "IPTV Test"), plain);
-        let other = ProviderNotice { id: "2".into(), published_at: "2026-09-14T08:00:00.000Z".into(), kind: NoticeKind::Outage, headline: "Перебои".into(), body: "x".into(), text: String::new() };
+        let other = ProviderNotice { id: "2".into(), published_at: "2026-09-14T08:00:00.000Z".into(), kind: NoticeKind::Outage, headline: "Перебои".into(), body: "x".into(), ..ProviderNotice::default() };
         let svg = build_status_slide_svg(&c, &with_provider_notices(summary, &[notice(), other], &tz), "IPTV Test");
         assert!(svg.contains(">Технические работы у провайдера<"));
         assert!(!svg.contains(">Все сервисы работают<"));

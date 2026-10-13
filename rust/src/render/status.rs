@@ -307,7 +307,7 @@ mod tests {
             kind,
             headline: "x".into(),
             body: String::new(),
-            text: String::new(),
+            ..ProviderNotice::default()
         }
     }
 
