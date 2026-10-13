@@ -59,17 +59,17 @@ fn init_logging() {
         .init();
 }
 
-fn database_url() -> anyhow::Result<String> {
-    std::env::var("DATABASE_URL").context("DATABASE_URL is not set (postgres://user:pass@host:5432/db)")
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_logging();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = Arc::new(Config::from_env());
     config.ensure_dirs().context("creating runtime directories")?;
-    let pool = data::db::connect(&database_url()?).await?;
+    anyhow::ensure!(
+        !config.database_url.is_empty(),
+        "DATABASE_URL is not set (postgres://user:pass@host:5432/db)"
+    );
+    let pool = data::db::connect(&config.database_url).await?;
 
     match args.first().map(String::as_str) {
         Some("import-json") => {

@@ -186,6 +186,7 @@ pub struct Media {
 #[derive(Debug)]
 pub struct Config {
     pub root: PathBuf,
+    pub database_url: String,
     pub port: u16,
     pub tz: TimeZone,
     pub tz_name: String,
@@ -248,6 +249,7 @@ impl Config {
 
         Self {
             port,
+            database_url: env.str("DATABASE_URL", ""),
             public_base_url: env
                 .str("PUBLIC_BASE_URL", &format!("http://localhost:{port}"))
                 .trim_end_matches('/')
@@ -391,7 +393,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join(".env"),
-            "# c\nHLS_TIME=4\nINTRO_TRANSITION='fade'\nEPG_ENABLED=false\nPUBLIC_BASE_URL=https://x.example/\n",
+            "# c\nHLS_TIME=4\nINTRO_TRANSITION='fade'\nEPG_ENABLED=false\nPUBLIC_BASE_URL=https://x.example/\nDATABASE_URL=postgres://iptv:iptv@localhost/iptv\n",
         )
         .unwrap();
         let c = Config::load(dir.path().to_path_buf());
@@ -400,6 +402,7 @@ mod tests {
         assert!(!c.epg.enabled);
         assert!(c.status_slide.enabled);
         assert_eq!(c.public_base_url, "https://x.example");
+        assert_eq!(c.database_url, "postgres://iptv:iptv@localhost/iptv");
         assert_eq!(c.hls_dir, dir.path().join("data/hls"));
     }
 }

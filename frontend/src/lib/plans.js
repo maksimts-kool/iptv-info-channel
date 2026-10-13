@@ -55,7 +55,7 @@ export const periodWord = (period, count = 1) => {
 
 // The default amount of a payment: the plan's price for the periods paid,
 // converted between month and year (mirrors suggestedPaymentCents in
-// src/http/admin.js). null = no fair price (days).
+// src/http/admin.rs). null = no fair price (days).
 export function suggestedPaymentCents(plan, { count, period }) {
   if (!plan || !Number.isFinite(plan.price_cents)) return null;
   const billed = ['day', 'month', 'year'].includes(plan.billing_period) ? plan.billing_period : 'month';
