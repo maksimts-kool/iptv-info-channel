@@ -49,6 +49,8 @@ The bind-mounted `./data` directory must be writable by uid 1000. PostgreSQL hol
 
 For a Portainer Git stack, select `refs/heads/rust-port` and `docker-compose.yml`, copy the production environment settings, and set `DATA_VOLUME` to the absolute host path of the existing data directory. This keeps media files independent of Portainer's Git checkout directory. Set `DATABASE_URL` to the existing `iptv` database on `shared-db`, and enable Git polling if pushes should deploy automatically. Stop the previous stack before deploying the replacement: only one server instance may use this database and port.
 
+The production Portainer stack is `iptv-rust`. It tracks `refs/heads/rust-port` with a five-minute polling interval on its GitOps source. Automatic updates are enabled for the stack, with force redeployment disabled. The previous `iptvinfov2` stack is stopped and retained for rollback.
+
 ## Migrate from the Node backend
 
 Keep the old image, Compose configuration and a complete data backup for rollback. Stop the old application before taking the final JSON snapshot so no edits race the import. Use the same data volume for the Rust service: uploaded media and cached HLS files are not stored in PostgreSQL.
