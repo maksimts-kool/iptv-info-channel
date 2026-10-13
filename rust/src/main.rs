@@ -4,8 +4,9 @@
 //! playlists, and the built-in info and media channels.
 
 mod core;
-mod epg;
 mod data;
+mod encode;
+mod epg;
 mod news;
 mod playlist;
 mod render;

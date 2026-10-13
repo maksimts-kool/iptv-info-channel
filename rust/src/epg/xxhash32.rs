@@ -9,7 +9,9 @@ const P4: u32 = 0x27d4_eb2f;
 const P5: u32 = 0x1656_67b1;
 
 fn round(acc: u32, input: u32) -> u32 {
-    acc.wrapping_add(input.wrapping_mul(P2)).rotate_left(13).wrapping_mul(P1)
+    acc.wrapping_add(input.wrapping_mul(P2))
+        .rotate_left(13)
+        .wrapping_mul(P1)
 }
 
 fn read32(b: &[u8]) -> u32 {
@@ -42,11 +44,17 @@ pub fn xxhash32_bytes(input: &[u8], seed: u32) -> u32 {
 
     hash = hash.wrapping_add(len as u32);
     while rest.len() >= 4 {
-        hash = hash.wrapping_add(read32(rest).wrapping_mul(P3)).rotate_left(17).wrapping_mul(P4);
+        hash = hash
+            .wrapping_add(read32(rest).wrapping_mul(P3))
+            .rotate_left(17)
+            .wrapping_mul(P4);
         rest = &rest[4..];
     }
     for &byte in rest {
-        hash = hash.wrapping_add(u32::from(byte).wrapping_mul(P5)).rotate_left(11).wrapping_mul(P1);
+        hash = hash
+            .wrapping_add(u32::from(byte).wrapping_mul(P5))
+            .rotate_left(11)
+            .wrapping_mul(P1);
     }
 
     hash ^= hash >> 15;

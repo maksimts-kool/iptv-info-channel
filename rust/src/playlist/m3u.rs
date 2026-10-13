@@ -46,7 +46,11 @@ pub fn parse_attrs(text: &str) -> Attrs {
     let re = regex!(r#"([A-Za-z0-9_-]+)="([^"]*)"|([A-Za-z0-9_-]+)=([^\s,"]+)"#);
     let mut attrs = Attrs::new();
     for c in re.captures_iter(text) {
-        let key = c.get(1).or_else(|| c.get(3)).map_or("", |m| m.as_str()).to_lowercase();
+        let key = c
+            .get(1)
+            .or_else(|| c.get(3))
+            .map_or("", |m| m.as_str())
+            .to_lowercase();
         let value = c.get(2).or_else(|| c.get(4)).map_or("", |m| m.as_str());
         attrs.insert(key, value.to_owned());
     }
@@ -85,7 +89,11 @@ pub fn parse_extinf(payload: &str) -> Extinf {
         Some(c) => (c[1].to_owned(), &head[c[0].len()..]),
         None => ("-1".to_owned(), head),
     };
-    Extinf { duration, attrs: parse_attrs(rest), title: title.to_owned() }
+    Extinf {
+        duration,
+        attrs: parse_attrs(rest),
+        title: title.to_owned(),
+    }
 }
 
 /// Parse a whole playlist.
@@ -161,7 +169,12 @@ fn attr_string<'a>(attrs: impl IntoIterator<Item = (&'a String, &'a String)>) ->
         .filter(|(_, v)| !v.is_empty())
         // Values are quoted, so an embedded quote would break the entry — the
         // straight quote becomes a typographic one rather than being dropped.
-        .map(|(k, v)| format!("{k}=\"{}\"", v.replace('"', "”").replace("\r\n", " ").replace('\n', " ")))
+        .map(|(k, v)| {
+            format!(
+                "{k}=\"{}\"",
+                v.replace('"', "”").replace("\r\n", " ").replace('\n', " ")
+            )
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -179,12 +192,19 @@ pub struct OutItem<'a> {
 /// Serialize back to extended-M3U text.
 pub fn build_m3u(items: &[OutItem<'_>], header_attrs: &Attrs) -> String {
     let header = attr_string(header_attrs);
-    let mut out = vec![if header.is_empty() { "#EXTM3U".to_owned() } else { format!("#EXTM3U {header}") }];
+    let mut out = vec![if header.is_empty() {
+        "#EXTM3U".to_owned()
+    } else {
+        format!("#EXTM3U {header}")
+    }];
     for item in items {
         let attrs = attr_string(&item.attrs);
         let name = item.name.replace("\r\n", " ").replace('\n', " ");
         let sep = if attrs.is_empty() { "" } else { " " };
-        out.push(format!("#EXTINF:{}{sep}{attrs},{name}", item.duration.unwrap_or("-1")));
+        out.push(format!(
+            "#EXTINF:{}{sep}{attrs},{name}",
+            item.duration.unwrap_or("-1")
+        ));
         out.extend(item.extras.iter().cloned());
         out.push(item.url.to_owned());
     }
@@ -206,7 +226,9 @@ mod tests {
 
     #[test]
     fn title_split_outside_quotes() {
-        let p = parse_extinf(r#"-1 tvg-id="a" tvg-name="News, Sport и всё" group-title="Микс",Первый канал"#);
+        let p = parse_extinf(
+            r#"-1 tvg-id="a" tvg-name="News, Sport и всё" group-title="Микс",Первый канал"#,
+        );
         assert_eq!(p.title, "Первый канал");
         assert_eq!(p.attrs["tvg-name"], "News, Sport и всё");
         assert_eq!(p.attrs["group-title"], "Микс");
@@ -232,7 +254,13 @@ mod tests {
         assert_eq!(p.malformed, 0);
         assert_eq!(p.header_attrs["url-tvg"], "http://p/epg.xml");
         assert_eq!(p.items.len(), 2);
-        assert_eq!(p.items[0].extras, ["#EXTVLCOPT:http-user-agent=VLC", "#KODIPROP:inputstream=ffmpeg"]);
+        assert_eq!(
+            p.items[0].extras,
+            [
+                "#EXTVLCOPT:http-user-agent=VLC",
+                "#KODIPROP:inputstream=ffmpeg"
+            ]
+        );
         assert_eq!(p.items[0].group, "Спорт");
         assert_eq!(p.items[0].name, "Sport 1");
         assert_eq!(p.items[0].url, "http://p/live/1.ts");
@@ -241,7 +269,9 @@ mod tests {
 
     #[test]
     fn group_title_beats_extgrp() {
-        let p = parse_m3u("#EXTM3U\n#EXTINF:-1 group-title=\"Кино\",Film\n#EXTGRP:Другое\nhttp://p/3.ts");
+        let p = parse_m3u(
+            "#EXTM3U\n#EXTINF:-1 group-title=\"Кино\",Film\n#EXTGRP:Другое\nhttp://p/3.ts",
+        );
         assert_eq!(p.items[0].group, "Кино");
     }
 
@@ -284,7 +314,18 @@ mod tests {
         let mut attrs = Attrs::new();
         attrs.insert("tvg-id".into(), String::new());
         attrs.insert("group-title".into(), "G".into());
-        let out = build_m3u(&[OutItem { name: "A \"quoted\" name", url: "http://a", attrs, ..OutItem::default() }], &Attrs::new());
-        assert_eq!(out, "#EXTM3U\n#EXTINF:-1 group-title=\"G\",A \"quoted\" name\nhttp://a\n");
+        let out = build_m3u(
+            &[OutItem {
+                name: "A \"quoted\" name",
+                url: "http://a",
+                attrs,
+                ..OutItem::default()
+            }],
+            &Attrs::new(),
+        );
+        assert_eq!(
+            out,
+            "#EXTM3U\n#EXTINF:-1 group-title=\"G\",A \"quoted\" name\nhttp://a\n"
+        );
     }
 }

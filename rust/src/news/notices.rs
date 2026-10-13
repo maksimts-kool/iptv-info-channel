@@ -56,7 +56,9 @@ pub fn decode_entities(text: &str) -> String {
                     Some(hex) => u32::from_str_radix(hex, 16).ok(),
                     None => num.parse().ok(),
                 };
-                n.filter(|n| *n > 0).and_then(char::from_u32).map(String::from)
+                n.filter(|n| *n > 0)
+                    .and_then(char::from_u32)
+                    .map(String::from)
             } else {
                 match code.to_lowercase().as_str() {
                     "amp" => Some("&".into()),
@@ -113,7 +115,10 @@ pub fn strip_emoji(text: &str) -> String {
         r"[\p{Extended_Pictographic}\x{1F1E6}-\x{1F1FF}\x{1F3FB}-\x{1F3FF}\x{FE0E}\x{FE0F}\x{200D}\x{20E3}]"
     );
     let stripped = re.replace_all(text, "");
-    regex!(r" ([!?.,:;])").replace_all(&collapse_ws(&stripped), "$1").trim().to_owned()
+    regex!(r" ([!?.,:;])")
+        .replace_all(&collapse_ws(&stripped), "$1")
+        .trim()
+        .to_owned()
 }
 
 // ---- Classification ----
@@ -139,7 +144,11 @@ pub fn is_service_notice(text: &str) -> bool {
 }
 
 pub fn notice_kind(text: &str) -> NoticeKind {
-    if is_maintenance(&text.to_lowercase()) { NoticeKind::Maintenance } else { NoticeKind::Outage }
+    if is_maintenance(&text.to_lowercase()) {
+        NoticeKind::Maintenance
+    } else {
+        NoticeKind::Outage
+    }
 }
 
 pub fn split_sentences(text: &str) -> Vec<String> {
@@ -168,17 +177,27 @@ pub fn summarize_notice(text: &str, kind: NoticeKind) -> (String, String) {
     let mut sentences = split_sentences(text);
     let mut headline = kind.label().to_owned();
     if sentences.len() > 1 && sentences[0].chars().count() <= 48 && !sentences[0].ends_with('.') {
-        headline = sentences[0].trim_end_matches(['!', ':', '…']).trim().to_owned();
+        sentences[0]
+            .trim_end_matches(['!', ':', '…'])
+            .trim()
+            .clone_into(&mut headline);
         sentences.remove(0);
     }
     let boilerplate = regex!(
         r"приносим (?:свои )?извинения|благодарим за (?:ваше )?понимание|спасибо за (?:ваше )?понимание|следите за новостями"
     );
-    let meaningful: Vec<&String> = sentences.iter().filter(|s| !boilerplate.is_match(&s.to_lowercase())).collect();
+    let meaningful: Vec<&String> = sentences
+        .iter()
+        .filter(|s| !boilerplate.is_match(&s.to_lowercase()))
+        .collect();
     let body = if meaningful.is_empty() {
         sentences.join(" ")
     } else {
-        meaningful.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ")
+        meaningful
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     (headline, body)
 }
@@ -188,9 +207,16 @@ pub fn summarize_notice(text: &str, kind: NoticeKind) -> (String, String) {
 /// "14.09.2026 13:06:44" is the provider's wall clock; read it in `tz`.
 pub fn parse_provider_date(value: &str, tz: &TimeZone) -> Option<Timestamp> {
     let text = value.trim();
-    if let Some(c) = regex!(r"^(\d{2})\.(\d{2})\.(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$").captures(text) {
+    if let Some(c) =
+        regex!(r"^(\d{2})\.(\d{2})\.(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$").captures(text)
+    {
         let n = |i: usize| c.get(i).map_or(Some(0), |m| m.as_str().parse::<i32>().ok());
-        let date = Date::new(i16::try_from(n(3)?).ok()?, i8::try_from(n(2)?).ok()?, i8::try_from(n(1)?).ok()?).ok()?;
+        let date = Date::new(
+            i16::try_from(n(3)?).ok()?,
+            i8::try_from(n(2)?).ok()?,
+            i8::try_from(n(1)?).ok()?,
+        )
+        .ok()?;
         return Some(local_time_to_timestamp(
             date,
             i8::try_from(n(4)?).ok()?,
@@ -199,23 +225,43 @@ pub fn parse_provider_date(value: &str, tz: &TimeZone) -> Option<Timestamp> {
             tz,
         ));
     }
-    if text.is_empty() { None } else { parse_instant(text) }
+    if text.is_empty() {
+        None
+    } else {
+        parse_instant(text)
+    }
 }
 
 /// The service notices in a `/v3/news` response, newest first.
-pub fn extract_service_notices(json: &Value, tz: &TimeZone, lang: &str, limit: usize) -> Vec<ProviderNotice> {
-    let items = json.pointer("/data/items").or_else(|| json.get("items")).and_then(Value::as_array);
+pub fn extract_service_notices(
+    json: &Value,
+    tz: &TimeZone,
+    lang: &str,
+    limit: usize,
+) -> Vec<ProviderNotice> {
+    let items = json
+        .pointer("/data/items")
+        .or_else(|| json.get("items"))
+        .and_then(Value::as_array);
     let mut out: Vec<ProviderNotice> = Vec::new();
     for item in items.into_iter().flatten() {
         if !item.is_object() || item.get("isPublished") == Some(&Value::Bool(false)) {
             continue;
         }
-        let html = item.get("html").or_else(|| item.get("text")).and_then(Value::as_str).unwrap_or("");
+        let html = item
+            .get("html")
+            .or_else(|| item.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let full = html_to_paragraphs(html).join("\n");
         if full.is_empty() || !is_service_notice(&full) {
             continue;
         }
-        let Some(published) = item.get("date").and_then(Value::as_str).and_then(|d| parse_provider_date(d, tz)) else {
+        let Some(published) = item
+            .get("date")
+            .and_then(Value::as_str)
+            .and_then(|d| parse_provider_date(d, tz))
+        else {
             continue;
         };
         let kind = notice_kind(&full);
@@ -226,7 +272,14 @@ pub fn extract_service_notices(json: &Value, tz: &TimeZone, lang: &str, limit: u
             Some(Value::Number(n)) => n.to_string(),
             _ => published.as_millisecond().to_string(),
         };
-        out.push(ProviderNotice { id, published_at: iso(published), kind, headline, body, text });
+        out.push(ProviderNotice {
+            id,
+            published_at: iso(published),
+            kind,
+            headline,
+            body,
+            text,
+        });
     }
     out.sort_by(|a, b| b.published_at.cmp(&a.published_at));
     out.truncate(limit);
@@ -235,7 +288,11 @@ pub fn extract_service_notices(json: &Value, tz: &TimeZone, lang: &str, limit: u
 
 /// Notices recent enough to still be on screen. A notice has no end date, so
 /// age is the only way one leaves the slide.
-pub fn active_notices(notices: &[ProviderNotice], now: Timestamp, max_age_hours: f64) -> Vec<ProviderNotice> {
+pub fn active_notices(
+    notices: &[ProviderNotice],
+    now: Timestamp,
+    max_age_hours: f64,
+) -> Vec<ProviderNotice> {
     let cutoff = now.as_millisecond() - (max_age_hours * 3_600_000.0) as i64;
     notices
         .iter()
@@ -251,7 +308,9 @@ pub fn parse_cookie_header(header: &str) -> IndexMap<String, String> {
     let text = regex!(r"(?i)^\s*cookie\s*:").replace(header, "");
     let mut jar = IndexMap::new();
     for part in regex!(r";|\r?\n").split(&text) {
-        let Some(eq) = part.find('=').filter(|eq| *eq > 0) else { continue };
+        let Some(eq) = part.find('=').filter(|eq| *eq > 0) else {
+            continue;
+        };
         let name = part[..eq].trim();
         if !name.is_empty() {
             jar.insert(name.to_owned(), part[eq + 1..].trim().to_owned());
@@ -261,7 +320,10 @@ pub fn parse_cookie_header(header: &str) -> IndexMap<String, String> {
 }
 
 pub fn serialize_cookies(jar: &IndexMap<String, String>) -> String {
-    jar.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ")
+    jar.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Apply a response's Set-Cookie lines to a Cookie header: a rotated session
@@ -271,14 +333,17 @@ pub fn apply_set_cookies(header: &str, set_cookies: &[String], now_ms: i64) -> S
     for line in set_cookies {
         let mut parts = line.split(';');
         let pair = parts.next().unwrap_or("");
-        let Some(eq) = pair.find('=').filter(|eq| *eq > 0) else { continue };
+        let Some(eq) = pair.find('=').filter(|eq| *eq > 0) else {
+            continue;
+        };
         let name = pair[..eq].trim().to_owned();
         let value = pair[eq + 1..].trim().to_owned();
         let expired = parts.any(|attr| {
             let (key, val) = attr.split_once('=').map_or((attr, ""), |(k, v)| (k, v));
             match key.trim().to_lowercase().as_str() {
                 "max-age" => val.trim().parse::<f64>().is_ok_and(|n| n <= 0.0),
-                "expires" => jiff::fmt::rfc2822::parse(val.trim()).is_ok_and(|z| z.timestamp().as_millisecond() <= now_ms),
+                "expires" => jiff::fmt::rfc2822::parse(val.trim())
+                    .is_ok_and(|z| z.timestamp().as_millisecond() <= now_ms),
                 _ => false,
             }
         });
@@ -319,8 +384,17 @@ mod tests {
         assert_eq!(n.id, "8786");
         assert_eq!(n.kind, NoticeKind::Maintenance);
         assert_eq!(n.headline, "Технические работы");
-        assert!(n.body.starts_with("Сообщаем, что часть телеканалов будет временно недоступна"), "{}", n.body);
-        assert!(n.body.ends_with("с момента завершения работ."), "{}", n.body);
+        assert!(
+            n.body
+                .starts_with("Сообщаем, что часть телеканалов будет временно недоступна"),
+            "{}",
+            n.body
+        );
+        assert!(
+            n.body.ends_with("с момента завершения работ."),
+            "{}",
+            n.body
+        );
         assert!(!n.body.contains("Maintenance") && !n.body.contains("Приносим извинения"));
         assert_eq!(n.published_at, "2026-09-14T10:06:44.000Z");
     }
@@ -330,7 +404,7 @@ mod tests {
         let mut f = feed();
         f["data"]["items"][0]["isPublished"] = json!(false);
         f["data"]["items"].as_array_mut().unwrap().truncate(1);
-        assert!(extract_service_notices(&f, &tz(), "RU", 5).is_empty());
+        assert_eq!(extract_service_notices(&f, &tz(), "RU", 5), []);
     }
 
     #[test]
@@ -368,12 +442,20 @@ mod tests {
     #[test]
     fn entities_and_summary() {
         assert_eq!(
-            html_to_paragraphs("<p><strong>&#34;A&#34;</strong> &amp; B&#39;s</p><p></p><p>x&nbsp;y</p>"),
+            html_to_paragraphs(
+                "<p><strong>&#34;A&#34;</strong> &amp; B&#39;s</p><p></p><p>x&nbsp;y</p>"
+            ),
             ["\"A\" & B's", "x y"]
         );
         assert_eq!(
-            summarize_notice("Сейчас наблюдаются перебои с вещанием части каналов. Приносим извинения.", NoticeKind::Outage),
-            ("Перебои в работе".to_owned(), "Сейчас наблюдаются перебои с вещанием части каналов.".to_owned())
+            summarize_notice(
+                "Сейчас наблюдаются перебои с вещанием части каналов. Приносим извинения.",
+                NoticeKind::Outage
+            ),
+            (
+                "Перебои в работе".to_owned(),
+                "Сейчас наблюдаются перебои с вещанием части каналов.".to_owned()
+            )
         );
     }
 
@@ -387,16 +469,27 @@ mod tests {
             body: String::new(),
             text: String::new(),
         };
-        let ns = [mk("new", "2026-09-14T10:00:00.000Z"), mk("old", "2026-09-12T10:00:00.000Z")];
+        let ns = [
+            mk("new", "2026-09-14T10:00:00.000Z"),
+            mk("old", "2026-09-12T10:00:00.000Z"),
+        ];
         let now: Timestamp = "2026-09-14T20:00:00Z".parse().unwrap();
-        let ids = |h| active_notices(&ns, now, h).into_iter().map(|n| n.id).collect::<Vec<_>>();
+        let ids = |h| {
+            active_notices(&ns, now, h)
+                .into_iter()
+                .map(|n| n.id)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(ids(24.0), ["new"]);
         assert_eq!(ids(72.0), ["new", "old"]);
     }
 
     #[test]
     fn cookie_jar() {
-        let now = "2026-09-14T12:00:00Z".parse::<Timestamp>().unwrap().as_millisecond();
+        let now = "2026-09-14T12:00:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_millisecond();
         let next = apply_set_cookies(
             "Cookie: access=old; refresh=r1; theme=dark",
             &[
@@ -408,8 +501,18 @@ mod tests {
             now,
         );
         assert_eq!(next, "access=new; refresh=r2; csrf=abc==");
-        assert_eq!(apply_set_cookies("a=1", &["a=2; Expires=Thu, 01 Jan 1970 00:00:00 GMT".into()], now), "");
+        assert_eq!(
+            apply_set_cookies(
+                "a=1",
+                &["a=2; Expires=Thu, 01 Jan 1970 00:00:00 GMT".into()],
+                now
+            ),
+            ""
+        );
         let jar = parse_cookie_header("a=1;\n b = 2 ;junk");
-        assert_eq!(jar.into_iter().collect::<Vec<_>>(), [("a".into(), "1".into()), ("b".into(), "2".into())]);
+        assert_eq!(
+            jar.into_iter().collect::<Vec<_>>(),
+            [("a".into(), "1".into()), ("b".into(), "2".into())]
+        );
     }
 }

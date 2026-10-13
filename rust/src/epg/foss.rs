@@ -22,8 +22,16 @@ const FIELD_SEP: char = '¦';
 
 pub fn normalize_foss_provider_id(value: &str) -> String {
     let id = value.trim().trim_start_matches('=');
-    let id = if id.is_empty() { DEFAULT_PROVIDER_ID } else { id };
-    if regex!(r"^[A-Za-z0-9._-]+$").is_match(id) { id.to_owned() } else { DEFAULT_PROVIDER_ID.to_owned() }
+    let id = if id.is_empty() {
+        DEFAULT_PROVIDER_ID
+    } else {
+        id
+    };
+    if regex!(r"^[A-Za-z0-9._-]+$").is_match(id) {
+        id.to_owned()
+    } else {
+        DEFAULT_PROVIDER_ID.to_owned()
+    }
 }
 
 /// The channel-id hash a programme file is looked up by.
@@ -33,7 +41,10 @@ pub fn foss_id_hash(token: &str) -> u32 {
 
 /// The binding hash of a `url-tvg`: scheme cut off, case preserved.
 pub fn foss_url_hash(url: &str) -> u32 {
-    let cut = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+    let cut = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
     xxhash32(cut)
 }
 
@@ -48,13 +59,25 @@ pub fn build_foss_channels_json(
     let days = each_epg_day(user, opts);
     let now_unix = opts.now.as_second();
     // channels.json only needs the latest programme start (the top of the guide).
-    let top = days.last().map_or(now_unix, |d| day_start_unix(d.date, opts.tz));
+    let top = days
+        .last()
+        .map_or(now_unix, |d| day_start_unix(d.date, opts.tz));
     let id_hash = foss_id_hash(&user.token).to_string();
-    let hashes: Vec<u32> = epg_urls.iter().filter(|u| !u.is_empty()).map(|u| foss_url_hash(u)).collect();
+    let hashes: Vec<u32> = epg_urls
+        .iter()
+        .filter(|u| !u.is_empty())
+        .map(|u| foss_url_hash(u))
+        .collect();
     let mut data = serde_json::Map::new();
     data.insert(
         id_hash,
-        json!([format!("{}{FIELD_SEP}{top}{FIELD_SEP}{logo_url}", epg_channel_id(&user.token)), name]),
+        json!([
+            format!(
+                "{}{FIELD_SEP}{top}{FIELD_SEP}{logo_url}",
+                epg_channel_id(&user.token)
+            ),
+            name
+        ]),
     );
     json!({
         "meta": {
@@ -111,25 +134,33 @@ fn is_u32(s: &str) -> bool {
 
 pub fn parse_match_request(body: &str) -> Option<MatchRequest> {
     let blocks: Vec<&str> = body.split(MATCH_BLOCK_SEP).collect();
-    let [metadata, tvg_urls, list] = blocks.as_slice() else { return None };
+    let [metadata, tvg_urls, list] = blocks.as_slice() else {
+        return None;
+    };
     let channels = list
         .split('\n')
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
             let data = line.split('~').next().unwrap_or("");
-            let f: Vec<&str> = data.split('-').collect();
-            match f.as_slice() {
-                [k, a, b, c] if f.iter().all(|x| is_u32(x)) => Some(MatchChannel {
-                    key: (*k).to_owned(),
-                    tvg_id_hash: (*a).to_owned(),
-                    tvg_name_hash: (*b).to_owned(),
-                    name_hash: (*c).to_owned(),
-                }),
+            let fields: Vec<&str> = data.split('-').collect();
+            match fields.as_slice() {
+                [key, id, tvg_name, name] if fields.iter().all(|x| is_u32(x)) => {
+                    Some(MatchChannel {
+                        key: (*key).to_owned(),
+                        tvg_id_hash: (*id).to_owned(),
+                        tvg_name_hash: (*tvg_name).to_owned(),
+                        name_hash: (*name).to_owned(),
+                    })
+                }
                 _ => None,
             }
         })
         .collect();
-    Some(MatchRequest { metadata: (*metadata).to_owned(), tvg_urls: (*tvg_urls).to_owned(), channels })
+    Some(MatchRequest {
+        metadata: (*metadata).to_owned(),
+        tvg_urls: (*tvg_urls).to_owned(),
+        channels,
+    })
 }
 
 /// A matched local channel: its id hash plus the provider URL for its owner.
@@ -148,13 +179,19 @@ pub fn build_match_channels_response(
     let mut matched = Vec::new();
     let mut provider_url = String::new();
     for channel in channels {
-        let Some(hit) = resolve(channel) else { continue };
+        let Some(hit) = resolve(channel) else {
+            continue;
+        };
         matched.push(format!("{}~{id}~{}", channel.key, hit.id_hash));
         if provider_url.is_empty() {
             provider_url = hit.provider_url;
         }
     }
-    let providers = if provider_url.is_empty() { String::new() } else { format!("{id}~{provider_url}") };
+    let providers = if provider_url.is_empty() {
+        String::new()
+    } else {
+        format!("{id}~{provider_url}")
+    };
     ["{}".to_owned(), matched.join("\n"), providers].join(MATCH_BLOCK_SEP)
 }
 
@@ -194,7 +231,9 @@ pub fn merge_match_channels_responses(local: &str, upstream: &str) -> String {
     add_channels(lb[1], true);
     let mut add_providers = |block: &str, overwrite: bool| {
         for line in block.split('\n').filter(|l| !l.is_empty()) {
-            let Some(sep) = line.find('~').filter(|s| *s >= 1) else { continue };
+            let Some(sep) = line.find('~').filter(|s| *s >= 1) else {
+                continue;
+            };
             let id = &line[..sep];
             if !overwrite && providers.contains_key(id) {
                 continue;
@@ -205,10 +244,18 @@ pub fn merge_match_channels_responses(local: &str, upstream: &str) -> String {
     add_providers(ub[2], false);
     add_providers(lb[2], true);
 
-    let used: Vec<&str> = channels.values().filter_map(|l| l.split('~').nth(1)).filter(|s| !s.is_empty()).collect();
+    let used: Vec<&str> = channels
+        .values()
+        .filter_map(|l| l.split('~').nth(1))
+        .filter(|s| !s.is_empty())
+        .collect();
     let chan_block = channels.values().cloned().collect::<Vec<_>>().join("\n");
-    let prov_block =
-        providers.iter().filter(|(id, _)| used.contains(&id.as_str())).map(|(_, l)| l.clone()).collect::<Vec<_>>().join("\n");
+    let prov_block = providers
+        .iter()
+        .filter(|(id, _)| used.contains(&id.as_str()))
+        .map(|(_, l)| l.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
     ["{}".to_owned(), chan_block, prov_block].join(MATCH_BLOCK_SEP)
 }
 
@@ -250,13 +297,22 @@ mod tests {
     #[test]
     fn channels_json_binds_provider() {
         let tz = tz();
-        let json = build_foss_channels_json(&ivan(), &opts(&tz, &[], 2, 1), "custom-provider", &[EPG_URL.into()], LOGO_URL);
+        let json = build_foss_channels_json(
+            &ivan(),
+            &opts(&tz, &[], 2, 1),
+            "custom-provider",
+            &[EPG_URL.into()],
+            LOGO_URL,
+        );
         let id = foss_id_hash("abc123").to_string();
         assert_eq!(json["meta"]["id"], "custom-provider");
         let last = json["meta"]["last-epg"].as_i64().unwrap();
         assert!(last > now().as_second());
         assert_eq!(json["meta"]["url-hashes"], json!([foss_url_hash(EPG_URL)]));
-        assert_eq!(json["data"][&id][0], format!("account-abc123¦{last}¦{LOGO_URL}"));
+        assert_eq!(
+            json["data"][&id][0],
+            format!("account-abc123¦{last}¦{LOGO_URL}")
+        );
         assert_eq!(json["data"][&id][1], "TestIPTV — ivan");
         assert_eq!(json["data"].as_object().unwrap().len(), 1);
     }
@@ -281,7 +337,10 @@ mod tests {
         for p in progs {
             let name = p["name"].as_str().unwrap();
             let descr = p["descr"].as_str().unwrap();
-            assert!(regex!(r"^✓ Подписка активна · ещё \d+ дн[а-я]+$").is_match(name), "{name}");
+            assert!(
+                regex!(r"^✓ Подписка активна · ещё \d+ дн[а-я]+$").is_match(name),
+                "{name}"
+            );
             assert!(descr.contains("Тариф: Базовый · 4,99 €/мес."));
             assert!(descr.contains("Статус сервиса: ✓ Все сервисы работают"));
         }
@@ -298,19 +357,35 @@ mod tests {
         }];
         let json = build_foss_epg_json(&ivan(), &opts(&tz, &incs, 2, 1));
         let cur = current(&json);
-        assert!(regex!(r"^✕ Сбой сервиса · Подписка активна").is_match(cur["name"].as_str().unwrap()));
-        assert!(cur["descr"].as_str().unwrap().contains("Сбой (с 13 июн 2026, сейчас): CDN outage"));
+        assert!(
+            regex!(r"^✕ Сбой сервиса · Подписка активна").is_match(cur["name"].as_str().unwrap())
+        );
+        assert!(
+            cur["descr"]
+                .as_str()
+                .unwrap()
+                .contains("Сбой (с 13 июн 2026, сейчас): CDN outage")
+        );
     }
 
     #[test]
     fn match_envelope() {
         let hash = foss_id_hash("abc123").to_string();
-        let body = ["{}".to_owned(), "https://example.test/epg.xml".to_owned(), format!("42-{hash}-0-0~99-100")]
-            .join(MATCH_BLOCK_SEP);
+        let body = [
+            "{}".to_owned(),
+            "https://example.test/epg.xml".to_owned(),
+            format!("42-{hash}-0-0~99-100"),
+        ]
+        .join(MATCH_BLOCK_SEP);
         let parsed = parse_match_request(&body).unwrap();
         assert_eq!(
             parsed.channels,
-            [MatchChannel { key: "42".into(), tvg_id_hash: hash.clone(), tvg_name_hash: "0".into(), name_hash: "0".into() }]
+            [MatchChannel {
+                key: "42".into(),
+                tvg_id_hash: hash.clone(),
+                tvg_name_hash: "0".into(),
+                name_hash: "0".into()
+            }]
         );
         let resp = build_match_channels_response(
             &parsed.channels,
@@ -324,21 +399,42 @@ mod tests {
         );
         assert_eq!(
             resp.split(MATCH_BLOCK_SEP).collect::<Vec<_>>(),
-            ["{}", &format!("42~custom-provider~{hash}"), "custom-provider~https://example.test/foss-epg/u/abc123/"]
+            [
+                "{}",
+                &format!("42~custom-provider~{hash}"),
+                "custom-provider~https://example.test/foss-epg/u/abc123/"
+            ]
         );
         assert!(parse_match_request("garbage").is_none());
         let req = parse_match_request(&["{}", "", "42-123-0-0"].join(MATCH_BLOCK_SEP)).unwrap();
-        assert_eq!(build_match_channels_response(&req.channels, |_| None, "infochannel"), empty_channel_match_response());
-        assert_eq!(empty_logo_match_response().split(MATCH_BLOCK_SEP).count(), 2);
+        assert_eq!(
+            build_match_channels_response(&req.channels, |_| None, "infochannel"),
+            empty_channel_match_response()
+        );
+        assert_eq!(
+            empty_logo_match_response().split(MATCH_BLOCK_SEP).count(),
+            2
+        );
     }
 
     #[test]
     fn merge_local_wins() {
-        let local = ["{}", "42~infochannel~2554912436", "infochannel~https://iptv.example/foss-epg/u/abc123/"].join(MATCH_BLOCK_SEP);
-        let upstream = ["{}", "7~edem~100\n42~wrong~999", "edem~https://epg.ottp.eu.org/edem/\nwrong~https://example.test/"]
-            .join(MATCH_BLOCK_SEP);
+        let local = [
+            "{}",
+            "42~infochannel~2554912436",
+            "infochannel~https://iptv.example/foss-epg/u/abc123/",
+        ]
+        .join(MATCH_BLOCK_SEP);
+        let upstream = [
+            "{}",
+            "7~edem~100\n42~wrong~999",
+            "edem~https://epg.ottp.eu.org/edem/\nwrong~https://example.test/",
+        ]
+        .join(MATCH_BLOCK_SEP);
         assert_eq!(
-            merge_match_channels_responses(&local, &upstream).split(MATCH_BLOCK_SEP).collect::<Vec<_>>(),
+            merge_match_channels_responses(&local, &upstream)
+                .split(MATCH_BLOCK_SEP)
+                .collect::<Vec<_>>(),
             [
                 "{}",
                 "7~edem~100\n42~infochannel~2554912436",
