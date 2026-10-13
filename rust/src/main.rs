@@ -9,6 +9,7 @@ mod data;
 mod encode;
 mod epg;
 mod news;
+mod notify;
 mod playlist;
 mod render;
 
