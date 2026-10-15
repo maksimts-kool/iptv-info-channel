@@ -4,6 +4,7 @@ import {
 } from 'antd';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
+import Hint from '../components/Hint.jsx';
 
 // Per-customer channel access.
 //
@@ -186,22 +187,20 @@ export default function ClientAccessTab({ user, api, message, onAuthError, reloa
         <Alert
           type="warning"
           showIcon
-          message="Подписка неактивна — клиент сейчас видит только «Информация»"
-          description="Настройки ниже сохраняются и вступят в силу сразу после продления. Ничего сбрасывать не нужно."
+          message={<span>Подписка неактивна — клиент сейчас видит только «Информация» <Hint text="Настройки ниже сохраняются и вступят в силу сразу после продления. Ничего сбрасывать не нужно." /></span>}
         />
       ) : null}
 
       <Typography.Text type="secondary">
-        Базу даёт тариф клиента. Здесь настраиваются только исключения: «Выдать» —
-        добавить категорию сверх тарифа, «Забрать» — убрать входящую в тариф.
+        {'Исключения из тарифа '}
+        <Hint text="Базу даёт тариф клиента. Здесь настраиваются только исключения: «Выдать» — добавить категорию сверх тарифа, «Забрать» — убрать входящую в тариф." />
       </Typography.Text>
 
       {!data.locked && data.plan && !data.plan.categories.length ? (
         <Alert
           type="warning"
           showIcon
-          message={`В тарифе «${data.plan.name}» не выбрано ни одной категории`}
-          description="Поэтому клиент видит только «Информация». Добавьте категории в тариф (раздел «Тарифы») либо выдайте их этому клиенту персонально ниже."
+          message={<span>{`В тарифе «${data.plan.name}» не выбрано ни одной категории`} <Hint text="Поэтому клиент видит только «Информация». Добавьте категории в тариф (раздел «Тарифы») либо выдайте их этому клиенту персонально ниже." /></span>}
         />
       ) : null}
 

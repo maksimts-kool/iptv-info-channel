@@ -261,7 +261,7 @@ export default function ArticleEditor({
               </div>
             ) : (
               <Typography.Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
-                Отдельный абзац, картинку или видео можно скрыть от остальных кнопкой с замком на панели.
+                Скрыть часть статьи — кнопка с замком на панели.
               </Typography.Text>
             )}
           </div>

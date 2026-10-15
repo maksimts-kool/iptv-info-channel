@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Space, Typography } from 'antd';
+import { Space } from 'antd';
 import { AuthError } from '../lib/api.js';
 import PlansCard from '../components/PlansCard.jsx';
 
@@ -21,11 +21,6 @@ export default function PlansPage(shared) {
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Typography.Text type="secondary">
-        Тариф определяет, какие категории каналов получает клиент. Этот же список
-        показывается на инфоканале клиентам с истекшей подпиской, поэтому после
-        изменения тарифа потоки пересобираются.
-      </Typography.Text>
       <PlansCard {...shared} categories={categories} />
     </Space>
   );

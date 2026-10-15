@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
+import Hint from '../components/Hint.jsx';
 
 // Who is watching this customer right now, as the stream gateway sees it: every
 // device that fetched a gated channel's manifest within the idle window, oldest
@@ -72,6 +73,7 @@ export default function ClientDevicesCard({
           <Typography.Text type="secondary" style={{ fontWeight: 400 }}>
             {limit > 0 ? `смотрят ${devices.length - over} из ${limit}` : `смотрят ${devices.length}, без ограничений`}
           </Typography.Text>
+          <Hint text={`Устройство считается смотрящим, пока плеер обновляет канал; после закрытия место освобождается через ${data?.idle_seconds ?? 60} сек. Два одинаковых плеера в одной домашней сети считаются одним устройством.`} />
         </Space>
       )}
       extra={(
@@ -125,9 +127,6 @@ export default function ClientDevicesCard({
         ) : (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Сейчас этот клиент ничего не смотрит" />
         )}
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {`Устройство считается смотрящим, пока плеер обновляет канал; после закрытия место освобождается через ${data?.idle_seconds ?? 60} сек. Два одинаковых плеера в одной домашней сети считаются одним устройством.`}
-        </Typography.Text>
       </Space>
     </Card>
   );

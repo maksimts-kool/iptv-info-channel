@@ -373,9 +373,7 @@ export default function DevicesPage({
                     </Col>
                   </Row>
                 ))}
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  0 — без ограничений. Сохраняется по Enter или при уходе с поля.
-                </Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>0 — без лимита</Typography.Text>
               </Space>
             ) : (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Тарифов пока нет" />

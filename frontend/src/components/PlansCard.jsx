@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import {
   Alert, Button, Card, Checkbox, Col, Empty, Form, Input, InputNumber, Modal, Popconfirm, Row,
-  Select, Space, Tag, Typography,
+  Select, Space, Tag, Tooltip, Typography,
 } from 'antd';
 import {
   DeleteOutlined, DesktopOutlined, EditOutlined, PlusOutlined,
 } from '@ant-design/icons';
 import { periodSuffix, devicesLabel } from '../lib/plans.js';
+import Hint from './Hint.jsx';
 
 // A plan IS the channel package: the categories selected here are exactly what
 // its customers receive, and the same list is printed on the info channel as
@@ -77,8 +78,7 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Категорий ещё нет"
-          description="Сначала загрузите плейлист провайдера в разделе «Плейлист» — тогда категории можно будет включить в тариф."
+          message={<span>Категорий ещё нет <Hint text="Сначала загрузите плейлист провайдера в разделе «Плейлист» — тогда категории можно будет включить в тариф." /></span>}
         />
       ) : null}
       {!gatewayOn && plans.some((p) => p.max_devices > 0) ? (
@@ -86,8 +86,7 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Лимит устройств не действует: шлюз потоков выключен"
-          description="Одновременные просмотры сервер видит только через шлюз. Включите его в разделе «Плейлист» → «Доступ»."
+          message={<span>Лимит устройств не действует: шлюз потоков выключен <Hint text="Одновременные просмотры сервер видит только через шлюз. Включите его в разделе «Плейлист» → «Доступ»." /></span>}
         />
       ) : null}
       {sellable.length && emptyPlans.length ? (
@@ -96,7 +95,6 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
           showIcon
           style={{ marginBottom: 16 }}
           message={`В тарифе не выбрано ни одной категории: ${emptyPlans.map((p) => p.name).join(', ')}`}
-          description="Клиенты на таком тарифе получают только канал «Информация». Откройте тариф и отметьте категории, которые в него входят."
         />
       ) : null}
 
@@ -116,17 +114,17 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
                     </Space>
                   )}
                   extra={(
-                    <Space>
-                      <Button size="small" icon={<EditOutlined />} onClick={() => openDialog(p)}>
-                        Изменить
-                      </Button>
+                    <Space size={4}>
+                      <Tooltip title="Изменить">
+                        <Button size="small" type="text" icon={<EditOutlined />} aria-label="Изменить" onClick={() => openDialog(p)} />
+                      </Tooltip>
                       <Popconfirm
                         title={`Удалить тариф «${p.name}»?`}
                         okText="Удалить"
                         okButtonProps={{ danger: true }}
                         onConfirm={() => remove(p)}
                       >
-                        <Button size="small" danger icon={<DeleteOutlined />}>Удалить</Button>
+                        <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label="Удалить" />
                       </Popconfirm>
                     </Space>
                   )}
@@ -177,7 +175,14 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
             <Input maxLength={80} />
           </Form.Item>
           <Form.Item name="price_eur" label="Цена (EUR)" rules={[{ required: true, message: 'Укажите корректную цену' }]}>
-            <InputNumber min={0} step={0.01} style={{ width: '100%' }} />
+            {/* Both "9,99" and "9.99" are accepted: Russian keyboards type a comma. */}
+            <InputNumber
+              min={0}
+              step={0.01}
+              addonAfter="€"
+              parser={(v) => String(v ?? '').replace(',', '.').replace(/[^\d.-]/g, '')}
+              style={{ width: '100%' }}
+            />
           </Form.Item>
           <Form.Item name="billing_period" label="Период оплаты">
             <Select
@@ -192,7 +197,7 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
           <Form.Item
             name="max_devices"
             label="Устройств одновременно"
-            extra="Сколько устройств могут смотреть каналы этого тарифа в одно и то же время. 0 — без ограничений. Для отдельного клиента можно задать своё значение в его карточке. Работает только при включённом шлюзе потоков."
+            tooltip="Сколько устройств могут смотреть каналы этого тарифа в одно и то же время. 0 — без ограничений. Для отдельного клиента можно задать своё значение в его карточке. Работает только при включённом шлюзе потоков."
           >
             <InputNumber min={0} max={100} precision={0} style={{ width: 160 }} addonAfter="устр." />
           </Form.Item>
@@ -200,7 +205,7 @@ export default function PlansCard({ state, api, withRegen, categories = [] }) {
           <Form.Item
             name="category_ids"
             label="Категории, входящие в тариф"
-            extra="Клиент на этом тарифе получает только отмеченные категории (плюс «Информация»). Этот же список показывается на инфоканале как содержимое тарифа."
+            tooltip="Клиент на этом тарифе получает только отмеченные категории (плюс «Информация»). Этот же список показывается на инфоканале как содержимое тарифа."
           >
             <CategoryPicker categories={sellable} />
           </Form.Item>

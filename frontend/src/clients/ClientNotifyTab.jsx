@@ -3,6 +3,7 @@ import {
   Alert, Button, Checkbox, Form, Input, Popconfirm, Space, Typography,
 } from 'antd';
 import { AuthError } from '../lib/api.js';
+import Hint from '../components/Hint.jsx';
 
 // One customer's email subscription. Same double opt-in store the public /sub
 // page writes to: a new or changed address is unverified until the recipient
@@ -61,8 +62,7 @@ export default function ClientNotifyTab({
         <Alert
           type="warning"
           showIcon
-          message="Адрес не подтверждён"
-          description="Пока клиент не перейдёт по ссылке из письма, настоящие уведомления ему не отправляются."
+          message={<span>Адрес не подтверждён <Hint text="Пока клиент не перейдёт по ссылке из письма, настоящие уведомления ему не отправляются." /></span>}
         />
       ) : null}
 
@@ -97,10 +97,9 @@ export default function ClientNotifyTab({
         <Form.Item name="verified" valuePropName="checked" noStyle>
           <Checkbox>Подтвердить без письма (вы ручаетесь за адрес)</Checkbox>
         </Form.Item>
-        <Typography.Text type="secondary" style={{ display: 'block', margin: '6px 0 16px', fontSize: 12 }}>
-          Если снять галочку, клиенту уйдёт письмо со ссылкой для подтверждения,
-          и уведомления начнут приходить только после подтверждения.
-        </Typography.Text>
+        {' '}
+        <Hint text="Без галочки клиенту уйдёт письмо со ссылкой, и уведомления начнут приходить только после подтверждения." />
+        <div style={{ height: 16 }} />
         <Space>
           <Button type="primary" onClick={save}>Сохранить подписку</Button>
           {subscriber ? (
