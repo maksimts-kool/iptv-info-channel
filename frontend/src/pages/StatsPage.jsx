@@ -2,7 +2,7 @@ import {
   useCallback, useEffect, useMemo, useState,
 } from 'react';
 import {
-  Alert, Badge, Button, Card, Col, Empty, Row, Segmented, Select, Space, Statistic, Tag, Tooltip, Typography,
+  Alert, Button, Card, Col, Empty, Row, Segmented, Select, Space, Statistic, Tag, Tooltip, Typography,
 } from 'antd';
 import {
   ClockCircleOutlined, CloseOutlined, DesktopOutlined, FieldTimeOutlined, PlaySquareOutlined, ReloadOutlined,
@@ -174,16 +174,6 @@ export default function StatsPage({
     sub: user ? `${count(c.sessions)} просм.` : `${count(c.viewers)} зрит. · ${count(c.sessions)} просм.`,
     value: c.seconds,
     onClick: user ? undefined : () => pickChannel(channel === c.id ? null : c.id),
-    tip: (
-      <TipBody
-        title={c.name}
-        rows={[
-          { label: 'просмотра', value: watchTime(c.seconds) },
-          { label: 'зрителей', value: count(c.viewers) },
-          { label: 'просмотров', value: count(c.sessions) },
-        ]}
-      />
-    ),
   }));
 
   const customerRows = customers.slice(0, TOP_ROWS).map((cu) => {
@@ -223,7 +213,6 @@ export default function StatsPage({
     value: u.seconds,
     color: channelColor.get(picked.id) || OTHER,
     onClick: () => update({ user: u.user_id }),
-    tip: <TipBody title={u.username} rows={[{ label: picked.name, value: watchTime(u.seconds) }]} />,
   }));
 
   const recentColumns = [
@@ -252,15 +241,12 @@ export default function StatsPage({
     },
   ];
 
-  const periodWord = days === 1 ? 'сегодня' : `за ${days} дн.`;
   const filteredUser = data?.user || users.find((u) => u.id === user);
   const peakHint = totals?.peak_at ? `в ${when(totals.peak_at)}` : null;
   const chartFrame = { opacity: loading && data ? 0.55 : 1, transition: 'opacity .2s' };
 
   const empty = (text) => <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={text} />;
-  const noData = data?.gateway_enabled === false
-    ? 'Нет просмотров: шлюз выключен, поэтому видны только встроенные каналы'
-    : 'Нет просмотров за этот период';
+  const noData = 'Нет просмотров за этот период';
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -296,31 +282,27 @@ export default function StatsPage({
       ) : null}
 
       <Row gutter={[16, 16]}>
-        <Col xs={12} md={8} xxl={4}>
-          <Tile title="Время просмотра" value={totals ? watchTime(totals.seconds) : '—'} icon={<FieldTimeOutlined />} hint={periodWord} />
+        <Col flex="1 1 150px">
+          <Tile title="Время просмотра" value={totals ? watchTime(totals.seconds) : '—'} icon={<FieldTimeOutlined />} />
         </Col>
-        <Col xs={12} md={8} xxl={4}>
+        <Col flex="1 1 150px">
           {user ? (
             <Tile title="Последний просмотр" value={customers[0] ? when(customers[0].last_seen) : '—'} icon={<ClockCircleOutlined />} />
           ) : (
             <Tile title="Зрителей" value={totals ? count(totals.viewers) : '—'} icon={<TeamOutlined />} suffix={users.length ? `/ ${count(users.length)}` : null} />
           )}
         </Col>
-        <Col xs={12} md={8} xxl={4}>
+        <Col flex="1 1 150px">
           <Tile title="Просмотров" value={totals ? count(totals.sessions) : '—'} icon={<PlaySquareOutlined />} />
         </Col>
-        <Col xs={12} md={8} xxl={4}>
-          <Tile title="Каналов смотрели" value={totals ? count(totals.channels) : '—'} icon={<PlaySquareOutlined />} />
-        </Col>
-        <Col xs={12} md={8} xxl={4}>
+        <Col flex="1 1 150px">
           <Tile title="Пик одновременно" value={totals ? count(totals.peak) : '—'} icon={<RiseOutlined />} hint={peakHint} />
         </Col>
-        <Col xs={12} md={8} xxl={4}>
+        <Col flex="1 1 150px">
           <Tile
             title="Смотрят сейчас"
             value={count(live.length)}
             icon={<DesktopOutlined />}
-            hint={live.length ? [...new Set(live.map((l) => l.channel))].slice(0, 2).join(', ') : null}
           />
         </Col>
       </Row>
@@ -354,7 +336,7 @@ export default function StatsPage({
         <Col xs={24} xl={user ? 24 : 12}>
           <Card
             size="small"
-            title={user && filteredUser ? `Что смотрит ${filteredUser.username}` : 'Популярные каналы'}
+            title={user ? 'Каналы' : 'Популярные каналы'}
             extra={user ? null : <Typography.Text type="secondary" style={{ fontSize: 12 }}>нажмите на канал — кто его смотрел</Typography.Text>}
             style={{ height: '100%' }}
           >
@@ -400,12 +382,7 @@ export default function StatsPage({
 
       <Card
         size="small"
-        title={(
-          <Space>
-            Последние просмотры
-            {live.length ? <Badge count={live.length} color="#16a34a" size="small" title={`Смотрят сейчас: ${live.length}`} /> : null}
-          </Space>
-        )}
+        title="Последние просмотры"
         extra={data ? (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {`история хранится ${data.retention_days} дн.; короче 30 сек. не считаются`}

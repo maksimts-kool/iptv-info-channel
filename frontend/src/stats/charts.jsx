@@ -1,6 +1,7 @@
 import {
   useCallback, useEffect, useLayoutEffect, useRef, useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 // Small hand-drawn charts for the statistics page: columns over time, a
 // weekday x hour heatmap and horizontal (optionally stacked) bars. They share
@@ -24,7 +25,8 @@ const GRID = '#eceef2';
 // Tooltip
 // ---------------------------------------------------------------------------
 
-// One floating tooltip per page. `bind(content)` gives a mark its handlers;
+// One floating tooltip per page, portalled to <body> so showing it never
+// shifts the page layout. `bind(content)` gives a mark its handlers;
 // `hide` is for clicks that swap the marks out from under the pointer.
 export function useTooltip() {
   const [tip, setTip] = useState(null);
@@ -50,7 +52,7 @@ export function useTooltip() {
   if (tip) {
     const below = tip.y < 140;
     const x = Math.min(Math.max(tip.x, 130), window.innerWidth - 130);
-    node = (
+    node = createPortal(
       <div
         className="viz-tip"
         role="tooltip"
@@ -61,7 +63,8 @@ export function useTooltip() {
         }}
       >
         {tip.content}
-      </div>
+      </div>,
+      document.body,
     );
   }
   return [node, bind, hide];
@@ -260,7 +263,7 @@ export function BarList({
             type={d.onClick ? 'button' : undefined}
             className={`viz-bar-row${d.onClick ? ' viz-bar-link' : ''}${active === d.key ? ' viz-bar-active' : ''}`}
             onClick={d.onClick}
-            {...bind(d.tip)}
+            {...(d.tip ? bind(d.tip) : {})}
           >
             <span className="viz-bar-label">
               <span className="viz-bar-name">{d.label}</span>
