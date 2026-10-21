@@ -4,7 +4,7 @@ import {
   Space, Spin, Switch, Tabs, Tag, Typography,
 } from 'antd';
 import {
-  CopyOutlined, DesktopOutlined, ExportOutlined, KeyOutlined, RightOutlined, WalletOutlined,
+  BarChartOutlined, CopyOutlined, DesktopOutlined, ExportOutlined, KeyOutlined, RightOutlined, WalletOutlined,
 } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { devicesLabel, periodSuffix, planOptions } from '../lib/plans.js';
@@ -170,6 +170,14 @@ export default function ClientDrawer({
             title="Устройства"
             detail={`смотрят ${user.devices_active || 0} · ${devicesLabel(user.device_limit)}`}
             onClick={() => go(`devices/${user.id}`)}
+          />
+        </Col>
+        <Col xs={24} sm={12}>
+          <SectionLink
+            icon={<BarChartOutlined />}
+            title="Статистика"
+            detail="что, когда и сколько смотрит"
+            onClick={() => go(`stats/${user.id}`)}
           />
         </Col>
       </Row>

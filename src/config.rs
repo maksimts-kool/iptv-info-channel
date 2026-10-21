@@ -135,6 +135,8 @@ pub struct Gateway {
     pub enabled: AtomicBool,
     pub log_requests: bool,
     pub device_idle_seconds: u64,
+    /// How long the viewing history behind Статистика is kept.
+    pub stats_retention_days: u64,
     pub manifest_timeout_ms: u64,
     pub manifest_max_bytes: usize,
 }
@@ -305,6 +307,7 @@ impl Config {
                 enabled: AtomicBool::new(env.flag("STREAM_GATEWAY_ENABLED", false)),
                 log_requests: env.flag("STREAM_GATEWAY_LOG", false),
                 device_idle_seconds: env.num("STREAM_DEVICE_IDLE_SECONDS", 60),
+                stats_retention_days: env.num::<u64>("STATS_RETENTION_DAYS", 90).clamp(1, 3650),
                 manifest_timeout_ms: env.num("STREAM_GATEWAY_TIMEOUT_MS", 10_000),
                 manifest_max_bytes: env.num("STREAM_GATEWAY_MAX_BYTES", 4 * 1024 * 1024),
             },

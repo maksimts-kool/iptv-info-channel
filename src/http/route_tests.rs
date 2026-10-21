@@ -433,6 +433,16 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     assert!(m.text.contains(&format!("{}/live/seg_001.ts", h.upstream)));
     assert!(m.text.contains(&format!("URI=\"{}/live/key.bin\"", h.upstream)));
 
+    // Statistics: the watch is live at once (too short to count as history).
+    let viewing = h.get(&format!("/admin/api/stats?days=1&user={uid}")).await.json();
+    assert_eq!(viewing["live"][0]["channel"], "HLS Channel");
+    assert_eq!(viewing["live"][0]["channel_id"], hls_id.as_str());
+    assert_eq!(viewing["totals"]["sessions"], 0);
+    assert_eq!(viewing["daily"].as_array().unwrap().len(), 1);
+    assert_eq!(viewing["heatmap"].as_array().unwrap().len(), 7);
+    assert_eq!(h.get("/admin/api/stats?days=0").await.status, 400);
+    assert_eq!(h.get("/admin/api/stats?user=999999").await.status, 404);
+
     // Revoked mid-view: spliced onto the info card.
     h.write_info_loop(uid);
     h.patch(

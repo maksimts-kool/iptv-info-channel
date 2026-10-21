@@ -5,7 +5,7 @@ import {
   App as AntApp, Badge, Button, Drawer, Grid, Layout, Menu, Spin, Tooltip, Typography,
 } from 'antd';
 import {
-  DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
+  BarChartOutlined, DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
   MenuOutlined, PictureOutlined, PlaySquareOutlined, TeamOutlined, WalletOutlined, WifiOutlined,
 } from '@ant-design/icons';
 import ClientJump from './components/ClientJump.jsx';
@@ -27,13 +27,14 @@ const PlansPage = lazy(() => import('./pages/PlansPage.jsx'));
 const InfoChannelPage = lazy(() => import('./pages/InfoChannelPage.jsx'));
 const MediaPage = lazy(() => import('./pages/MediaPage.jsx'));
 const NotifyPage = lazy(() => import('./pages/NotifyPage.jsx'));
+const StatsPage = lazy(() => import('./pages/StatsPage.jsx'));
 
 const { Header, Content, Sider } = Layout;
 
 // Playlist + client management is the product now; the info channel is one
 // feature inside it, so it sits below them in the navigation.
 //
-// Nine flat entries are more than anyone scans at a glance, so the menu is
+// Ten flat entries are more than anyone scans at a glance, so the menu is
 // chunked into a few labelled groups by what the admin is doing (customers and
 // money, what is on air, the built-in channels, mail). Обзор stays first and
 // alone: it is the landing screen and the shortcut into everything else.
@@ -59,6 +60,9 @@ const SECTIONS = [
   },
   {
     key: 'devices', group: 'Вещание', label: 'Устройства', Icon: LaptopOutlined, title: 'Устройства', Page: DevicesPage,
+  },
+  {
+    key: 'stats', group: 'Вещание', label: 'Статистика', Icon: BarChartOutlined, title: 'Статистика просмотров', Page: StatsPage,
   },
   {
     key: 'info', group: 'Свои каналы', label: 'Инфоканал', Icon: DesktopOutlined, title: 'Информационный канал', Page: InfoChannelPage,

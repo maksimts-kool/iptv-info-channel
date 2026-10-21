@@ -9,6 +9,7 @@ pub mod gateway;
 pub mod media;
 pub mod playlist;
 pub mod ratelimit;
+pub mod stats;
 pub mod stream;
 pub mod subscribe;
 

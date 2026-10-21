@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
-use super::gateway::{GateRequest, gate, is_locked};
+use super::gateway::{GateRequest, gate, is_locked, record_builtin_watch};
 use super::playlist::{
     PlaylistCfg, build_user_playlist, foss_logo_url, foss_provider_base_url, playlist_disposition, user_epg_url,
     user_stream_url,
@@ -32,7 +32,9 @@ use crate::epg::foss::{
     parse_match_request,
 };
 use crate::playlist::devices::device_tag;
-use crate::playlist::model::{INFO_MEDIA_CHANNEL_ID, Resolve, resolve_channel_access, resolve_user_channels};
+use crate::playlist::model::{
+    INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, Resolve, resolve_channel_access, resolve_user_channels,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -273,6 +275,7 @@ fn safe_file(file: &str) -> bool {
 
 async fn hls_file(
     State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     method: Method,
     headers: HeaderMap,
     UrlPath((token, file)): UrlPath<(String, String)>,
@@ -288,6 +291,8 @@ async fn hls_file(
         tracing::error!(target: "stream", user_id = user.id, username = %user.username, error = %e, "generation failed");
         return text(StatusCode::INTERNAL_SERVER_ERROR, "Stream generation failed");
     }
+    let ip = client_ip(&headers, peer, st.config.trust_proxy);
+    record_builtin_watch(&st, &user, INFO_CHANNEL_ID, &ip, &user_agent(&headers));
     serve_loop_file(&st, &method, &headers, &st.channels.user_hls_dir(user.id), &file).await
 }
 
@@ -316,6 +321,7 @@ async fn notice_file(
 /// sending the player to their own info card.
 async fn media_file(
     State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     method: Method,
     headers: HeaderMap,
     UrlPath((token, file)): UrlPath<(String, String)>,
@@ -351,6 +357,8 @@ async fn media_file(
     let Some(dir) = dir else {
         return text(StatusCode::NOT_FOUND, "Not found");
     };
+    let ip = client_ip(&headers, peer, st.config.trust_proxy);
+    record_builtin_watch(&st, &user, INFO_MEDIA_CHANNEL_ID, &ip, &user_agent(&headers));
     serve_loop_file(&st, &method, &headers, &dir, &file).await
 }
 

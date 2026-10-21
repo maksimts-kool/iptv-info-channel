@@ -40,6 +40,8 @@ services:
       STREAM_GATEWAY_LOG: ${STREAM_GATEWAY_LOG:-false}
       # Device-limit slot is freed this long after a player's last manifest fetch.
       STREAM_DEVICE_IDLE_SECONDS: ${STREAM_DEVICE_IDLE_SECONDS:-60}
+      # Viewing history (Статистика) is kept this many days.
+      STATS_RETENTION_DAYS: ${STATS_RETENTION_DAYS:-90}
       # --- 3. Info channel look & timing ---
       # 720p + low frame rates look identical on a TV but cost far less CPU.
       CHANNEL_WIDTH: ${CHANNEL_WIDTH:-1280}

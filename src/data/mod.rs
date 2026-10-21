@@ -5,3 +5,4 @@ pub mod import;
 pub mod jsonfile;
 pub mod model;
 pub mod store;
+pub mod watch;

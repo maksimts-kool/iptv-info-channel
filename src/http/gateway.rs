@@ -39,7 +39,10 @@ use crate::playlist::hls::{
     MediaPlaylist, Splice, build_spliced_playlist, is_hls_url, is_master_playlist, parse_media_playlist,
     rewrite_hls_manifest,
 };
-use crate::playlist::model::{INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, Resolve, resolve_channel_access};
+use crate::playlist::model::{
+    INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME, Resolve, resolve_channel_access,
+};
+use crate::playlist::watch::{WatchHit, WatchRow, WatchTracker};
 
 const SESSION_TTL_MS: i64 = 10 * 60 * 1000;
 
@@ -80,11 +83,13 @@ impl Session {
     }
 }
 
-/// In-memory gateway state: device slots and per-player playlist sessions.
+/// In-memory gateway state: device slots, per-player playlist sessions and
+/// the viewing history still being recorded.
 #[derive(Debug)]
 pub struct Gateway {
     devices: Mutex<DeviceTracker>,
     sessions: Mutex<HashMap<String, Session>>,
+    watch: Mutex<WatchTracker>,
 }
 
 /// One device as the admin sees it.
@@ -109,7 +114,32 @@ impl Gateway {
         Self {
             devices: Mutex::new(DeviceTracker::new(i64::try_from(idle_seconds).unwrap_or(60) * 1000)),
             sessions: Mutex::default(),
+            watch: Mutex::default(),
         }
+    }
+
+    fn watch(&self) -> std::sync::MutexGuard<'_, WatchTracker> {
+        self.watch.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Note that a device is playing a channel (any manifest or loop file).
+    pub fn record_watch(&self, hit: &WatchHit<'_>) {
+        self.watch().touch(hit, now_ms());
+    }
+
+    /// The watches changed since the last call, for the history table.
+    pub fn take_watch_rows(&self) -> Vec<WatchRow> {
+        self.watch().take_dirty(now_ms())
+    }
+
+    /// Rows whose write failed, to be retried.
+    pub fn requeue_watch_rows(&self, rows: Vec<WatchRow>) {
+        self.watch().requeue(rows);
+    }
+
+    /// The watches in progress right now.
+    pub fn live_watches(&self) -> Vec<WatchRow> {
+        self.watch().live(now_ms())
     }
 
     fn devices(&self) -> std::sync::MutexGuard<'_, DeviceTracker> {
@@ -143,6 +173,7 @@ impl Gateway {
     /// Drop a customer's devices and sessions (deleted account, new token).
     pub fn forget(&self, user_id: i64) {
         self.devices().forget(user_id);
+        self.watch().forget(user_id);
         let prefix = format!("{user_id}|");
         self.sessions().retain(|k, _| !k.starts_with(&prefix));
     }
@@ -191,6 +222,30 @@ fn decode_variant(st: &AppState, user: &DecoratedUser, channel_id: &str, sig: &s
     }
     let expected = variant_signature(&st.config.session_secret, &user.token, channel_id, &url);
     constant_time_eq(expected.as_bytes(), sig.as_bytes()).then_some(url)
+}
+
+/// The name a built-in channel is listed under in the statistics (the
+/// account channel's playlist name is per customer, so it gets a fixed one).
+pub fn builtin_channel_name(st: &AppState, channel_id: &str) -> String {
+    let name = st.catalog.channel(channel_id).map(|c| c.name).unwrap_or_default();
+    match channel_id {
+        _ if !name.is_empty() => name,
+        INFO_CHANNEL_ID => "Инфоканал".to_owned(),
+        INFO_MEDIA_CHANNEL_ID => INFO_MEDIA_DEFAULT_NAME.to_owned(),
+        _ => channel_id.to_owned(),
+    }
+}
+
+/// Record a request for one of the built-in loops.
+pub fn record_builtin_watch(st: &AppState, user: &DecoratedUser, channel_id: &str, ip: &str, user_agent: &str) {
+    st.gateway.record_watch(&WatchHit {
+        user_id: user.id,
+        device: &device_key(ip, "", user_agent),
+        channel_id,
+        channel_name: &builtin_channel_name(st, channel_id),
+        user_agent,
+        ip,
+    });
 }
 
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -433,6 +488,14 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     .await;
     match fetched {
         Ok(f) => {
+            st.gateway.record_watch(&WatchHit {
+                user_id: user.id,
+                device: &device,
+                channel_id: req.channel_id,
+                channel_name: &channel_name,
+                user_agent: &req.user_agent,
+                ip: &req.ip,
+            });
             let body = f.text();
             if is_master_playlist(&body) {
                 st.gateway

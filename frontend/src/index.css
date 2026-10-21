@@ -609,3 +609,107 @@ body {
   font-size: 14px;
 }
 .hint-icon:hover { color: #2563eb; }
+
+/* --- Статистика: filters and charts -------------------------------------- */
+.stats-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 575px) {
+  .stats-filters .ant-segmented { width: 100%; }
+  .stats-filters .ant-segmented-group { display: flex; }
+  .stats-filters .ant-segmented-item { flex: 1; }
+  .stats-filters .ant-select { flex: 1; }
+}
+
+.viz-axis { font-size: 11px; fill: rgba(0, 0, 0, 0.45); color: rgba(0, 0, 0, 0.45); }
+.viz-value { font-size: 11px; font-weight: 600; fill: rgba(0, 0, 0, 0.88); }
+.viz-hit { cursor: default; outline: none; }
+.viz-hit:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+.viz-columns { width: 100%; }
+.viz-columns svg { display: block; overflow: visible; }
+
+.viz-tip {
+  position: fixed;
+  z-index: 1100;
+  pointer-events: none;
+  min-width: 140px;
+  max-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid #eceef2;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.viz-tip-title { margin-bottom: 2px; color: rgba(0, 0, 0, 0.55); }
+.viz-tip-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.viz-tip-row strong { color: rgba(0, 0, 0, 0.88); font-weight: 600; }
+.viz-tip-row span:last-child { overflow: hidden; color: rgba(0, 0, 0, 0.55); text-overflow: ellipsis; }
+.viz-tip-key { flex: none; width: 10px; height: 2px; border-radius: 1px; }
+
+/* Weekday x hour: a phone scrolls the grid inside the card, not the page. */
+.viz-heat-scroll { overflow-x: auto; }
+.viz-heat { display: grid; gap: 2px; min-width: 380px; }
+.viz-heat-row {
+  display: grid;
+  grid-template-columns: 24px repeat(24, minmax(12px, 1fr));
+  gap: 2px;
+  align-items: center;
+}
+.viz-heat-hour { text-align: left; white-space: nowrap; }
+.viz-heat-day { line-height: 1; }
+.viz-heat-cell { display: block; aspect-ratio: 1; min-height: 12px; border-radius: 3px; }
+.viz-heat-cell:hover { box-shadow: inset 0 0 0 2px rgba(15, 23, 42, 0.35); }
+.viz-heat-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 10px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+}
+.viz-heat-legend > span:first-child { margin-right: 4px; }
+.viz-heat-legend > span:last-child { margin-left: 4px; }
+.viz-heat-swatch { width: 14px; height: 10px; border-radius: 2px; }
+
+/* Horizontal bars: name over the bar on the left, value at the bar's end. */
+.viz-bars { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.viz-bar-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 34%) 1fr;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+}
+.viz-bar-link { cursor: pointer; }
+.viz-bar-link:hover, .viz-bar-active { background: #f4f6fa; }
+.viz-bar-link:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+.viz-bar-label { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.viz-bar-name { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.viz-bar-sub { overflow: hidden; color: rgba(0, 0, 0, 0.45); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.viz-bar-track { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.viz-bar-fill { display: flex; flex: none; gap: 2px; height: 12px; min-width: 0; }
+.viz-bar-seg { display: block; min-width: 2px; height: 100%; }
+.viz-bar-value { flex: none; color: rgba(0, 0, 0, 0.65); font-size: 12px; white-space: nowrap; }
+.viz-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 6px 10px;
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+}
+.viz-legend-item { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; }
+.viz-legend-swatch { flex: none; width: 10px; height: 10px; border-radius: 2px; }

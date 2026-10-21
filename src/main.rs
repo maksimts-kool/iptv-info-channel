@@ -259,6 +259,23 @@ fn start_background(st: &AppState) {
     });
 }
 
+/// Write the viewing history every 30 seconds; prune it once an hour.
+fn start_watch_history(st: &AppState) {
+    let st = st.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        let mut ticks: u64 = 0;
+        loop {
+            tick.tick().await;
+            http::stats::flush_history(&st).await;
+            if ticks.is_multiple_of(120) {
+                http::stats::prune_history(&st).await;
+            }
+            ticks += 1;
+        }
+    });
+}
+
 async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
     let st = build_state(Arc::clone(&config), pool).await?;
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -296,11 +313,15 @@ async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
         tracing::info!(target: "startup", "ready");
     });
 
+    start_watch_history(&st);
+    let history = st.clone();
     axum::serve(listener, app(st).into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("HTTP server")?;
     tracing::info!(target: "shutdown", "HTTP server closed");
+    // Watches still open are written up to their last request.
+    http::stats::flush_history(&history).await;
     Ok(())
 }
 

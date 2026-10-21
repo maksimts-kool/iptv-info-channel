@@ -50,3 +50,16 @@ export function seconds(value) {
   if (s < 60) return `${s} сек.`;
   return `${Math.floor(s / 60)} мин. ${String(s % 60).padStart(2, '0')} сек.`;
 }
+
+// "3 ч 25 мин" / "45 мин" / "30 сек" for watch time in seconds. Long spans stay
+// in hours ("125 ч") rather than days: an hour count is what is compared.
+export function watchTime(value) {
+  const s = Math.round(Number(value || 0));
+  if (s < 60) return `${s} сек`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} мин`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  if (h >= 100 || !rest) return `${count(h)} ч`;
+  return `${h} ч ${rest} мин`;
+}

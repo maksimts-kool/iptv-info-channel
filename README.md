@@ -14,7 +14,7 @@ The backend uses axum and tokio. PostgreSQL stores customers, plans, settings, t
 - Provider news polling and optional AI summaries through OpenRouter.
 - Email double opt-in, expiry/status notifications, and audience-targeted newsletters through Brevo or Resend.
 - Media articles with formatted text, images, videos, tables, private sections, per-customer variants and a live HLS loop.
-- A Russian-language admin panel for catalog, clients, payments, devices, plans, information channel, media and notifications.
+- A Russian-language admin panel for catalog, clients, payments, devices, viewing statistics, plans, information channel, media and notifications.
 
 Customer URLs contain access tokens. Use HTTPS when exposing the service outside your LAN, and keep playlist URLs private. The notification QR uses a separate token and does not grant stream access.
 

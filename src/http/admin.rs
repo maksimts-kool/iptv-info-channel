@@ -408,6 +408,7 @@ pub fn router(st: &AppState) -> Router<AppState> {
         .route("/regenerate-all", post(regenerate_all))
         .merge(super::catalog::router())
         .merge(super::media::router(st))
+        .merge(super::stats::router())
         .layer(axum::middleware::from_fn_with_state(st.clone(), require_admin));
 
     Router::new()
