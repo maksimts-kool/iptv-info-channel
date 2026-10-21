@@ -160,6 +160,7 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
         Arc::clone(&channels),
     ));
     let gateway = Arc::new(http::gateway::Gateway::new(config.gateway.device_idle_seconds));
+    gateway.load_player_agents(data::watch::load_player_agents(store.pool()).await?);
     Ok(AppState {
         config,
         store,

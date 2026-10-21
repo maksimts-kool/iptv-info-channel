@@ -33,6 +33,7 @@ pub async fn save(pool: &PgPool, rows: &[WatchRow]) -> anyhow::Result<()> {
     let mut channel_ids = Vec::with_capacity(rows.len());
     let mut channel_names = Vec::with_capacity(rows.len());
     let mut players = Vec::with_capacity(rows.len());
+    let mut agents = Vec::with_capacity(rows.len());
     let mut ips = Vec::with_capacity(rows.len());
     let mut starts = Vec::with_capacity(rows.len());
     let mut ends = Vec::with_capacity(rows.len());
@@ -42,16 +43,17 @@ pub async fn save(pool: &PgPool, rows: &[WatchRow]) -> anyhow::Result<()> {
         channel_ids.push(r.channel_id.clone());
         channel_names.push(r.channel_name.clone());
         players.push(r.player.clone());
+        agents.push(r.user_agent.clone());
         ips.push(r.ip.clone());
         starts.push(r.started);
         ends.push(r.ended);
     }
     sqlx::query(
-        "INSERT INTO watch_sessions (id, user_id, channel_id, channel_name, player, ip, started_at, ended_at)
-         SELECT r.id, r.user_id, r.channel_id, r.channel_name, r.player, r.ip,
+        "INSERT INTO watch_sessions (id, user_id, channel_id, channel_name, player, user_agent, ip, started_at, ended_at)
+         SELECT r.id, r.user_id, r.channel_id, r.channel_name, r.player, r.user_agent, r.ip,
                 to_timestamp(r.started / 1000.0), to_timestamp(r.ended / 1000.0)
-         FROM UNNEST($1::text[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::bigint[], $8::bigint[])
-              AS r (id, user_id, channel_id, channel_name, player, ip, started, ended)
+         FROM UNNEST($1::text[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::bigint[], $9::bigint[])
+              AS r (id, user_id, channel_id, channel_name, player, user_agent, ip, started, ended)
          WHERE EXISTS (SELECT 1 FROM users u WHERE u.id = r.user_id)
          ON CONFLICT (id) DO UPDATE SET ended_at = GREATEST(watch_sessions.ended_at, EXCLUDED.ended_at)",
     )
@@ -60,6 +62,7 @@ pub async fn save(pool: &PgPool, rows: &[WatchRow]) -> anyhow::Result<()> {
     .bind(channel_ids)
     .bind(channel_names)
     .bind(players)
+    .bind(agents)
     .bind(ips)
     .bind(starts)
     .bind(ends)
@@ -80,7 +83,7 @@ pub async fn prune(pool: &PgPool, before_ms: i64) -> anyhow::Result<u64> {
 /// Watches overlapping `[from_ms, to_ms)`, optionally of one customer.
 pub async fn load(pool: &PgPool, from_ms: i64, to_ms: i64, user_id: Option<i64>) -> anyhow::Result<Vec<WatchRow>> {
     let rows = sqlx::query(
-        "SELECT id, user_id, channel_id, channel_name, player, ip,
+        "SELECT id, user_id, channel_id, channel_name, player, user_agent, ip,
                 (extract(epoch FROM started_at) * 1000)::bigint AS started,
                 (extract(epoch FROM ended_at) * 1000)::bigint AS ended
          FROM watch_sessions
@@ -100,12 +103,36 @@ pub async fn load(pool: &PgPool, from_ms: i64, to_ms: i64, user_id: Option<i64>)
                 channel_id: r.try_get("channel_id")?,
                 channel_name: r.try_get("channel_name")?,
                 player: r.try_get("player")?,
+                user_agent: r.try_get("user_agent")?,
                 ip: r.try_get("ip")?,
                 started: r.try_get("started")?,
                 ended: r.try_get("ended")?,
             })
         })
         .collect()
+}
+
+/// Every remembered device tag and the User-Agent behind it.
+pub async fn load_player_agents(pool: &PgPool) -> anyhow::Result<Vec<(String, String)>> {
+    let rows = sqlx::query("SELECT tag, user_agent FROM player_agents")
+        .fetch_all(pool)
+        .await?;
+    rows.iter()
+        .map(|r| Ok((r.try_get("tag")?, r.try_get("user_agent")?)))
+        .collect()
+}
+
+/// Remember the User-Agent behind a device tag.
+pub async fn save_player_agent(pool: &PgPool, tag: &str, user_agent: &str) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO player_agents (tag, user_agent) VALUES ($1, $2)
+         ON CONFLICT (tag) DO UPDATE SET user_agent = EXCLUDED.user_agent, seen_at = now()",
+    )
+    .bind(tag)
+    .bind(user_agent)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +203,7 @@ pub struct Recent {
     pub channel_id: String,
     pub channel: String,
     pub player: String,
+    pub user_agent: String,
     pub ip: String,
     pub started_at: String,
     pub ended_at: String,
@@ -406,6 +434,7 @@ pub fn summarize(rows: &[WatchRow], w: &Window<'_>) -> Summary {
             channel_id: r.channel_id.clone(),
             channel: channel_name(&r.channel_id),
             player: r.player.clone(),
+            user_agent: r.user_agent.clone(),
             ip: r.ip.clone(),
             started_at: iso(ts(r.started)),
             ended_at: iso(ts(r.ended)),
@@ -461,6 +490,7 @@ mod tests {
             channel_id: channel.into(),
             channel_name: format!("Канал {channel}"),
             player: "TiviMate".into(),
+            user_agent: "TiviMate/4.7.0".into(),
             ip: "10.0.0.2".into(),
             started,
             ended,
@@ -582,6 +612,13 @@ mod tests {
         save(&db.pool, &[row("a", uid, "s1", t0, t0 + MIN)]).await.unwrap();
         assert_eq!(load(&db.pool, t0, t0 + 60 * MIN, None).await.unwrap()[0].ended, a.ended);
         assert_eq!(prune(&db.pool, t0 + 30 * MIN).await.unwrap(), 1);
+        // Device tags remember the latest User-Agent.
+        save_player_agent(&db.pool, "tag1", "OTT-play/1.0").await.unwrap();
+        save_player_agent(&db.pool, "tag1", "OTT-play/1.1").await.unwrap();
+        assert_eq!(
+            load_player_agents(&db.pool).await.unwrap(),
+            [("tag1".to_owned(), "OTT-play/1.1".to_owned())]
+        );
         db.drop().await;
     }
 }

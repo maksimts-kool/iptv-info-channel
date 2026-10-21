@@ -17,8 +17,9 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:9222}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme}
       SESSION_SECRET: ${SESSION_SECRET:-please-change-this-to-a-long-random-string}
-      # Set to 1 behind a reverse proxy (nginx / DO LB) so the rate limiters see
-      # real client IPs. Leave unset on a directly-exposed port.
+      # Set to 1 behind a reverse proxy (Traefik / nginx / DO LB) so the rate
+      # limiters, device limit and statistics see real client IPs instead of
+      # the Docker gateway. Leave unset on a directly-exposed port.
       TRUST_PROXY: ${TRUST_PROXY:-}
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL for the iptv PostgreSQL database}
       # --- 2. Channel catalog (the customer playlist) ---

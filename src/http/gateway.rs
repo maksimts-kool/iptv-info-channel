@@ -34,7 +34,7 @@ use crate::core::fetch::fetch_bounded;
 use crate::core::util::{AccountStatus, account_status, now_ms};
 use crate::data::model::DecoratedUser;
 use crate::encode::liveloop::{LIVE_WINDOW_SEGMENTS, Segment, loop_segments};
-use crate::playlist::devices::{DeviceInfo, DeviceTracker, ListedDevice, device_key};
+use crate::playlist::devices::{DeviceInfo, DeviceTracker, ListedDevice, device_key, device_tag};
 use crate::playlist::hls::{
     MediaPlaylist, Splice, build_spliced_playlist, is_hls_url, is_master_playlist, parse_media_playlist,
     rewrite_hls_manifest,
@@ -45,6 +45,18 @@ use crate::playlist::model::{
 use crate::playlist::watch::{WatchHit, WatchRow, WatchTracker};
 
 const SESSION_TTL_MS: i64 = 10 * 60 * 1000;
+
+/// Playlist downloaders remembered per (customer, IP); cleared when exceeded.
+const VIEWER_AGENTS_MAX: usize = 10_000;
+
+/// Who downloaded the playlists: the User-Agent behind each device tag, and
+/// per (customer, IP) the latest downloader, for URLs that carry no tag (the
+/// built-in loops).
+#[derive(Debug, Default)]
+struct Agents {
+    by_tag: HashMap<String, String>,
+    by_viewer: HashMap<(i64, String), String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
@@ -90,6 +102,7 @@ pub struct Gateway {
     devices: Mutex<DeviceTracker>,
     sessions: Mutex<HashMap<String, Session>>,
     watch: Mutex<WatchTracker>,
+    agents: Mutex<Agents>,
 }
 
 /// One device as the admin sees it.
@@ -115,6 +128,47 @@ impl Gateway {
             devices: Mutex::new(DeviceTracker::new(i64::try_from(idle_seconds).unwrap_or(60) * 1000)),
             sessions: Mutex::default(),
             watch: Mutex::default(),
+            agents: Mutex::default(),
+        }
+    }
+
+    fn agents(&self) -> std::sync::MutexGuard<'_, Agents> {
+        self.agents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The stored tag -> User-Agent pairs, at startup.
+    pub fn load_player_agents(&self, rows: Vec<(String, String)>) {
+        self.agents().by_tag.extend(rows);
+    }
+
+    /// A playlist was downloaded. Returns the `(tag, user agent)` pair when it
+    /// is new, for the caller to store.
+    pub fn note_playlist(&self, user_id: i64, ip: &str, user_agent: &str) -> Option<(String, String)> {
+        let user_agent: String = user_agent.trim().chars().take(300).collect();
+        if user_agent.is_empty() {
+            return None;
+        }
+        let tag = device_tag(&user_agent);
+        let mut agents = self.agents();
+        if agents.by_viewer.len() >= VIEWER_AGENTS_MAX {
+            agents.by_viewer.clear();
+        }
+        agents.by_viewer.insert((user_id, ip.to_owned()), user_agent.clone());
+        if agents.by_tag.get(&tag) == Some(&user_agent) {
+            return None;
+        }
+        agents.by_tag.insert(tag.clone(), user_agent.clone());
+        Some((tag, user_agent))
+    }
+
+    /// The User-Agent of the app behind a request: by its URL's device tag,
+    /// else the latest playlist download by that customer from that IP.
+    pub fn app_agent(&self, user_id: i64, ip: &str, tag: &str) -> Option<String> {
+        let agents = self.agents();
+        if tag.is_empty() {
+            agents.by_viewer.get(&(user_id, ip.to_owned())).cloned()
+        } else {
+            agents.by_tag.get(tag).cloned()
         }
     }
 
@@ -174,6 +228,7 @@ impl Gateway {
     pub fn forget(&self, user_id: i64) {
         self.devices().forget(user_id);
         self.watch().forget(user_id);
+        self.agents().by_viewer.retain(|(id, _), _| *id != user_id);
         let prefix = format!("{user_id}|");
         self.sessions().retain(|k, _| !k.starts_with(&prefix));
     }
@@ -238,12 +293,14 @@ pub fn builtin_channel_name(st: &AppState, channel_id: &str) -> String {
 
 /// Record a request for one of the built-in loops.
 pub fn record_builtin_watch(st: &AppState, user: &DecoratedUser, channel_id: &str, ip: &str, user_agent: &str) {
+    let app_agent = st.gateway.app_agent(user.id, ip, "");
     st.gateway.record_watch(&WatchHit {
         user_id: user.id,
         device: &device_key(ip, "", user_agent),
         channel_id,
         channel_name: &builtin_channel_name(st, channel_id),
         user_agent,
+        app_agent: app_agent.as_deref(),
         ip,
     });
 }
@@ -488,12 +545,14 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     .await;
     match fetched {
         Ok(f) => {
+            let app_agent = st.gateway.app_agent(user.id, &req.ip, req.tag);
             st.gateway.record_watch(&WatchHit {
                 user_id: user.id,
                 device: &device,
                 channel_id: req.channel_id,
                 channel_name: &channel_name,
                 user_agent: &req.user_agent,
+                app_agent: app_agent.as_deref(),
                 ip: &req.ip,
             });
             let body = f.text();

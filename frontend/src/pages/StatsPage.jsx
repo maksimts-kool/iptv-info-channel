@@ -233,7 +233,11 @@ export default function StatsPage({
     },
     { title: 'Начало', dataIndex: 'started_at', render: when },
     { title: 'Длительность', dataIndex: 'seconds', render: watchTime },
-    { title: 'Плеер', dataIndex: 'player', render: (v) => v || '—' },
+    {
+      title: 'Плеер',
+      dataIndex: 'player',
+      render: (v, r) => (r.user_agent ? <Tooltip title={r.user_agent}><span>{v || '—'}</span></Tooltip> : v || '—'),
+    },
     {
       title: 'IP',
       dataIndex: 'ip',

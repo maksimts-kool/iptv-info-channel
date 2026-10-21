@@ -124,12 +124,23 @@ struct TokenQuery {
     token: String,
 }
 
-fn send_playlist(st: &AppState, headers: &HeaderMap, token: &str) -> Response {
+fn send_playlist(st: &AppState, headers: &HeaderMap, peer: SocketAddr, token: &str) -> Response {
     let Some(user) = st.store.user_by_token(token) else {
         tracing::warn!(target: "stream", "playlist requested with unknown token");
         return text(StatusCode::NOT_FOUND, "Unknown token");
     };
-    let body = render_user_playlist(st, &user, &device_tag(&user_agent(headers)));
+    let agent = user_agent(headers);
+    // Remember which app this playlist's device tag stands for (statistics).
+    let ip = client_ip(headers, peer, st.config.trust_proxy);
+    if let Some((tag, agent)) = st.gateway.note_playlist(user.id, &ip, &agent) {
+        let pool = st.store.pool().clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::data::watch::save_player_agent(&pool, &tag, &agent).await {
+                tracing::warn!(target: "stats", error = %format!("{e:#}"), "saving a player's User-Agent failed");
+            }
+        });
+    }
+    let body = render_user_playlist(st, &user, &device_tag(&agent));
     let mut res = ([(header::CONTENT_TYPE, "application/x-mpegurl")], body).into_response();
     no_store(res.headers_mut());
     if let Ok(v) = HeaderValue::from_str(&playlist_disposition(&user.username)) {
@@ -138,16 +149,26 @@ fn send_playlist(st: &AppState, headers: &HeaderMap, token: &str) -> Response {
     res
 }
 
-async fn playlist_query(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<TokenQuery>) -> Response {
+async fn playlist_query(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> Response {
     if q.token.is_empty() {
         return text(StatusCode::BAD_REQUEST, "Missing ?token=");
     }
-    send_playlist(&st, &headers, &q.token)
+    send_playlist(&st, &headers, peer, &q.token)
 }
 
 /// The clean per-user URL (preferred: a query string leaks via logs/Referer).
-async fn playlist_path(State(st): State<AppState>, headers: HeaderMap, UrlPath(token): UrlPath<String>) -> Response {
-    send_playlist(&st, &headers, &token)
+async fn playlist_path(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    UrlPath(token): UrlPath<String>,
+) -> Response {
+    send_playlist(&st, &headers, peer, &token)
 }
 
 fn epg_options<'a>(

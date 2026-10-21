@@ -440,6 +440,36 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     assert_eq!(viewing["totals"]["sessions"], 0);
     assert_eq!(viewing["daily"].as_array().unwrap().len(), 1);
     assert_eq!(viewing["heatmap"].as_array().unwrap().len(), 7);
+    // The player is named after the app that downloaded the playlist, not the
+    // TV's media stack that fetches the stream.
+    let app_pl = h
+        .http
+        .get(format!("{}/u/{token}/playlist.m3u", h.base))
+        .header(header::USER_AGENT, "OTT-play/1.6.2 (Linux; Tizen)")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let app_gate = re.captures(&app_pl).expect("tagged gate link")[1].to_owned();
+    assert_ne!(app_gate, gate);
+    let tv = h
+        .http
+        .get(format!("{}{app_gate}", h.base))
+        .header(header::USER_AGENT, "samsung-agent/1.1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tv.status().as_u16(), 200);
+    let viewing = h.get(&format!("/admin/api/stats?days=1&user={uid}")).await.json();
+    let players: Vec<&str> = viewing["live"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["player"].as_str().unwrap())
+        .collect();
+    assert!(players.contains(&"OTT Play · Samsung TV"), "{players:?}");
     assert_eq!(h.get("/admin/api/stats?days=0").await.status, 400);
     assert_eq!(h.get("/admin/api/stats?user=999999").await.status, 404);
 

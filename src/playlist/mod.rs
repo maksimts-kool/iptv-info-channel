@@ -5,4 +5,5 @@ pub mod devices;
 pub mod hls;
 pub mod m3u;
 pub mod model;
+pub mod players;
 pub mod watch;

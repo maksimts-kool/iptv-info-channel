@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use super::players::describe_player;
 use crate::core::util::make_token;
 
 /// Longer than any sane HLS refresh interval, short enough that a channel
@@ -26,6 +27,9 @@ pub const MIN_WATCH_MS: i64 = 30_000;
 /// Rows kept for a retry while the database is unreachable.
 const REQUEUE_MAX: usize = 10_000;
 
+/// Enough of a User-Agent to recognise a player by later.
+const USER_AGENT_CHARS: usize = 300;
+
 /// One watch as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchRow {
@@ -33,7 +37,10 @@ pub struct WatchRow {
     pub user_id: i64,
     pub channel_id: String,
     pub channel_name: String,
+    /// The app's name, see [`describe_player`].
     pub player: String,
+    /// The stream request's own User-Agent.
+    pub user_agent: String,
     pub ip: String,
     /// Epoch milliseconds.
     pub started: i64,
@@ -54,6 +61,8 @@ pub struct WatchHit<'a> {
     pub channel_id: &'a str,
     pub channel_name: &'a str,
     pub user_agent: &'a str,
+    /// The User-Agent that downloaded the playlist this request came from.
+    pub app_agent: Option<&'a str>,
     pub ip: &'a str,
 }
 
@@ -69,14 +78,6 @@ pub struct WatchTracker {
     open: HashMap<String, Open>,
     /// Ended watches not handed out yet.
     closed: Vec<WatchRow>,
-}
-
-/// The player's product name from its User-Agent: "TiviMate/4.7.0 (Linux…)"
-/// -> "TiviMate". Kept short; the full string is not history worth keeping.
-pub fn player_name(user_agent: &str) -> String {
-    let first = user_agent.split([' ', '(']).next().unwrap_or("");
-    let name = first.split('/').next().unwrap_or("").trim();
-    name.chars().take(40).collect()
 }
 
 impl WatchTracker {
@@ -100,7 +101,8 @@ impl WatchTracker {
                     user_id: hit.user_id,
                     channel_id: hit.channel_id.to_owned(),
                     channel_name: hit.channel_name.to_owned(),
-                    player: player_name(hit.user_agent),
+                    player: describe_player(hit.app_agent, hit.user_agent),
+                    user_agent: hit.user_agent.chars().take(USER_AGENT_CHARS).collect(),
                     ip: hit.ip.to_owned(),
                     started: now,
                     ended: now,
@@ -177,16 +179,9 @@ mod tests {
             channel_id: channel,
             channel_name: "Sport 1",
             user_agent: "TiviMate/4.7.0 (Linux; Android 11)",
+            app_agent: None,
             ip: "10.0.0.2",
         }
-    }
-
-    #[test]
-    fn player_names() {
-        assert_eq!(player_name("TiviMate/4.7.0 (Linux; Android 11)"), "TiviMate");
-        assert_eq!(player_name("VLC/3.0.20 LibVLC/3.0.20"), "VLC");
-        assert_eq!(player_name("Lavf/60.3.100"), "Lavf");
-        assert_eq!(player_name(""), "");
     }
 
     #[test]
