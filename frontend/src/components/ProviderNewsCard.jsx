@@ -4,6 +4,7 @@ import {
 } from 'antd';
 import { NotificationOutlined, ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
+import Hint from './Hint.jsx';
 
 // Blue is the provider's colour everywhere (slide, «Статус сервиса», Обзор):
 // its notices share the incident list but never read as our own yellow/red.
@@ -93,13 +94,12 @@ export default function ProviderNewsCard({
         <Space align="start">
           <Switch checked={enabled} loading={busy === 'toggle'} onChange={toggle} />
           <div>
-            <div>Показывать на слайде статуса технические работы и перебои провайдера</div>
-            <Typography.Text type="secondary">
-              {`Лента проверяется каждые ${pn?.check_minutes ?? 15} мин. Берутся только
-              сообщения о работах и сбоях — новости о новых и удалённых каналах
-              пропускаются. Сообщение висит на слайде ${pn?.max_age_hours ?? 24} ч после
-              публикации — вместе с вашими инцидентами, но синим цветом.`}
-            </Typography.Text>
+            <div>
+              {'Показывать на слайде статуса технические работы и перебои провайдера '}
+              <Hint
+                text={`Лента проверяется каждые ${pn?.check_minutes ?? 15} мин. Берутся только сообщения о работах и сбоях — новости о новых и удалённых каналах пропускаются. Сообщение висит на слайде ${pn?.max_age_hours ?? 24} ч после публикации — вместе с вашими инцидентами, но синим цветом.`}
+              />
+            </div>
           </div>
         </Space>
 
@@ -107,8 +107,7 @@ export default function ProviderNewsCard({
           <Alert
             type="warning"
             showIcon
-            message="Слайд статуса выключен"
-            description="Уведомления некуда показывать, пока STATUS_SLIDE_ENABLED=false."
+            message={<span>Слайд статуса выключен <Hint text="Уведомления некуда показывать, пока STATUS_SLIDE_ENABLED=false." /></span>}
           />
         ) : null}
 
@@ -116,8 +115,7 @@ export default function ProviderNewsCard({
           <Alert
             type="error"
             showIcon
-            message="Провайдер не принял сессию"
-            description="Войдите на сайт провайдера заново и вставьте свежий Cookie ниже."
+            message={<span>Провайдер не принял сессию <Hint text="Войдите на сайт провайдера заново и вставьте свежий Cookie ниже." /></span>}
           />
         ) : pn?.error ? (
           <Alert type="warning" showIcon message={`Последняя проверка не удалась: ${pn.error}`} />
@@ -127,8 +125,7 @@ export default function ProviderNewsCard({
           <Alert
             type="warning"
             showIcon
-            message={`ИИ-пересказ не получился: ${pn.ai_error}`}
-            description="Пока показывается обычный текст сообщения; следующая проверка попробует снова."
+            message={<span>{`ИИ-пересказ не получился: ${pn.ai_error}`} <Hint text="Пока показывается обычный текст сообщения; следующая проверка попробует снова." /></span>}
           />
         ) : null}
 
@@ -136,14 +133,14 @@ export default function ProviderNewsCard({
           <Form.Item
             name="url"
             label="Адрес ленты новостей"
-            extra="Пусто — адрес по умолчанию"
+            tooltip="Пусто — адрес по умолчанию"
           >
             <Input placeholder={pn?.default_url} />
           </Form.Item>
           <Form.Item
             name="cookie"
             label={pn?.cookie_set ? 'Сессия сохранена — вставьте новую, чтобы заменить' : 'Cookie сессии'}
-            extra="Лента доступна только после входа. Войдите на сайт провайдера в браузере, откройте F12 → Network, обновите страницу новостей, выберите запрос news и скопируйте значение заголовка Cookie. Дальше сервер сам продлевает сессию."
+            tooltip="Лента доступна только после входа. Войдите на сайт провайдера в браузере, откройте F12 → Network, обновите страницу новостей, выберите запрос news и скопируйте значение заголовка Cookie. Дальше сервер сам продлевает сессию."
           >
             <Input.TextArea rows={3} placeholder="name=value; name2=value2" autoComplete="off" spellCheck={false} />
           </Form.Item>
@@ -157,7 +154,7 @@ export default function ProviderNewsCard({
           <Form.Item
             name="ai_key"
             label={keyLabel}
-            extra={`Сообщения провайдера длинные — ИИ (${pn?.ai_model || 'openrouter/free'}) сокращает каждое до одной короткой фразы для слайда. Запрос уходит только когда появляется новое сообщение или меняется текст старого. Без ключа показывается обычный текст.`}
+            tooltip={`Сообщения провайдера длинные — ИИ (${pn?.ai_model || 'openrouter/free'}) сокращает каждое до одной короткой фразы для слайда. Запрос уходит только когда появляется новое сообщение или меняется текст старого. Без ключа показывается обычный текст.`}
           >
             <Input.Password placeholder="sk-or-v1-…" autoComplete="off" spellCheck={false} />
           </Form.Item>

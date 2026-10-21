@@ -1,46 +1,49 @@
-# ---- Stage 1: build the React + Vite + Ant Design admin UI ----
-FROM node:20-bookworm-slim AS frontend
-WORKDIR /ui
-# No committed lockfile, so `npm install` (not ci). Manifest first for caching.
-COPY frontend/package.json ./
-RUN npm install
+# syntax=docker/dockerfile:1
+# Build the admin UI. Node is needed only in this stage.
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend/ ./
-# Emits /ui/dist with base '/admin/static/' (see frontend/vite.config.js).
 RUN npm run build
 
-# ---- Stage 2: runtime (Node + ffmpeg) ----
-FROM node:20-bookworm-slim
-
-# ffmpeg (video/audio + HLS), tini for clean signal handling, and Inter with
-# Cyrillic support for the rendered channel graphics.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg tini ca-certificates fonts-inter \
-    && rm -rf /var/lib/apt/lists/*
-
+# Build the Rust backend with its embedded PostgreSQL migrations.
+FROM rust:1.99-bookworm AS backend-build
 WORKDIR /app
+COPY Cargo.toml Cargo.lock rustfmt.toml clippy.toml ./
+COPY src/ ./src/
+COPY migrations/ ./migrations/
+COPY tests/ ./tests/
+RUN --mount=type=cache,id=iptv-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=iptv-cargo-target,target=/app/target,sharing=locked \
+    cargo build --locked --release --jobs 2 \
+    && cp target/release/iptv-server /usr/local/bin/iptv-server
 
-# Backend deps first (better layer caching). Prod-only — the frontend build deps
-# stayed in stage 1 and never reach this image.
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev
+# Optional test image: cargo and the source stay out of the runtime image.
+FROM backend-build AS test
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-inter \
+    && rm -rf /var/lib/apt/lists/*
+COPY assets/ ./assets/
+COPY --from=frontend /app/public/admin/ ./public/admin/
+CMD ["cargo", "test", "--locked"]
 
-# App source
-COPY . .
-
-# Built admin UI from stage 1, served by http/admin.js at /admin + /admin/static.
-COPY --from=frontend /ui/dist/ ./src/public/admin/
-
-# Run as the built-in non-root `node` user. Create the data dir and hand /app to
-# node so it can write db.json + generated HLS. A bind-mounted ./data must also
-# be writable by uid 1000 (node) — `sudo chown -R 1000:1000 ./data` once — while
-# a named volume inherits this owner automatically (chown runs before VOLUME).
-RUN mkdir -p /app/data && chown -R node:node /app
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg tini ca-certificates fonts-inter curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 iptv \
+    && useradd --uid 1000 --gid iptv --no-create-home --shell /usr/sbin/nologin iptv
+WORKDIR /app
+COPY --from=backend-build /usr/local/bin/iptv-server /usr/local/bin/iptv-server
+COPY --from=frontend /app/public/admin/ ./public/admin/
+COPY assets/ ./assets/
+RUN mkdir -p /app/data && chown iptv:iptv /app/data
 VOLUME ["/app/data"]
-
-ENV NODE_ENV=production
 ENV PORT=9222
 EXPOSE 9222
-
-USER node
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "src/server.js"]
+USER iptv
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s \
+    CMD curl --fail --silent "http://127.0.0.1:${PORT}/healthz" || exit 1
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/iptv-server"]
+CMD ["serve"]

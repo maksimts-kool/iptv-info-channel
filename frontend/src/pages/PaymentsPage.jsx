@@ -4,13 +4,14 @@ import {
   Statistic, Tag, Tooltip, Typography,
 } from 'antd';
 import {
-  CalendarOutlined, ClockCircleOutlined, EuroCircleOutlined, RollbackOutlined, WalletOutlined,
+  ArrowRightOutlined, CalendarOutlined, ClockCircleOutlined, EuroCircleOutlined, QuestionCircleOutlined,
+  RollbackOutlined, WalletOutlined,
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
 import {
-  PERIOD_UNITS, euros, periodSuffix, periodWord, suggestedPaymentCents,
+  PERIOD_UNITS, euros, paymentExpiry, periodSuffix, periodWord, prettyDate, suggestedPaymentCents,
 } from '../lib/plans.js';
 
 // #/payments/12 opens the page with that customer already picked (the link
@@ -46,6 +47,9 @@ export default function PaymentsPage({
   const user = users.find((u) => u.id === clientId) || null;
   const plan = plans.find((p) => p.id === user?.plan_id) || null;
   const suggested = suggestedPaymentCents(plan, { count: paidCount, period });
+  // What the button will do, shown before it is pressed.
+  const nextExpiry = user ? paymentExpiry(user.expires_at, { count: paidCount, period, from: 'expiry' }) : null;
+  const fromTodayExpiry = user ? paymentExpiry(user.expires_at, { count: paidCount, period, from: 'today' }) : null;
 
   const fail = useCallback((e) => {
     if (e instanceof AuthError) onAuthError();
@@ -230,7 +234,19 @@ export default function PaymentsPage({
 
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={13}>
-          <Card title={<Space><WalletOutlined />Записать оплату</Space>} size="small" style={{ height: '100%' }}>
+          <Card
+            title={<Space><WalletOutlined />Записать оплату</Space>}
+            extra={(
+              <Tooltip
+                styles={{ root: { maxWidth: 360 } }}
+                title="Дата окончания считается сама по периоду тарифа. Оплаченное время прибавляется к текущей дате, поэтому досрочное продление не съедает остаток; просроченная подписка продлевается от сегодняшнего дня. Пустая сумма — цена тарифа за этот срок. Клиенту уходит письмо о продлении."
+              >
+                <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} aria-label="Как считается дата" />
+              </Tooltip>
+            )}
+            size="small"
+            style={{ height: '100%' }}
+          >
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Select
                 showSearch
@@ -252,7 +268,7 @@ export default function PaymentsPage({
                 </Space>
               ) : (
                 <Typography.Text type="secondary">
-                  Выберите клиента — или нажмите «Выбрать» в списке «Ждут продления».
+                  Выберите клиента
                 </Typography.Text>
               )}
               <Form form={form} layout="inline" style={{ rowGap: 8 }} disabled={!user}>
@@ -277,13 +293,22 @@ export default function PaymentsPage({
                   <Input placeholder="Примечание (наличными, перевод…)" maxLength={200} />
                 </Form.Item>
               </Form>
+              {user ? (
+                <div className="payment-preview">
+                  <Typography.Text type="secondary">
+                    {user.expires_at ? prettyDate(user.expires_at) : 'без срока'}
+                  </Typography.Text>
+                  <ArrowRightOutlined style={{ color: 'rgba(0,0,0,0.35)' }} />
+                  <Typography.Text strong>{`действует до ${prettyDate(nextExpiry)}`}</Typography.Text>
+                </div>
+              ) : null}
               <Space wrap>
                 <Button type="primary" icon={<WalletOutlined />} disabled={!user} onClick={() => record('expiry')}>
                   Продлить
                 </Button>
                 <Popconfirm
                   title="Отсчитать срок от сегодняшнего дня?"
-                  description="Остаток текущей подписки при этом сгорает."
+                  description={`Остаток текущей подписки при этом сгорает. Новая дата: ${prettyDate(fromTodayExpiry)}.`}
                   okText="Отсчитать от сегодня"
                   cancelText="Отмена"
                   disabled={!user}
@@ -292,12 +317,6 @@ export default function PaymentsPage({
                   <Button disabled={!user}>С сегодняшнего дня</Button>
                 </Popconfirm>
               </Space>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Дата окончания считается сама по периоду тарифа. Оплаченное время прибавляется к
-                текущей дате, поэтому досрочное продление не съедает остаток; просроченная подписка
-                продлевается от сегодняшнего дня. Пустая сумма — цена тарифа за этот срок.
-                Клиенту уходит письмо о продлении.
-              </Typography.Text>
             </Space>
           </Card>
         </Col>
@@ -309,6 +328,10 @@ export default function PaymentsPage({
                 rowKey="id"
                 pagination={due.length > 8 ? { pageSize: 8, size: 'small' } : false}
                 dataSource={due}
+                onRow={(u) => ({
+                  className: `row-clickable${u.id === clientId ? ' row-focused' : ''}`,
+                  onClick: () => pick(u.id),
+                })}
                 columns={[
                   {
                     title: 'Клиент',

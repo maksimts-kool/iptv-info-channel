@@ -11,6 +11,7 @@ import { AuthError } from '../lib/api.js';
 import {
   EMPTY_AUDIENCE, audienceLabel, audienceMatches, clientsWord,
 } from '../lib/audience.js';
+import Hint from './Hint.jsx';
 
 const POLL_MS = 2_000;
 
@@ -188,7 +189,8 @@ export default function NewsletterCard({
           />
         ) : null}
         <Typography.Text type="secondary">
-          {`Письмо получат клиенты с подтверждённым адресом, отметившие тему «Новости и важные объявления» — сейчас таких ${optedIn}. Тему можно включить или выключить в карточке клиента, а сами клиенты делают это на странице подписки.`}
+          {`Получателей: ${optedIn} `}
+          <Hint text="Клиенты с подтверждённым адресом, отметившие тему «Новости и важные объявления». Тему можно включить в карточке клиента, а сами клиенты делают это на странице подписки." />
         </Typography.Text>
 
         <Form form={form} layout="vertical" initialValues={{ important: false }}>
@@ -199,7 +201,7 @@ export default function NewsletterCard({
             name="body"
             label="Текст"
             rules={[{ required: true, message: 'Напишите текст' }]}
-            extra="Пустая строка начинает новый абзац."
+            tooltip="Пустая строка начинает новый абзац."
           >
             <Input.TextArea autoSize={{ minRows: 5, maxRows: 16 }} maxLength={10000} showCount />
           </Form.Item>

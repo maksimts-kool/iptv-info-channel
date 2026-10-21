@@ -1,9 +1,9 @@
 import {
-  Alert, Badge, Button, Card, Col, Empty, List, Row, Space, Statistic, Tag, Typography,
+  Alert, Badge, Button, Card, Col, Empty, List, Progress, Row, Space, Statistic, Tag, Typography,
 } from 'antd';
 import {
-  ClockCircleOutlined, DesktopOutlined, EuroCircleOutlined, MailOutlined, NotificationOutlined,
-  PictureOutlined, PlaySquareOutlined, SafetyOutlined, TeamOutlined,
+  CheckCircleFilled, ClockCircleOutlined, DesktopOutlined, EuroCircleOutlined, MailOutlined,
+  NotificationOutlined, PictureOutlined, PlaySquareOutlined, RightOutlined, SafetyOutlined, TeamOutlined,
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { count, seconds as secondsPretty } from '../lib/format.js';
@@ -23,6 +23,83 @@ function Panel({
       style={{ height: '100%' }}
     >
       {children}
+    </Card>
+  );
+}
+
+// A headline number that is also the way into the list behind it: the whole
+// card is the target, not a small link somewhere inside it.
+function StatCard({ onOpen, hint, children }) {
+  const open = (e) => {
+    if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onOpen();
+    }
+  };
+  return (
+    <Card
+      size="small"
+      className="stat-link"
+      role="link"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={open}
+      style={{ height: '100%' }}
+    >
+      {children}
+      <div className="stat-link-hint">
+        {hint}
+        <RightOutlined style={{ fontSize: 10, marginInlineStart: 4 }} />
+      </div>
+    </Card>
+  );
+}
+
+// First-run checklist. The three required steps make the service usable; the
+// last two are worth doing but optional. Progress is shown as "N of M" with a
+// bar, and only the next open step gets the primary button, so there is always
+// exactly one obvious thing to do. Titles only: each button says the rest. The card disappears once the required steps
+// are done, so a running installation never sees it.
+function SetupChecklist({ steps, go }) {
+  const done = steps.filter((s) => s.done).length;
+  const next = steps.find((s) => !s.done);
+  return (
+    <Card
+      title="Запуск сервиса"
+      extra={<Typography.Text type="secondary">{`${done} из ${steps.length}`}</Typography.Text>}
+    >
+      <Progress percent={Math.round((done / steps.length) * 100)} showInfo={false} style={{ marginTop: -8 }} />
+      <List
+        itemLayout="horizontal"
+        dataSource={steps}
+        renderItem={(s, i) => (
+          <List.Item
+            className={s.done ? 'setup-step-done' : undefined}
+            style={{ paddingInline: 0 }}
+            actions={s.done ? [] : [(
+              <Button
+                key="go"
+                type={s === next ? 'primary' : 'default'}
+                onClick={() => go(s.target)}
+              >
+                {s.action}
+              </Button>
+            )]}
+          >
+            <List.Item.Meta
+              avatar={s.done
+                ? <CheckCircleFilled style={{ fontSize: 22, color: '#16a34a' }} />
+                : <span className="setup-step-num">{i + 1}</span>}
+              title={(
+                <Space size={6} wrap>
+                  <Typography.Text strong={!s.done} delete={s.done}>{s.title}</Typography.Text>
+                  {s.optional ? <Tag>по желанию</Tag> : null}
+                </Space>
+              )}
+            />
+          </List.Item>
+        )}
+      />
     </Card>
   );
 }
@@ -85,24 +162,60 @@ export default function OverviewPage({ state, go }) {
   })();
   const mediaChannel = (state?.builtinChannels || []).find((c) => c.id === 'info-media');
 
+  const steps = [
+    {
+      title: 'Подключите плейлист провайдера',
+      action: 'К плейлисту',
+      target: 'playlist',
+      done: !!catalog.sources,
+    },
+    {
+      title: 'Соберите тариф из категорий',
+      action: 'К тарифам',
+      target: 'plans',
+      done: plans.length > 0 && !emptyPlans.length,
+    },
+    {
+      title: 'Добавьте первого клиента',
+      action: 'Добавить клиента',
+      target: 'clients?new=1',
+      done: users.length > 0,
+    },
+    {
+      title: 'Включите шлюз потоков',
+      action: 'Настроить',
+      target: 'playlist',
+      done: !!gateway.enabled,
+      optional: true,
+    },
+    {
+      title: 'Включите почтовые уведомления',
+      action: 'Настроить',
+      target: 'notify',
+      done: notifyOn,
+      optional: true,
+    },
+  ];
+  const setupPending = steps.some((st) => !st.optional && !st.done);
+
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {!catalog.sources ? (
+      {setupPending ? <SetupChecklist steps={steps} go={go} /> : null}
+
+      {!setupPending && !catalog.sources ? (
         <Alert
           type="info"
           showIcon
           message="Плейлист ещё не подключён"
-          description="Добавьте источник — ссылку на m3u вашего провайдера — и каналы появятся в каталоге. До этого клиенты получают только категорию «Информация»."
           action={<Button type="primary" onClick={() => go('playlist')}>К плейлисту</Button>}
         />
       ) : null}
 
-      {catalog.sources && emptyPlans.length ? (
+      {!setupPending && catalog.sources && emptyPlans.length ? (
         <Alert
           type="warning"
           showIcon
           message={`В тарифе не выбраны категории: ${emptyPlans.map((p) => p.name).join(', ')}`}
-          description="Клиенты на этих тарифах получают только «Информация». Откройте тариф и отметьте, какие категории каналов в него входят."
           action={<Button type="primary" onClick={() => go('plans')}>К тарифам</Button>}
         />
       ) : null}
@@ -112,7 +225,6 @@ export default function OverviewPage({ state, go }) {
           type="warning"
           showIcon
           message="Лимит устройств задан, но не действует — шлюз потоков выключен"
-          description={`Тарифы с лимитом: ${limitedPlans.map((p) => p.name).join(', ')}. Без шлюза плеер ходит к провайдеру напрямую, и сервер не видит просмотров.`}
           action={<Button onClick={() => go('playlist')}>Включить шлюз</Button>}
         />
       ) : null}
@@ -129,7 +241,7 @@ export default function OverviewPage({ state, go }) {
 
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <StatCard hint="Клиенты" onOpen={() => go('clients?status=active')}>
             <Statistic
               title="Активных клиентов"
               value={(counts.active || 0) + (counts.expiring || 0)}
@@ -137,10 +249,10 @@ export default function OverviewPage({ state, go }) {
               prefix={<TeamOutlined />}
               suffix={<Typography.Text type="secondary" style={{ fontSize: 14 }}>{`/ ${count(users.length)}`}</Typography.Text>}
             />
-          </Card>
+          </StatCard>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <StatCard hint="Продлить" onOpen={() => go('payments')}>
             <Statistic
               title="Истекают / истекли"
               value={(counts.expiring || 0) + (counts.expired || 0)}
@@ -148,10 +260,10 @@ export default function OverviewPage({ state, go }) {
               prefix={<ClockCircleOutlined />}
               valueStyle={{ color: (counts.expiring || counts.expired) ? '#d97706' : undefined }}
             />
-          </Card>
+          </StatCard>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <StatCard hint="Оплаты" onOpen={() => go('payments')}>
             <Statistic
               title="Получено в этом месяце"
               value={euros(payments.month_cents || 0)}
@@ -162,10 +274,10 @@ export default function OverviewPage({ state, go }) {
                 </Typography.Text>
               )}
             />
-          </Card>
+          </StatCard>
         </Col>
         <Col xs={12} md={6}>
-          <Card size="small">
+          <StatCard hint="Устройства" onOpen={() => go('devices')}>
             <Statistic
               title="Смотрят сейчас"
               value={gateway.enabled ? watching : '—'}
@@ -177,7 +289,7 @@ export default function OverviewPage({ state, go }) {
                 </Typography.Text>
               ) : null}
             />
-          </Card>
+          </StatCard>
         </Col>
       </Row>
 

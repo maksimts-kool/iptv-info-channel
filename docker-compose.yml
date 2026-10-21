@@ -5,8 +5,8 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-9222}:${PORT:-9222}"
-    # Grouped to mirror .env.example. Each var falls back to its default, so an
-    # empty .env still boots. Override by exporting the var or editing .env.
+    # Grouped to mirror .env.example. Each var falls back to its default.
+    # DATABASE_URL is required. Override vars by exporting them or editing .env.
     environment:
       # --- 1. Networking & access ---
       PORT: ${PORT:-9222}
@@ -20,6 +20,7 @@ services:
       # Set to 1 behind a reverse proxy (nginx / DO LB) so the rate limiters see
       # real client IPs. Leave unset on a directly-exposed port.
       TRUST_PROXY: ${TRUST_PROXY:-}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL for the iptv PostgreSQL database}
       # --- 2. Channel catalog (the customer playlist) ---
       # Provider playlists themselves are added in the admin, not here.
       CATALOG_FETCH_TIMEOUT_MS: ${CATALOG_FETCH_TIMEOUT_MS:-30000}
@@ -96,19 +97,47 @@ services:
       DATA_DIR: /app/data
       MUSIC_FILE: assets/music/background.mp3
     volumes:
-      # Persist database + generated HLS across restarts. The container runs as
-      # the non-root `node` user (uid 1000); if this bind-mounted dir isn't
+      # Persist media files + generated HLS across restarts. Metadata lives in
+      # PostgreSQL. The container runs as uid 1000; if this bind-mounted dir isn't
       # writable by uid 1000, run `sudo chown -R 1000:1000 ./data` once (or use a
       # named volume, which inherits the correct owner automatically).
-      - ./data:/app/data
+      - ${DATA_VOLUME:-./data}:/app/data
+    networks:
+      - default
+      - shared-db
 
-  # Run the test suite inside the image (Docker is the documented test path):
+  # Run the test suite against an isolated PostgreSQL database:
   #   docker compose --profile test run --rm test
   # profiles: ["test"] keeps it out of a normal `docker compose up`.
   test:
-    build: .
+    build:
+      context: .
+      target: test
     profiles: ["test"]
+    depends_on:
+      test-db:
+        condition: service_healthy
     environment:
       TZ: Europe/Tallinn
       NOTIFY_DRY_RUN: "true"
-    command: ["npm", "test"]
+      TEST_DATABASE_URL: postgres://iptv:iptv@test-db:5432/iptv
+
+  test-db:
+    image: postgres:17-bookworm
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: iptv
+      POSTGRES_PASSWORD: iptv
+      POSTGRES_DB: iptv
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iptv -d iptv"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+networks:
+  shared-db:
+    external: true
+    name: shared-db

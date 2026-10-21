@@ -2,6 +2,7 @@ import {
   Button, Card, Space, Switch, Tooltip, Typography,
 } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
+import Hint from './Hint.jsx';
 
 // The head of a built-in channel's page (Инфоканал, Медиаканал): what the
 // channel is, its name as customers see it in the playlist (click the pencil to
@@ -30,12 +31,10 @@ export default function ChannelHeader({
             >
               {name}
             </Typography.Title>
+            {description ? <Hint text={description} /> : null}
             {nameNote}
             {status}
           </Space>
-          <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0' }}>
-            {description}
-          </Typography.Paragraph>
         </div>
         <Space className="channel-header-actions" size={12} wrap>
           {toggleLocked ? (

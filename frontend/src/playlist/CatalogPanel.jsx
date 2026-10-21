@@ -10,6 +10,7 @@ import {
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
+import Hint from '../components/Hint.jsx';
 
 // Categories and the channels inside them, as one structure: a category is a
 // row you expand to see (and edit) its channels. They used to be two separate
@@ -635,8 +636,7 @@ export default function CatalogPanel({
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`Категорий не входит ни в один тариф: ${catalog.totals.unsoldCategories}`}
-          description="Такие категории не увидит ни один клиент, даже если они включены. Добавьте их в нужные тарифы в разделе «Тарифы»."
+          message={<span>{`Категорий не входит ни в один тариф: ${catalog.totals.unsoldCategories}`} <Hint text="Такие категории не увидит ни один клиент, даже если они включены. Добавьте их в нужные тарифы в разделе «Тарифы»." /></span>}
         />
       ) : null}
 

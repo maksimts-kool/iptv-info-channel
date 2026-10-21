@@ -1,601 +1,147 @@
-# IPTV Panel
+# IPTV Info Channel
 
-An IPTV subscription server. You point it at your provider's **m3u playlist
-URL**, curate the channel list in a web admin — rename channels, regroup them,
-switch categories on and off — and every customer gets their own private `.m3u`
-built from that catalog, with **per-customer exceptions** and **automatic
-expiry handling**.
+A Rust IPTV subscription server with a React admin panel. Import provider M3U playlists, curate channels and categories, assign channel packages to customers, and issue private playlists. Each customer also receives a personal information channel and a shared media channel.
 
-Every playlist also carries a built-in **Информация** channel: a personal
-looping HLS video channel showing that customer's plan, price, expiry date and
-days remaining over background music. When a subscription runs out, that channel
-is the *only* thing left in the playlist — so the customer sees exactly why they
-lost access and what a renewal costs.
-
-![sample channel card](docs/sample_channel_card.png)
+The backend uses axum and tokio. PostgreSQL stores customers, plans, settings, the catalog, payments, email subscriptions, newsletters, media articles and asset metadata. Reads use an in-memory snapshot; writes commit to PostgreSQL before publishing the new snapshot. Schema migrations are embedded in the binary and applied at startup.
 
 ## Features
 
-### Playlist
-- **Upstream sources** — add one or more provider `.m3u` URLs; the server downloads, parses and merges them into a single catalog.
-- **Curate freely** — rename channels and categories, move a channel to a different category, add channels by hand, and switch anything on or off. Your edits survive the next refresh; only the stream URLs are updated.
-- **Nothing is lost** — a channel the provider drops is flagged, not deleted, so a bad download can't destroy your work. It comes back intact when the provider restores it.
-- **Built for big lists** — search, filter and bulk enable/disable/regroup work server-side, so a 20 000-channel provider list stays usable.
-- **Plans are the packages** — each plan holds the list of categories it sells, and that is exactly what its customers receive. Change a plan and every customer on it changes with it.
-- **Per-customer exceptions** — on top of the plan, give one customer a category nobody else has, or take one away, without touching the plan or the catalog.
-- **Automatic expiry gate** — an expired or deactivated customer keeps only **Информация**. Renewal restores the full list instantly; there is no state to reset, because visibility is derived on every request.
-- **Stream gateway (optional)** — route HLS channels through this server so access is re-checked on **every request** instead of only when the player re-downloads the playlist. A channel you take away stops playing mid-view; a customer who opens one they don't have lands on their own info channel. Only the manifest passes through — the video still flows straight from the provider.
+- Provider playlist imports and scheduled refreshes; administrator edits and missing-channel markers survive refreshes.
+- Per-plan categories and per-customer category/channel overrides.
+- Optional HLS gateway with signed variant URLs, checks on every manifest refresh, mid-view splicing into the information channel, and simultaneous-device limits.
+- Personal HLS information channels with account details, expiry status, branding, incidents, provider notices, music and QR codes.
+- XMLTV and OTT-play FOSS programme guides.
+- Provider news polling and optional AI summaries through OpenRouter.
+- Email double opt-in, expiry/status notifications, and audience-targeted newsletters through Brevo or Resend.
+- Media articles with formatted text, images, videos, tables, private sections, per-customer variants and a live HLS loop.
+- A Russian-language admin panel for catalog, clients, payments, devices, plans, information channel, media and notifications.
 
-### Info channel
-- **Per-customer looping HLS** generated with ffmpeg (h264 + AAC) showing plan, price, expiry, days left and a colour-coded status banner.
-- **Expired-account offer slide** — expired customers see the available plans in an automatic 2-, 3- or 4-column grid, each listing the channel categories it includes.
-- **Service-status board** — a Better Stack–style global slide with a 90-day uptime strip, driven by incidents you raise in the admin, plus the upstream provider's own maintenance/outage notices pulled automatically from its news feed (listed alongside your incidents in blue — the status turns blue rather than green when only the provider has trouble; channel-lineup news is filtered out).
-- **Branding intro animation**, configurable (`INTRO_*`) or disablable, and **background music** (bundled track or your own).
-- **Media channel** — a second channel in **Информация** with your own articles: formatted text with images and videos inside, written in a visual editor. On TV a long article scrolls, stops while each video plays in place, and shows «1/3 · title» in the corner. Shared by every customer, expired ones included — except what you mark **private**: a whole article, or any part of one, can be shown to a chosen group of customers only. Videos are re-encoded to 720p and the original deleted; a disk budget caps the total.
-- **Payments ledger** — record what a customer paid and the expiry date works itself out; every payment is kept in one history with totals, and a mistaken one can be undone.
-- **Programme guide** — a per-customer XMLTV guide (plus the OTT-play FOSS JSON format) carrying service and account status.
-- **Email notifications** — opt-in expiry warnings, service-status mail and "channels added/removed from your package" notices, plus mandatory renewal notices, over an HTTP email API — and a **newsletter** you write yourself (news, important announcements) for every subscriber who opted into it, or for a group of customers.
+Customer URLs contain access tokens. Use HTTPS when exposing the service outside your LAN, and keep playlist URLs private. The notification QR uses a separate token and does not grant stream access.
 
-### Operations
-- **Web admin** (`/admin`) — playlist, clients, plans, info channel and notifications.
-- **Docker** — one container (Node + ffmpeg), data persisted in a volume.
-- **Daily job** (00:05) re-downloads the upstream sources and rebuilds the info channels so "days left" stays accurate.
+## Docker
 
-## Quick start (Docker — recommended)
+The production image builds React and Rust in separate stages. The runtime contains the Rust binary, ffmpeg, Inter fonts, CA certificates and tini; it runs as uid 1000.
+
+The Compose service connects to an existing PostgreSQL container named `shared-postgres` on the external `shared-db` network. Create the `iptv` login and an `iptv` database owned by it before starting the application. For example, in an administrator `psql` session:
+
+```sql
+CREATE ROLE iptv LOGIN;
+\password iptv
+CREATE DATABASE iptv OWNER iptv;
+```
 
 ```bash
-# 1. configure
 cp .env.example .env
-#    then edit .env: set ADMIN_PASSWORD, SESSION_SECRET, and PUBLIC_BASE_URL
-#    PUBLIC_BASE_URL must be the address your players use, e.g. http://192.168.1.50:9222
-
-# 2. build + run
-docker compose up -d --build
-
-# 3. (optional) create demo users
-docker compose exec m3u-info npm run seed
-
-# 4. open the admin panel
-#    http://<host>:9222/admin   (log in with ADMIN_PASSWORD)
-```
-
-> **PUBLIC_BASE_URL matters.** The generated `.m3u` files embed absolute URLs.
-> For LAN IPTV boxes set it to the host machine's IP (not `localhost`), e.g.
-> `PUBLIC_BASE_URL=http://192.168.1.50:9222`.
-
-### Running the tests
-
-The suite runs inside the same image, so no host toolchain is required:
-
-```bash
-docker compose --profile test run --rm test
-```
-
-### Without Docker (optional)
-
-Requires **Node 20+** and **ffmpeg** on PATH.
-
-```bash
-cp .env.example .env      # edit values
-npm install
-npm run seed              # optional demo users
-npm start                 # http://localhost:9222
-npm test                  # run the test suite
-```
-
-## How customers use it
-
-Each customer gets a private link from the admin panel:
-
-```
-http://<host>:9222/u/<token>/playlist.m3u
-```
-
-Add that URL to any IPTV player (TiviMate, IPTV Smarters, VLC, …). The playlist
-is built fresh on every request from the catalog, so channel renames, category
-toggles and per-customer changes appear as soon as the player refreshes — no
-regeneration, no re-issued link.
-
-What it contains, in order:
-
-- the **Информация** channel first (this server's own HLS stream at
-  `/hls/<token>/index.m3u8`), and the **Медиа** channel after it once it has
-  content (`/m/<token>/index.m3u8`), then
-- the categories their **plan** grants — minus anything withheld from this
-  customer personally, plus anything granted only to them.
-
-When the subscription expires — or you deactivate the customer — the same URL
-starts returning **only** the Информация category (the account channel, plus
-the media channel if it is on). Move the expiry date forward
-and the full list is back on the next refresh.
-
-### Stream gateway (taking a channel back without a playlist refresh)
-
-By default the `.m3u` carries the **provider's own** stream URLs. That means a
-player which downloaded the playlist once talks straight to the provider: this
-server never sees the request, so a customer who lost a category keeps watching
-it until their player re-downloads the playlist — and many players only do that
-when the user asks them to.
-
-Switch the **stream gateway** on (admin → Плейлист → Доступ, or
-`STREAM_GATEWAY_ENABLED=true`) and every **HLS** channel is published as
-
-```
-http://<host>:9222/c/<token>/<device tag>/<channel id>.m3u8
-```
-
-On every request the server re-resolves that customer's entitlement — the plan,
-their personal exceptions, the global switches, the expiry date and the device
-limit — and then fetches the provider's manifest and returns it with each URI
-inside rewritten. **No video is proxied**: the player takes the segments
-straight from the provider, so only a few kilobytes per refresh pass through
-here. When the provider answers with a **master** playlist, its variant
-playlists are handed out as signed links back to the gateway too — a player
-fetches the master only once and then just refreshes the variant, so this is
-what lets a revoked channel stop **mid-view**, not just at the next channel
-switch.
-
-- A customer who opens a channel they may not watch is redirected to **their
-  own info channel** (plan, expiry, what's on offer) rather than an error.
-- A customer who loses a channel **while watching it** is not bounced: within a
-  few seconds the same stream continues into their info card (the server splices
-  its own loop onto the provider's last window). They stay on the card until
-  they switch channels — giving the channel back does not flip the picture
-  mid-view.
-- Turning it on takes effect for a customer the first time their player
-  re-downloads the playlist; from then on nothing needs refreshing.
-- Turning it off puts the provider's URLs back into **new** playlists — the
-  `/c/` links already sitting in players keep working.
-- **New channels still need a playlist refresh** to appear. The gateway controls
-  what plays, not what is listed.
-- Catch-up/archive URLs (`catchup-source`) are passed through from the provider
-  and are not routed through the gateway.
-
-#### Device limit (simultaneous viewers)
-
-Each plan has **«Устройств одновременно»** (0 = unlimited), and a customer can
-get a personal value in their card. The gateway counts a device as watching
-while its player keeps refreshing a gated channel; the slot frees
-`STREAM_DEVICE_IDLE_SECONDS` (60 s) after the last refresh. The devices that
-started first keep playing; the next one tunes in to a **«Превышен лимит
-устройств»** screen instead of the channel (and a device over the limit after
-the admin lowers it is cut over to that screen mid-view). The customer's info
-card shows their limit; the client card in the admin lists who is watching now.
-
-A device is the client's IP plus a tag for the player that downloaded the
-playlist, so one app probing with one HTTP stack and playing with another is
-still one device. Consequences: two identical players behind one home router
-count as one, and a phone that changes network holds two slots until the old
-one idles out. The limit needs the gateway on, and raw MPEG-TS channels (not
-gated) are not counted.
-
-**Only HLS (`.m3u8`) channels are gated**, and the admin card shows how many of
-your channels that is. A raw MPEG-TS stream (`…/live/user/pass/123.ts`, or no
-extension at all) has no manifest to rewrite, so the only way to gate it would
-be a redirect from this server's `https` to the provider's `http` — and Android
-players (ExoPlayer/media3) refuse cross-protocol redirects by default, leaving
-the channel buffering forever while a desktop player follows the same redirect
-happily. Those channels are therefore published as direct provider URLs and keep
-the un-gated behaviour: access to them changes only when the player re-downloads
-the playlist.
-
-### Programme guide (EPG)
-
-The `.m3u` advertises a per-user **XMLTV** guide (via `url-tvg`), so players that
-show an EPG put the customer's subscription status right in the channel list and
-info bar — without them having to tune into the info channel at all:
-
-```
-http://<host>:9222/u/<token>/epg.xml
-```
-
-Each day is one programme. Its **title** is the short status the player shows
-next to the channel:
-
-```
-✓ Подписка активна · ещё 89 дней
-⚠ Подписка истекает · ещё 4 дня
-⚠ Подписка истекает · последний день
-✕ Подписка истекла
-✕ Аккаунт отключён
-```
-
-When an incident covers that day, the service state is prefixed onto the same
-line (`⚠ Перебои в работе · Подписка активна · ещё 89 дней`, `✕ Сбой сервиса ·
-…`) so an outage can never be hidden by a healthy account — and, equally, a
-healthy service never crowds out the status the customer came for.
-
-Opening the programme shows the rest: the expiry date as the sub-title, then the
-plan and its price, the full service headline (`✓ Все сервисы работают` / `⚠
-Частичная деградация сервиса` / `✕ Сбой в работе сервиса`), 90-day uptime and
-any incident notes — driven by the same incidents that power the on-screen
-status board. Days-left is sampled per day, so it counts down across the guide.
-Disable with `EPG_ENABLED=false`.
-
-#### OTT-play FOSS
-
-OTT-play FOSS does not use the raw XMLTV URL for this channel. When
-`EPG_FOSS_ENABLED=true` (the default), the playlist also advertises a static
-FOSS JSON source:
-
-```m3u
-#EXTM3U ... foss-tvg="=infochannel::http://<host>:9222/foss-epg/u/<token>/epg/"
-#EXTINF:-1 tvg-id="account-<token>" tvg-source="=infochannel" ...
-```
-
-The leading `=` is required in both places: it takes the channel out of the
-central auto-match and loads the guide straight from this server (`tvg-id` is
-mandatory in that mode — it is the file name).
-
-**The source URL has to end at the `epg/` directory.** In this static mode
-OTT-play appends `<xxhash32(tvg-id)>.json` to the advertised string verbatim,
-with no path of its own, so publishing the token base one level up — which this
-server did until now — sends the player to a URL that does not exist and the
-channel silently shows no programme at all. The documented reference form is
-`foss-tvg="=iptvx::http://epg.ottp.eu.org/iptvx.one/epg/"`, matching the real
-file at `.../iptvx.one/epg/890122.json`. (The `/m3u/match-channels` protocol is
-the exception: its provider block names the level above, and the player adds the
-`epg/` itself.)
-
-The channel also includes a `tvg-logo` URL so the player does not make a
-separate central logo-match request.
-
-That JSON guide carries the **same text** as the XMLTV one — `name` is the
-one-line status above, `descr` the detail block — so a Televizo user and an
-OTT-play FOSS user are never told two different things about the same account.
-
-The static source above needs no `channels.json`, but the file is served anyway
-for the matcher path, and it carries the binding step that is easy to miss:
-`url-hashes`, the hash of the very `url-tvg` this customer's `.m3u` advertises.
-A matcher **only applies a provider that declares that hash**, so an empty list
-means no guide at all, however correct the rest is. The hash is xxhash32 over
-the URL with the `http(s)://` prefix removed, **not** lowercased — while the
-channel-id hash in the same file *is* lowercased. Both rules are pinned by tests
-against OTT-play's own live providers.
-
-```
-GET /foss-epg/u/<token>/channels.json
-{"meta":{"id":"infochannel","url-hashes":[4228826628],"last-upd":…,"last-epg":…},
- "data":{"3868628944":["account-<token>¦<last-epg>¦<logo url>","<brand> — <user>"]}}
-```
-
-The server additionally exposes compatible fallback endpoints at
-`/m3u/match-channels` and `/m3u/match-logos`, plus
-`/foss-epg/u/<token>/channels.json`. The channel matcher proxies and merges the
-normal OTT-play matcher response, so using it as `!epg-server` preserves EPG for
-the other channels in a combined playlist.
-
-## Admin panel
-
-`http://<host>:9222/admin` — sign in with `ADMIN_PASSWORD`. The sections:
-
-**Обзор** — what needs doing (setup gaps, customers to renew, with a one-click
-«Продлить»), this month's payments, who is watching, and a card per part of the
-service — status, playlist, devices, media channel, email, plans — each opening
-its section.
-
-**Плейлист** — the main screen, two tabs:
-
-- *Каналы и категории* — the catalog as one structure: each category is a row
-  you expand (click its name or the chevron) to see and edit the channels inside
-  it. Rename a category, reorder it, switch it off; on a channel, rename it,
-  move it to another category or toggle it on air. To change many at once, tick
-  them and use the bar above the list — включить, выключить or move them to
-  another category — with **выбрать все N** to reach the whole category rather
-  than just the current page. Typing in the search box switches the panel to
-  flat results across the whole catalog, where the same selection works over
-  everything matching the filter.
-  **Информация** is the built-in category holding the info and media channels:
-  it can be renamed but never deleted or switched off, because it is the
-  fallback an expired customer is left with. Expanding it lists its two channels
-  read-only, with a link to the page that manages each (Инфоканал, Медиаканал). Imported channels and categories have no delete
-  button on purpose — the next source refresh would bring them straight back, so
-  switching them off is the control that sticks. Only rows you added by hand can
-  be deleted.
-- *Источники* — provider playlist URLs. "Обновить" re-downloads and merges one
-  source; failures are shown on the row rather than silently swallowed. Each
-  source also has its own **Авто-обновление** switch and interval (hourly up to
-  weekly, daily by default), so the server keeps the catalog in step with the
-  provider by itself; the row shows when the next download is due.
-
-**Клиенты** — the customer list, with a card per customer covering:
-
-- *Аккаунт* — name, plan, expiry, device limit, active toggle, their `.m3u`
-  link and link re-issue, plus shortcuts to this customer in **Оплаты** and
-  **Устройства**. The date field stays editable for fixing a wrong date by
-  hand; renewals are normally recorded as payments.
-- *Каналы клиента* — per-customer access. Every category and channel shows its
-  global setting, this customer's pin (**По умолчанию / Включить / Выключить**)
-  and the effective result. A pin works both ways: it can withhold a channel
-  everyone else has, or grant one that is globally off.
-- *Уведомления* — their email subscription and its topics.
-- *Плейлист клиента* — the literal `.m3u` their player downloads.
-
-**Оплаты** — one place for every payment. Pick the customer (or «Выбрать» in
-the list of those about to lapse), enter how much was paid for ("1 мес.") and
-the new expiry date is worked out from the plan's billing period. Paid time is
-added on top of what is left, so renewing early costs the customer nothing; a
-lapsed or open-ended account starts from today. The amount defaults to the
-plan's price for that period (type another, or a note like «наличными»). The
-history lists every payment with the date it set; the latest payment of a
-customer can be undone while nothing has changed their date since. Totals for
-the month and the last 30 days sit on top.
-
-**Устройства** — who is watching right now (stream gateway), per-plan and
-personal limits, and freeing stale slots. Opened from a customer's card it
-shows that customer first.
-
-**Тарифы** — a plan **is** the channel package: a name, a price, and the
-tick-list of categories its customers receive. That same list is what the info
-channel prints as the plan's contents, so a change rebuilds the streams. A plan
-with nothing ticked sells nothing — its customers get only Информация — and that
-is flagged on the Обзор, Тарифы and Плейлист screens. A plan assigned to
-customers can't be deleted until they are moved off it.
-
-**Инфоканал** — laid out like Медиаканал: the channel's name (by default
-«service — customer name», different for each customer), the rebuild control,
-its numbers, then branding (service name + tagline), incidents feeding the
-status board and the provider's notices.
-
-**Медиаканал** — the second channel of Информация («Медиа» by default; rename
-or switch it off here). It shows **articles**, one after another — the same for
-every customer unless you make something private:
-
-- **Новая статья** opens the editor: a title (shown in the corner of the
-  screen as «1/3 · Заголовок») and a body written with the toolbar — headings,
-  **bold**, *italic*, strikethrough, code, lists, quotes, code blocks, rules and
-  tables — no Markdown to type. The body is styled like the TV page.
-- **Images and videos go inside the article** from the toolbar (or by dropping
-  or pasting a file into the text). Each one can be full width, half or small,
-  with a caption. JPG/PNG/WebP images; MP4/MKV/MOV/WebM videos, re-encoded once
-  to 720p with the original upload deleted.
-- **Кто видит статью** — «Все клиенты» or «Только выбранные»: plans and/or
-  individual customers. Inside any article, the **lock** button on the toolbar
-  wraps the selected text, images or videos in a **closed part** that only a
-  chosen group sees; everyone else gets the article without it. Customers who
-  see the same things share one version of the channel; each other combination
-  is built as its own loop (more disk, so keep groups purposeful).
-- **Как на ТВ** renders the article on the server exactly as it will air — as
-  the editor sees it, as a customer without access sees it, or as a particular
-  customer sees it.
-- On TV a long article scrolls; when it reaches a video it **stops while the
-  video plays in its place** (with the video's sound), then carries on.
-
-Drag the handle to reorder articles. Taking an image or video out of an
-article, or deleting the article, deletes its files from disk. The page shows
-the disk used against `MEDIA_QUOTA_MB` — an upload that would not fit is
-refused. The channel appears in playlists once an article has content.
-
-**Уведомления** — the **newsletter** (subject, text, «Важное» to highlight it,
-to everyone subscribed to news or to a group of customers; send a test to
-yourself first; a history of what went out), then the global email switch,
-provider health and the send log. Customers choose the «Новости и важные
-объявления» topic on their sign-up page; the admin can change it in their card.
-
-> Playlist edits never trigger an ffmpeg rebuild — the `.m3u` is rendered per
-> request. Only plan, branding and incident changes re-encode the info channel,
-> and those show the progress banner. Media-channel edits rebuild only the media
-> loop, in the background, re-encoding just the articles that changed.
-
-## Background music
-
-The bundled `assets/music/background.mp3` plays by default and is copied into
-the Docker image. To use another track, set `MUSIC_FILE` to its path and make
-that file available inside the container. Any ffmpeg-readable format works and
-is looped to fill the channel. If a configured custom file is missing, the app
-falls back to the bundled track.
-
-## Configuration (`.env`)
-
-Every variable is documented and grouped into seven labeled sections in
-[.env.example](.env.example) (`docker-compose.yml` mirrors the grouping) — copy
-it to `.env` and edit. The most-used settings:
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `9222` | HTTP port. |
-| `PUBLIC_BASE_URL` | `http://localhost:9222` | Address embedded in m3u/HLS URLs. Set to host IP on a LAN. |
-| `TZ` | `Europe/Tallinn` | Timezone used for logs, daily refresh scheduling and displayed update dates. |
-| `ADMIN_PASSWORD` | `changeme` | Admin panel password. **Change it.** |
-| `SESSION_SECRET` | — | Signs the admin cookie. Use a long random string. |
-| `TRUST_PROXY` | — | Set to `1` behind a reverse proxy so the login / sign-up rate limiters see real client IPs. |
-| `CATALOG_AUTO_REFRESH` | `true` | Master switch for unattended re-downloading. Each source's own interval is set in the admin. |
-| `CATALOG_REFRESH_CHECK_MINUTES` | `5` | How often the scheduler looks for a source that has come due (not the refresh interval itself). |
-| `CATALOG_REFRESH_INTERVAL_HOURS` | `24` | Refresh interval a newly added source starts with. |
-| `CATALOG_FETCH_TIMEOUT_MS` | `30000` | Milliseconds before an upstream playlist download is abandoned. |
-| `CATALOG_MAX_BYTES` | `33554432` | Hard cap on a downloaded playlist so a bad URL can not exhaust memory. |
-| `INFO_CATEGORY_NAME` | `Информация` | Name of the built-in category holding the info channel (renameable in the admin too). |
-| `STREAM_GATEWAY_ENABLED` | `false` | Publish HLS channels as `/c/<token>/<id>.m3u8` so access is re-checked on every request (the manifest is served back rewritten). The admin toggle overrides this. |
-| `STREAM_GATEWAY_TIMEOUT_MS` / `STREAM_GATEWAY_MAX_BYTES` | `10000` / `4194304` | Bounds on fetching a provider manifest. |
-| `STREAM_GATEWAY_LOG` | `false` | One log line per gate request, with the player's User-Agent. For diagnosing "this device won't play". |
-| `STREAM_DEVICE_IDLE_SECONDS` | `60` | Device limit: a device frees its slot this long after its player's last manifest fetch. |
-| `ACCOUNT_SLIDE_SECONDS` | `120` | Seconds the account (info) card is on screen. The loop total is the sum of every enabled slide. |
-| `CHANNEL_WIDTH` / `CHANNEL_HEIGHT` | `1920` / `1080` | Output resolution. |
-| `CHANNEL_LIVE_LOOP` | `true` | Serve an endless sliding live playlist with no seekable end. |
-| `STATUS_SLIDE_ENABLED` / `STATUS_SLIDE_SECONDS` | `true` / `12` | Append the global service-status board slide, and how long it holds. |
-| `PROVIDER_NEWS_ENABLED` / `PROVIDER_NEWS_URL` | `false` / `https://tv.team/v3/news?page=1` | Show the upstream provider's maintenance/outage notices on the status board (in blue, mixed with your incidents). The admin card overrides both and stores the login session cookie (`PROVIDER_NEWS_COOKIE` seeds it). |
-| `PROVIDER_NEWS_CHECK_MINUTES` / `PROVIDER_NEWS_MAX_AGE_HOURS` | `15` / `24` | Feed polling interval, and how long after publication a notice stays on the slide. |
-| `OPENROUTER_API_KEY` / `PROVIDER_NEWS_AI_MODEL` | *(blank)* / `openrouter/free` | Retell each provider notice as one short line with an LLM on OpenRouter. Asked only when a notice is new or its text changed; without a key (or on failure) the plain text is shown. The admin card can hold the key instead. |
-| `EXPIRING_THRESHOLD_DAYS` | `7` | Days‑left value at/under which status becomes `EXPIRING SOON`. |
-| `EPG_ENABLED` | `true` | Advertise a per‑user XMLTV guide (`/u/<token>/epg.xml`) via `url-tvg`. |
-| `EPG_DAYS_AHEAD` / `EPG_DAYS_BEHIND` | `7` / `1` | Calendar days of guide emitted ahead of / behind today. |
-| `EPG_FOSS_ENABLED` | `true` | Advertise the token-scoped static OTT-play FOSS JSON guide. |
-| `EPG_FOSS_PROVIDER_ID` | `infochannel` | Short source name used by the FOSS playlist attributes. |
-| `EPG_FOSS_UPSTREAM_MATCH_URL` | `https://ottp.eu.org` | Normal OTT-play matcher merged into the local fallback response. |
-| `INTRO_ENABLED` | `true` | Play the animated brand slide before the details card. `false` = plain still card. |
-| `INTRO_SLIDE_SECONDS` | `4` | Seconds the brand slide stays on screen before transitioning. |
-| `INTRO_TRANSITION` | `slideleft` | ffmpeg `xfade` transition from the brand slide into the card (`fade`, `wipeleft`, `dissolve`, `smoothleft`, …). |
-| `MEDIA_MAX_VIDEO_MB` / `MEDIA_MAX_IMAGE_MB` | `300` / `20` | Media channel: largest accepted upload per file. |
-| `MEDIA_QUOTA_MB` | `2048` | Media channel: disk budget for everything it stores (images, 720p video copies, cached clips, the loop). |
-| `MUSIC_FILE` | `assets/music/background.mp3` | Background track. |
-| `DATA_DIR` | `data` | Where the JSON stores + generated HLS live (the Docker volume). |
-
-## Data & storage
-
-State is kept in two JSON files, plus the generated streams:
-
-| Path | Holds |
-|---|---|
-| `DATA_DIR/db.json` | customers, plans, incidents, subscribers, payments, newsletters, settings |
-| `DATA_DIR/catalog.json` | playlist sources, categories, channels, per-customer access |
-| `DATA_DIR/hls/<userId>/` | that customer's generated info-channel segments |
-| `DATA_DIR/media/` | media channel files: images, 720p video copies, cached per-slide clips |
-| `DATA_DIR/hls/_media/` | the media channel's loop (what everyone sees) |
-| `DATA_DIR/hls/_media-<hash>/` | one more loop per group of customers who see private media content |
-
-The catalog is a separate file on purpose: a provider list can be tens of
-thousands of channels, and both stores rewrite the whole file on every save —
-keeping them apart means changing one customer's expiry date doesn't rewrite
-megabytes of channel rows. Both use atomic writes and back up a corrupt file
-rather than failing to start. In Docker this is the mounted `./data` volume, so
-everything survives restarts and rebuilds. No external database required.
-
-## Runtime logs
-
-Container output includes concise timestamped details for:
-
-- startup URL and core channel configuration;
-- each stream generation start, completion time and failures;
-- admin changes that trigger rebuilds;
-- scheduler registration and daily refreshes;
-- warnings and errors.
-
-Routine HLS segment requests are intentionally not logged. Follow the running
-output with:
-
-```bash
+# Set DATABASE_URL, ADMIN_PASSWORD, SESSION_SECRET and PUBLIC_BASE_URL.
+# DATABASE_URL=postgres://iptv:<url-encoded-password>@shared-postgres:5432/iptv
+# PUBLIC_BASE_URL must be the origin your players can reach.
+docker compose up -d --build m3u-info
 docker compose logs -f m3u-info
 ```
 
-## How it works
+Open `/admin` on that origin and log in with `ADMIN_PASSWORD`. Set up sources, categories, plans and customers in the panel. Optional demo data:
 
-**The playlist** (no ffmpeg involved):
+```bash
+docker compose exec m3u-info iptv-server seed
+```
 
-1. A source refresh downloads the provider `.m3u`, parses it (attribute-aware —
-   a comma inside `tvg-name` doesn't break the channel title) and **merges** it
-   into the catalog. Channels are matched on `tvg-id` where the provider ships
-   one, falling back to the stream URL, so a rotated access token doesn't create
-   duplicates. Your renames, category moves and toggles are preserved; the URL
-   and playback directives (`#EXTVLCOPT`, `#KODIPROP`, …) are refreshed.
-2. A request for `/u/<token>/playlist.m3u` resolves that customer's view of the
-   catalog and serializes it. Categories pass through three layers, highest
-   priority first: a **personal pin** (the admin's explicit exception for this
-   customer), the **global enable** (the catalog-wide kill switch), then the
-   **plan** (what they are paying for). The expiry gate overrules all three.
-   Nothing is cached and nothing is pre-built, so an edit is live on the
-   player's next refresh.
+The bind-mounted `./data` directory must be writable by uid 1000. PostgreSQL holds metadata; `data/` holds media uploads, article clips, previews and HLS output. Back up both PostgreSQL and this directory.
 
-**The info channel** (ffmpeg, per customer):
+For a Portainer Git stack, select `refs/heads/rust-port` and `docker-compose.yml`, copy the production environment settings, and set `DATA_VOLUME` to the absolute host path of the existing data directory. This keeps media files independent of Portainer's Git checkout directory. Set `DATABASE_URL` to the existing `iptv` database on `shared-db`. Keep Git polling and automatic updates disabled, and deploy new commits manually in Portainer. Stop the previous stack before deploying the replacement: only one server instance may use this database and port.
 
-3. Two 1280×720 frames are rendered (SVG → PNG via sharp): the **brand intro
-   slide** and the **info card**, plus the global **status board** when enabled.
-4. **ffmpeg** builds the loop: brand slide → (`xfade` transition) → the info card
-   held for `ACCOUNT_SLIDE_SECONDS` → the status board, mixes in the background
-   music, and writes reusable **HLS** segments. With the intro disabled it just
-   loops the still card. A content hash skips the encode when nothing changed,
-   so idle CPU use stays near zero.
-5. The server presents those segments as a sliding **live HLS** window with no
-   end marker, so IPTV clients keep playing indefinitely. All viewers share one
-   live timeline — tuning in joins the stream wherever it currently is, it does
-   not restart at the intro.
-6. A **daily job** (00:05) re-downloads every enabled source and rebuilds every
-   stream, so both the channel list and the day counter stay current.
+The production Portainer stack is `iptv-rust`. It tracks `refs/heads/rust-port`; GitOps source polling and automatic stack updates are disabled. Deploy new commits manually in Portainer. The previous `iptvinfov2` stack is stopped and retained for rollback.
 
-## API (admin, cookie‑authenticated)
+## Migrate from the Node backend
 
-Mutating calls also require an `X-CSRF-Token` header echoing the token handed
-out by `/admin/api/state`.
+Keep the old image, Compose configuration and a complete data backup for rollback. Stop the old application before taking the final JSON snapshot so no edits race the import. Use the same data volume for the Rust service: uploaded media and cached HLS files are not stored in PostgreSQL.
 
-| Method | Path | Action |
-|---|---|---|
-| `POST` | `/admin/login` | `{password}` → sets session cookie |
-| `GET` | `/admin/api/state` | plans, customers (decorated), settings, catalog counts |
-| `POST` | `/admin/api/users` | create customer |
-| `PATCH` | `/admin/api/users/:id` | update username / plan / `expires_at` / active / `max_devices` (`null` = follow the plan) |
-| `POST` | `/admin/api/users/:id/token` | regenerate access token |
-| `POST` | `/admin/api/users/:id/regenerate` | rebuild this customer's stream now |
-| `GET` | `/admin/api/users/:id/playlist` | the exact `.m3u` this customer receives |
-| `DELETE` | `/admin/api/users/:id` | delete customer (drops their overrides too) |
-| `POST` | `/admin/api/users/:id/payment` | record a payment `{count, period, from, amount_eur, note}` (all optional) → new expiry |
-| `GET` | `/admin/api/payments` | the payments ledger, newest first, with month / 30-day totals |
-| `DELETE` | `/admin/api/payments/:id` | undo a customer's latest payment (restores the previous expiry) |
-| `GET`/`POST` | `/admin/api/newsletters` | newsletter history / send `{subject, body, important, audience}` |
-| `POST` | `/admin/api/newsletters/test` | send one copy to `{email}` |
-| `DELETE` | `/admin/api/newsletters/:id` | remove one from the history |
-| `GET` | `/admin/api/catalog` | sources, categories with counts, totals |
-| `POST` | `/admin/api/catalog/sources` | add a provider playlist `{name, url}` |
-| `PATCH`/`DELETE` | `/admin/api/catalog/sources/:id` | edit / remove a source |
-| `POST` | `/admin/api/catalog/sources/:id/refresh` | download + merge one source |
-| `POST` | `/admin/api/catalog/refresh` | download + merge every enabled source |
-| `POST` | `/admin/api/catalog/categories` | create a custom category |
-| `PATCH`/`DELETE` | `/admin/api/catalog/categories/:id` | rename / toggle / delete |
-| `POST` | `/admin/api/catalog/categories/reorder` | `{ids[]}` → new display order |
-| `GET` | `/admin/api/catalog/channels` | paged + filtered (`q`, `category`, `source`, `status`, `page`, `pageSize`) |
-| `POST` | `/admin/api/catalog/channels` | add a channel by hand |
-| `PATCH`/`DELETE` | `/admin/api/catalog/channels/:id` | rename / re-group / toggle / delete |
-| `POST` | `/admin/api/catalog/channels/bulk` | bulk change over `{ids[]}` **or** `{filter}` |
-| `GET` | `/admin/api/users/:id/channels` | this customer's effective access view |
-| `PATCH` | `/admin/api/users/:id/channels` | pin overrides (`true` / `false` / `null` = inherit) |
-| `POST` | `/admin/api/users/:id/channels/reset` | drop all their overrides |
-| `POST` | `/admin/api/plans` | Create with `{name, price_eur, category_ids[], max_devices}` |
-| `PATCH` | `/admin/api/plans/:id` | Update `{name, price_eur, category_ids[], max_devices}` (0 = no device limit) |
-| `GET` | `/admin/api/users/:id/devices` | devices watching right now (stream gateway) |
-| `DELETE` | `/admin/api/plans/:id` | Delete an unused plan |
-| `PATCH` | `/admin/api/settings` | `{brand_name, tagline}` |
-| `PATCH` | `/admin/api/gateway` | `{enabled}` — stream gateway on/off (no regeneration) |
-| `POST` | `/admin/api/regenerate-all` | rebuild all streams |
-| `GET` | `/admin/api/media` | media channel: name/switch, article summaries, build status, disk usage |
-| `PATCH` | `/admin/api/media/channel` | `{name, enabled}` |
-| `POST` | `/admin/api/media/articles` | create an article `{title?, doc?}` |
-| `GET`/`PATCH`/`DELETE` | `/admin/api/media/articles/:id` | the article with its document / save `{title, doc, seconds, scroll_speed, audience}` / delete it and its files |
-| `POST` | `/admin/api/media/articles/:id/assets` | multipart `file` → an image or video asset for that article |
-| `GET` | `/admin/api/media/assets/:id` (`/picture`) | asset status (a video is `processing` until re-encoded) / its picture |
-| `PUT` | `/admin/api/media/order` | `{ids[]}` → new play order |
-| `POST` | `/admin/api/media/preview` | `{doc, …, viewer}` → how the article renders on TV (`viewer`: `all`, `public` or a customer id) |
-| `POST` | `/admin/api/media/rebuild` | rebuild the media loop from scratch |
+```bash
+# Build the new image before stopping the running application.
+docker compose build m3u-info
+docker compose stop m3u-info
+# Back up ./data and the old stack configuration here.
+docker compose run --rm --no-deps m3u-info import-json /app/data
+docker compose up -d --no-build m3u-info
+```
 
-## Security
+`iptv-server import-json [DIR] [--force]` imports `db.json` and `catalog.json`, including the old `media_channel` articles and assets, in one transaction. It preserves customer ids and tokens, resets database sequences, validates dates, and reports skipped records. It refuses a populated destination unless `--force` is supplied. `--force` replaces destination records; use it only for a deliberate re-import. The importer leaves the JSON files and media files in place.
 
-- **Access is a capability URL.** A channel is reachable only via the
-  unguessable per-user token in its path — the token *is* the credential, so
-  treat the URLs as secrets. Prefer `/u/<token>/playlist.m3u` over the `?token=`
-  query form (query strings leak via access logs / `Referer`), and put the
-  server behind **HTTPS** when exposing it off-LAN (`PUBLIC_BASE_URL=https://…`).
-- **The stream gateway is an access check, not DRM.** With it on, the provider's
-  URL is only handed out at play time and only to a customer entitled to it,
-  which is what makes a revocation take effect immediately — but the manifest it
-  returns contains the provider's segment URLs in clear, so a customer can still
-  read the provider addresses behind a channel they legitimately have.
-- The e-mail sign-up QR uses a **separate token**, so photographing it can't
-  grant stream access, and sign-up is **double opt-in** (no mail is sent to an
-  unconfirmed address).
-- The admin session is an HMAC-signed HttpOnly cookie; rotating `ADMIN_PASSWORD`
-  logs everyone out. `/admin/login` and the `/sub` endpoints are rate-limited —
-  set `TRUST_PROXY=1` behind a reverse proxy so the limiter sees real client IPs.
-  Mutating admin API calls also require a CSRF token (`X-CSRF-Token`).
-- The container runs as the **non-root `node`** user; if you bind-mount `./data`,
-  make it writable by uid 1000 (`sudo chown -R 1000:1000 ./data`) or use a named volume.
+Check `/healthz`, admin login and the imported counts, an existing customer playlist and EPG, info-channel playback, and media-channel playback before removing the rollback image. To roll back, stop the Rust service and restore the old image/configuration with the backed-up JSON and data. Edits made after cutover live in PostgreSQL and are not written back to the legacy JSON files.
 
-## Development
+## Local development
 
-Backend source is grouped by concern under `src/`: `playlist/` (m3u parsing +
-the channel catalog), `render/` (SVG frames), `encode/` (ffmpeg + live HLS),
-`http/` (all routes), `epg/` (guides), `data/` (the JSON store + its seed CLI),
-`notify/` (e-mail) and `core/` (logger + formatters). Only `server.js` (the entry
-point) and `config.js` sit loose at `src/`; `test/` mirrors the same folders.
-There is no backend build step; run the tests with `docker compose --profile test
-run --rm test` (or `npm test` on a host with Node 20+). See
-[CLAUDE.md](CLAUDE.md) for the full module map.
+Use Rust 1.99+, Node 22+ for the frontend, PostgreSQL, ffmpeg/ffprobe and Inter fonts. The backend needs no Node packages.
 
-The admin UI is a **React + Vite + Ant Design** app in `frontend/` (its own
-`package.json`). The Docker build compiles it and copies the output into
-`src/public/admin/`, which the server serves at `/admin` — so production needs no
-host toolchain. For UI development run `npm install && npm run dev` in `frontend/`
-(its dev server proxies `/admin/api` to a backend on `:9222`). On a bare host
-checkout with no build, `/admin` shows an "Admin UI not built" stub.
+```bash
+npm ci --prefix frontend
+npm run build --prefix frontend
+# .env is loaded from the working directory, or APP_ROOT if set.
+# For a locally published database, use localhost and its published port.
+cargo run --locked -- seed
+cargo run --locked
+```
 
-## Notes
+The frontend build writes to `public/admin`. For hot reload, run the backend on port 9222 and `npm run dev --prefix frontend`; Vite proxies admin API and authentication requests to it.
 
-- The generated media is reused as an endless live channel, so ffmpeg does not
-  need to run continuously. Set `CHANNEL_LIVE_LOOP=false` only to expose the
-  finite generated VOD directly.
+Settings are documented in [.env.example](.env.example). Process environment variables override `.env`. Relative data/music paths resolve against `APP_ROOT`, or the working directory. `DATABASE_URL` is required. Admin toggles for notifications and the gateway override their environment defaults. Optional `RUST_LOG` controls tracing.
+
+## Checks
+
+Database tests create and drop unique schemas inside a dedicated test database. Never point `TEST_DATABASE_URL` at production.
+
+```bash
+# Default: postgres://iptv:iptv@127.0.0.1:55432/iptv
+TEST_DATABASE_URL=postgres://iptv:iptv@localhost:55432/iptv cargo test --locked
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+npm run build --prefix frontend
+```
+
+Or use the optional Docker test image and temporary PostgreSQL service:
+
+```bash
+# Compose also requires DATABASE_URL to parse the application service.
+DATABASE_URL=postgres://iptv:iptv@test-db:5432/iptv docker compose --profile test run --build --rm test
+# Remove the temporary test database once finished.
+docker compose --profile test stop test-db
+docker compose --profile test rm -f test-db
+```
+
+The Rust suite includes database/import tests, a route integration test with a stub provider, HLS entitlement/splice/device checks, text layout tests, and exact ffmpeg argument snapshots inherited from the Node backend. Real ffmpeg and browser checks are documented in [docs/rust-migration-validation.md](docs/rust-migration-validation.md).
+
+## Customer endpoints
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/u/:token/playlist.m3u` | Personal channel playlist |
+| `/hls/:token/index.m3u8` | Personal information-channel HLS |
+| `/u/:token/epg.xml` | Personal XMLTV guide |
+| `/m/:token/index.m3u8` | Media channel selected for the customer |
+| `/c/:token/:channel.m3u8` | Optional HLS entitlement gateway |
+| `/foss-epg/u/:token/channels.json` | OTT-play FOSS channel map (programme files under `epg/`) |
+| `/sub/:notify_token` | Email sign-up with a separate notification token |
+| `/admin` | React admin panel |
+| `/admin/api/...` | Authenticated admin API |
+| `/healthz` | Liveness endpoint |
+
+## Layout
+
+```text
+src/main.rs          CLI, router, startup and background tasks
+src/config.rs        Typed configuration and .env loading
+src/core/            Shared formatting, audience and bounded fetch helpers
+src/data/            PostgreSQL store, models and transactional JSON import
+src/playlist/        M3U catalog, entitlement resolution, HLS and device tracking
+src/http/            Admin, catalog, media, customer, gateway and sign-up routes
+src/render/          SVG/PNG rendering and shaped media-article layout
+src/encode/          ffmpeg arguments, information channel and live HLS windows
+src/media/           Article documents, audience variants, assets and loop builds
+src/epg/             XMLTV and OTT-play guides
+src/news/            Provider news and AI summaries
+src/notify/          Email templates and dispatch
+migrations/          Embedded PostgreSQL schema migrations
+tests/fixtures/      ffmpeg argument snapshots
+frontend/            React + Vite + Ant Design admin application
+public/admin/        Generated frontend build (not committed)
+assets/music/        Background audio
+```

@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "React + Vite + Ant Design admin UI for the IPTV info channel (builds to ../src/public/admin).",
+  "description": "React + Vite + Ant Design admin UI for the IPTV info channel (builds to ../public/admin).",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

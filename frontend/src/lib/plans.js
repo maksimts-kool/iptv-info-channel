@@ -24,6 +24,38 @@ export function expiryForPlan(plan, today = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+// Add whole days, months or years to a YYYY-MM-DD date. Month arithmetic
+// clamps to the last day of a shorter month (31 янв + 1 мес = 28 фев), like
+// add_period in src/core/util.rs.
+export function addPeriod(ymd, period, count) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  let date;
+  if (period === 'day') {
+    date = new Date(y, m - 1, d + count);
+  } else {
+    const months = period === 'year' ? count * 12 : count;
+    const last = new Date(y, m - 1 + months + 1, 0).getDate();
+    date = new Date(y, m - 1 + months, Math.min(d, last));
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// The expiry a payment will produce — a preview of payment_expiry in
+// src/http/admin.rs: paid time stacks on what is left; a lapsed or open-ended
+// account, or "from today", restarts from today.
+export function paymentExpiry(expiresAt, { count, period, from }, today = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const now = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  const current = expiresAt || '';
+  const base = from === 'today' || !current || current < now ? now : current;
+  return addPeriod(base, period, count);
+}
+
+export const prettyDate = (ymd) => (ymd
+  ? new Date(`${ymd}T00:00:00`).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+  : '—');
+
 // Options for a plan <Select>. The category count is part of the label because
 // picking a plan blind is exactly how you hand a customer an empty playlist.
 export function planOptions(plans) {
@@ -55,7 +87,7 @@ export const periodWord = (period, count = 1) => {
 
 // The default amount of a payment: the plan's price for the periods paid,
 // converted between month and year (mirrors suggestedPaymentCents in
-// src/http/admin.js). null = no fair price (days).
+// src/http/admin.rs). null = no fair price (days).
 export function suggestedPaymentCents(plan, { count, period }) {
   if (!plan || !Number.isFinite(plan.price_cents)) return null;
   const billed = ['day', 'month', 'year'].includes(plan.billing_period) ? plan.billing_period : 'month';

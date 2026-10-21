@@ -1,4 +1,4 @@
-// A group of customers, as the server understands it (src/core/audience.js):
+// A group of customers, as the server understands it (src/core/audience.rs):
 // { users: [id…], plans: [planId…] } — a customer belongs when listed by id or
 // when on one of the plans. Used by private media and the newsletter.
 

@@ -15,6 +15,12 @@ body {
 }
 
 /* --- App shell (sider + header) ----------------------------------------- */
+.app-sider {
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
 .brand-mark {
   display: flex;
   align-items: center;
@@ -24,9 +30,39 @@ body {
   color: #fff;
   font-size: 16px;
   font-weight: 600;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
+.brand-logo {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  font-size: 16px;
+}
+/* Grouped navigation: a little air around the items, quiet group titles. */
+.app-nav.ant-menu {
+  padding: 8px;
+  border-inline-end: none !important;
+}
+.app-nav .ant-menu-item-group-title {
+  padding: 14px 12px 4px !important;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.nav-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: calc(100% - 4px);
+}
+.nav-label .ant-badge-count { box-shadow: none; }
 
 .app-header {
   position: sticky;
@@ -36,8 +72,70 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-inline: 20px;
+  padding-inline: 24px !important;
+  border-bottom: 1px solid #eceef2;
+  line-height: 1.35 !important;
 }
+.app-header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.app-header-heading { font-size: 17px; }
+.app-header-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+.client-jump-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.client-jump-name {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+.client-jump-option .ant-typography { flex: 1; min-width: 0; }
+
+.app-content { padding: 24px; }
+.app-content-inner { max-width: 1240px; margin: 0 auto; }
+
+/* Keyboard users see where they are; mouse clicks stay unringed. */
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* --- Shared bits -------------------------------------------------------- */
+/* A number card that opens the list behind it. */
+.stat-link {
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
+}
+.stat-link:hover {
+  border-color: #bfd3fb;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.1);
+}
+.stat-link:active { transform: translateY(1px); }
+.stat-link-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #2563eb;
+}
+
+/* Clickable table rows (the whole row opens the record). */
+.row-clickable { cursor: pointer; }
+
+/* Обзор: the first-run checklist. */
+.setup-steps .ant-steps-item-description { max-width: none !important; }
+.setup-step-done .ant-typography { color: rgba(0, 0, 0, 0.45); }
 
 /* --- Encoding-status banner (RegenBanner) ------------------------------- */
 .regen-banner {
@@ -118,8 +216,9 @@ body {
   /* Let the header stack its title and actions instead of overflowing sideways. */
   .ant-layout-header {
     height: auto;
+    min-height: 56px;
     line-height: 1.4;
-    padding: 10px 12px !important;
+    padding: 8px 12px !important;
   }
 
   /* Recover the horizontal space the desktop paddings eat on a narrow screen. */
@@ -433,3 +532,80 @@ body {
 .private-section.is-empty .private-section-label { color: #ffd666 !important; }
 .private-section-body { padding: 4px 14px 10px; }
 .private-section-body > * + * { margin-top: 0.6em; }
+
+/* --- Login -------------------------------------------------------------- */
+.login-screen {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 20px;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(37, 99, 235, 0.35), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(56, 189, 248, 0.25), transparent 60%),
+    #0f172a;
+}
+.login-card {
+  width: min(400px, 100%);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
+}
+.login-card .ant-card-body { padding: 32px; }
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.login-brand .brand-logo { color: #fff; }
+.setup-step-num {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid #2563eb;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Client card: the save bar pinned to the drawer's bottom edge. */
+.drawer-savebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+/* Оплаты: "current date → new date" before the payment is recorded. */
+.payment-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f0f5ff;
+}
+
+.page-loading { display: grid; place-items: center; min-height: 240px; }
+.kbd-hint {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid #d9dce3;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.hint-icon {
+  color: rgba(0, 0, 0, 0.38);
+  cursor: help;
+  font-size: 14px;
+}
+.hint-icon:hover { color: #2563eb; }

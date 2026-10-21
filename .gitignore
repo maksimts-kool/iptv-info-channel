@@ -1,5 +1,5 @@
 node_modules/
-data/
+/data/
 .env
 .env.server
 *.log
@@ -11,5 +11,6 @@ frontend/dist/
 
 # Built admin UI: produced by the Vite build and copied here at docker build
 # time (or locally if you point the build output here). Never committed.
-src/public/admin/*
-!src/public/admin/.gitkeep
+public/admin/*
+!public/admin/.gitkeep
+target/

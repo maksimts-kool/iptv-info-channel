@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Descriptions, Drawer, Form, Input, InputNumber, Popconfirm, Row, Select, Space,
-  Spin, Switch, Tabs, Tag, Typography,
+  Alert, Button, Card, Col, Descriptions, Drawer, Form, Grid, Input, InputNumber, Popconfirm, Row, Select,
+  Space, Spin, Switch, Tabs, Tag, Typography,
 } from 'antd';
 import {
   CopyOutlined, DesktopOutlined, ExportOutlined, KeyOutlined, RightOutlined, WalletOutlined,
@@ -10,6 +10,7 @@ import { AuthError } from '../lib/api.js';
 import { devicesLabel, periodSuffix, planOptions } from '../lib/plans.js';
 import ClientAccessTab from './ClientAccessTab.jsx';
 import ClientNotifyTab from './ClientNotifyTab.jsx';
+import Hint from '../components/Hint.jsx';
 
 // A shortcut from the customer's card into a section that manages this
 // customer among everyone else (payments, devices): the section opens with
@@ -41,13 +42,14 @@ export default function ClientDrawer({
   user, subscriber, state, api, withRegen, reload, message, onAuthError, onClose, go,
 }) {
   const [tab, setTab] = useState('account');
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const screens = Grid.useBreakpoint();
   const plans = state?.plans || [];
   const plan = plans.find((p) => p.id === user?.plan_id) || null;
 
-  useEffect(() => {
-    if (!user) return;
-    setTab('account');
+  const fill = () => {
     form.setFieldsValue({
       username: user.username,
       plan_id: user.plan_id,
@@ -55,12 +57,26 @@ export default function ClientDrawer({
       active: !!user.active,
       max_devices: user.max_devices ?? null,
     });
+    setDirty(false);
+  };
+
+  // A different customer opens on the account tab; the same customer reloaded
+  // after a save keeps the tab the admin is on.
+  useEffect(() => {
+    if (!user) return;
+    setTab('account');
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    fill();
   }, [user, form]);
 
   if (!user) return <Drawer open={false} />;
 
   const save = async () => {
     const v = await form.validateFields();
+    setSaving(true);
     await withRegen(
       `Обновление «${user.username}»`,
       () => api.patch(`/admin/api/users/${user.id}`, {
@@ -73,6 +89,7 @@ export default function ClientDrawer({
       }),
       { success: 'Сохранено' },
     );
+    setSaving(false);
   };
 
   const copy = async (text) => {
@@ -92,12 +109,16 @@ export default function ClientDrawer({
         <Alert
           type="warning"
           showIcon
-          message={user.status === 'expired' ? 'Подписка истекла' : 'Клиент отключён'}
-          description="Сейчас в плейлисте клиента остаётся только категория «Информация». Полный список вернётся сам, как только вы продлите дату окончания или включите клиента — ничего перенастраивать не нужно."
+          message={(
+            <span>
+              {`${user.status === 'expired' ? 'Подписка истекла' : 'Клиент отключён'} — в плейлисте только «Информация» `}
+              <Hint text="Полный список вернётся сам, как только вы продлите дату окончания или включите клиента — ничего перенастраивать не нужно." />
+            </span>
+          )}
         />
       ) : null}
 
-      <Form form={form} layout="vertical">
+      <Form form={form} layout="vertical" onValuesChange={() => setDirty(true)}>
         <Form.Item name="username" label="Имя клиента" rules={[{ required: true, message: 'Укажите имя' }]}>
           <Input />
         </Form.Item>
@@ -105,21 +126,21 @@ export default function ClientDrawer({
           name="plan_id"
           label="Тариф"
           rules={[{ required: true }]}
-          extra="Тариф определяет, какие категории каналов получает клиент. Смена тарифа сразу меняет его плейлист."
+          tooltip="Тариф определяет, какие категории каналов получает клиент. Смена тарифа сразу меняет его плейлист."
         >
           <Select options={planOptions(plans)} />
         </Form.Item>
         <Form.Item
           name="expires_at"
           label="Подписка действует до"
-          extra="Обычно эту дату ставит отметка об оплате (раздел «Оплаты»). Здесь её можно поправить вручную, если дата неверная. Перенос вперёд считается продлением: клиенту уйдёт письмо и каналы включатся обратно."
+          tooltip="Обычно эту дату ставит отметка об оплате (раздел «Оплаты»). Здесь её можно поправить вручную, если дата неверная. Перенос вперёд считается продлением: клиенту уйдёт письмо и каналы включатся обратно."
         >
           <Input type="date" />
         </Form.Item>
         <Form.Item
           name="max_devices"
           label="Устройств одновременно"
-          extra={`Оставьте пустым, чтобы действовал лимит тарифа (сейчас: ${devicesLabel(plan?.max_devices)}). 0 — без ограничений для этого клиента.`}
+          tooltip={`Оставьте пустым, чтобы действовал лимит тарифа (сейчас: ${devicesLabel(plan?.max_devices)}). 0 — без ограничений для этого клиента.`}
         >
           <InputNumber
             min={0}
@@ -129,10 +150,9 @@ export default function ClientDrawer({
             style={{ width: 200 }}
           />
         </Form.Item>
-        <Form.Item name="active" label="Активен" valuePropName="checked">
+        <Form.Item name="active" label="Активен" valuePropName="checked" style={{ marginBottom: 0 }}>
           <Switch />
         </Form.Item>
-        <Button type="primary" onClick={save}>Сохранить</Button>
       </Form>
 
       <Row gutter={[12, 12]}>
@@ -185,8 +205,21 @@ export default function ClientDrawer({
   return (
     <Drawer
       open
-      width={880}
+      width={screens.lg === false ? '100%' : 880}
       onClose={onClose}
+      footer={tab === 'account' ? (
+        // Always in reach at the bottom of the card, whatever the scroll; the
+        // state says whether there is anything to save at all.
+        <div className="drawer-savebar">
+          <Typography.Text type={dirty ? 'warning' : 'secondary'}>
+            {dirty ? 'Есть несохранённые изменения' : 'Изменений нет'}
+          </Typography.Text>
+          <Space>
+            <Button disabled={!dirty || saving} onClick={fill}>Отменить</Button>
+            <Button type="primary" disabled={!dirty} loading={saving} onClick={save}>Сохранить</Button>
+          </Space>
+        </div>
+      ) : null}
       title={(
         <Space wrap>
           <span>{user.username}</span>

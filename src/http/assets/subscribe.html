@@ -1,0 +1,111 @@
+<!doctype html><html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Уведомления</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:#f5f5f5;color:rgba(0,0,0,0.88);display:grid;place-items:center;min-height:100vh;padding:20px}
+  .card{width:100%;max-width:440px;background:#fff;border:1px solid #f0f0f0;border-radius:12px;padding:28px;box-shadow:0 2px 12px rgba(0,0,0,0.06)}
+  .kicker{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#2563eb}
+  h1{font-size:22px;margin:8px 0 4px;font-weight:600}
+  .muted{color:rgba(0,0,0,0.45);font-size:14px;line-height:1.5}
+  label.field{display:block;margin:18px 0 6px;font-size:14px;color:rgba(0,0,0,0.65)}
+  input[type=email]{width:100%;padding:9px 12px;border-radius:6px;border:1px solid #d9d9d9;background:#fff;color:rgba(0,0,0,0.88);font-size:16px;outline:none}
+  input[type=email]:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,0.1)}
+  .opt{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid #d9d9d9;border-radius:8px;margin-top:10px}
+  .opt input{margin-top:3px;width:16px;height:16px;accent-color:#2563eb}
+  .opt .t{font-size:14px}
+  .opt .t small{display:block;color:rgba(0,0,0,0.45);margin-top:2px}
+  .opt.locked{background:#fafafa}
+  button{width:100%;margin-top:18px;padding:10px;border:0;border-radius:6px;font-size:15px;font-weight:500;cursor:pointer}
+  .primary{background:#2563eb;color:#fff}
+  .primary:hover{background:#1d4ed8}
+  .ghost{background:#fff;color:rgba(0,0,0,0.88);border:1px solid #d9d9d9;margin-top:10px}
+  .ghost:hover{border-color:#2563eb;color:#2563eb}
+  .note{margin-top:14px;padding:10px 12px;border-radius:8px;font-size:14px;display:none}
+  .note.ok{display:block;background:#f6ffed;border:1px solid #b7eb8f;color:#389e0d}
+  .note.err{display:block;background:#fff2f0;border:1px solid #ffccc7;color:#cf1322}
+  .badge{display:inline-block;margin-top:8px;padding:3px 10px;border-radius:999px;background:#f6ffed;border:1px solid #b7eb8f;color:#389e0d;font-size:12px;font-weight:500}
+  .badge.pending{background:#fff7e6;border-color:#ffd591;color:#d46b08}
+</style></head>
+<body>
+  <div class="card">
+    <div class="kicker" id="brand">…</div>
+    <h1>Уведомления по почте</h1>
+    <p class="muted" id="lead">Подпишитесь, чтобы получать важные письма о вашей подписке.</p>
+    <span class="badge" id="subbed" style="display:none">Вы уже подписаны</span>
+
+    <label class="field" for="email">Электронная почта</label>
+    <input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com">
+
+    <div class="opt locked">
+      <input id="o-renewal" type="checkbox" checked disabled>
+      <div class="t">Продление подписки<small>Обязательно — придёт, когда продлят срок действия</small></div>
+    </div>
+    <div class="opt">
+      <input id="o-expiry" type="checkbox" checked>
+      <div class="t">Подписка скоро истекает<small>Напомним заранее, чтобы вы успели продлить</small></div>
+    </div>
+    <div class="opt">
+      <input id="o-content" type="checkbox" checked>
+      <div class="t">Изменения в списке каналов<small>Когда в ваш пакет добавили или убрали каналы</small></div>
+    </div>
+    <div class="opt">
+      <input id="o-news" type="checkbox" checked>
+      <div class="t">Новости и важные объявления<small>Письма от сервиса: новые возможности, плановые работы, важные изменения</small></div>
+    </div>
+    <div class="opt">
+      <input id="o-server" type="checkbox">
+      <div class="t">Статус сервера<small>Сообщим о сбоях и восстановлении сервиса</small></div>
+    </div>
+
+    <button class="primary" id="save">Подписаться</button>
+    <button class="ghost" id="unsub" style="display:none">Отписаться</button>
+    <div class="note" id="note"></div>
+  </div>
+<script>
+const TOKEN = __TOKEN_JSON__;
+const base = '/sub/' + encodeURIComponent(TOKEN);
+const $ = (id) => document.getElementById(id);
+function note(msg, ok){ const n=$('note'); n.textContent=msg; n.className='note '+(ok?'ok':'err'); }
+async function call(method, path, body){
+  const r = await fetch(base+path, {method, headers: body?{'Content-Type':'application/json'}:undefined, body: body?JSON.stringify(body):undefined});
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.error||'Ошибка');
+  return d;
+}
+function paint(s){
+  $('brand').textContent = s.brand;
+  const badge = $('subbed');
+  badge.style.display = s.subscribed ? 'inline-block' : 'none';
+  badge.classList.toggle('pending', s.subscribed && !s.verified);
+  badge.textContent = s.subscribed
+    ? (s.verified ? 'Вы подписаны' : 'Ожидает подтверждения по e-mail')
+    : '';
+  $('unsub').style.display = s.subscribed ? 'block' : 'none';
+  $('save').textContent = s.subscribed
+    ? (s.verified ? 'Сохранить изменения' : 'Отправить письмо повторно')
+    : 'Подписаться';
+  if(s.email) $('email').value = s.email;
+  $('o-expiry').checked = s.options.expiry;
+  $('o-content').checked = s.options.content !== false;
+  $('o-news').checked = s.options.news !== false;
+  $('o-server').checked = s.options.server;
+}
+async function refresh(){ try{ paint(await call('GET','/status')); }catch(e){ note(e.message,false);} }
+$('save').onclick = async () => {
+  const email = $('email').value.trim();
+  if(!email){ note('Введите адрес электронной почты', false); return; }
+  $('save').disabled = true;
+  try{
+    const d = await call('POST','',{ email, options:{ expiry:$('o-expiry').checked, content:$('o-content').checked, news:$('o-news').checked, server:$('o-server').checked } });
+    note(d.message, true); await refresh();
+  }catch(e){ note(e.message,false); } finally { $('save').disabled=false; }
+};
+$('unsub').onclick = async () => {
+  $('unsub').disabled = true;
+  try{ const d = await call('POST','/unsubscribe'); note(d.message,true); await refresh(); }
+  catch(e){ note(e.message,false); } finally { $('unsub').disabled=false; }
+};
+refresh();
+</script>
+</body></html>

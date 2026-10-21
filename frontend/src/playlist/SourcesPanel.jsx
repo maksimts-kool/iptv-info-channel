@@ -9,6 +9,7 @@ import {
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { intervalLabel, untilPretty } from '../lib/format.js';
+import Hint from '../components/Hint.jsx';
 
 // Upstream provider playlists. Refreshing one re-downloads the m3u and folds it
 // into the catalog: new channels are added, renames/moves/toggles the admin made
@@ -242,8 +243,7 @@ export default function SourcesPanel({
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="Авто-обновление отключено на сервере"
-          description="Расписание ниже сохраняется, но не выполняется: включите CATALOG_AUTO_REFRESH в настройках сервера."
+          message={<span>Авто-обновление отключено на сервере <Hint text="Расписание ниже сохраняется, но не выполняется: включите CATALOG_AUTO_REFRESH в настройках сервера." /></span>}
         />
       ) : null}
       {sources.some((s) => s.last_error) ? (
@@ -260,12 +260,17 @@ export default function SourcesPanel({
       {sources.length ? (
         <ResponsiveTable rowKey="id" size="small" columns={columns} dataSource={sources} pagination={false} scroll={{ x: 'max-content' }} />
       ) : (
-        <Empty description="Источников нет. Добавьте ссылку на m3u вашего провайдера — каналы попадут в каталог, и их можно будет переименовывать, перегруппировать и отключать." />
+        <Empty description="Источников нет — добавьте ссылку на m3u провайдера" />
       )}
 
       <Modal
         open={open}
-        title={editing ? 'Изменить источник' : 'Добавить источник'}
+        title={(
+          <span>
+            {`${editing ? 'Изменить источник' : 'Добавить источник'} `}
+            <Hint text="После сохранения плейлист загрузится сразу. Повторная загрузка не затирает ваши правки: переименования, перенос в другую категорию и отключения сохраняются, обновляются только ссылки на потоки." />
+          </span>
+        )}
         okText="Сохранить"
         cancelText="Отмена"
         onOk={save}
@@ -290,7 +295,7 @@ export default function SourcesPanel({
             name="auto_refresh"
             label="Обновлять автоматически"
             valuePropName="checked"
-            extra="Сервер сам перезагружает плейлист по расписанию — новые каналы провайдера появляются без ручного обновления."
+            tooltip="Сервер сам перезагружает плейлист по расписанию — новые каналы провайдера появляются без ручного обновления."
           >
             <Switch />
           </Form.Item>
@@ -301,11 +306,6 @@ export default function SourcesPanel({
               </Form.Item>
             )}
           </Form.Item>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            После сохранения плейлист будет загружен сразу. Повторная загрузка не
-            затирает ваши правки: переименования, перенос в другую категорию и
-            отключения сохраняются, обновляются только ссылки на потоки.
-          </Typography.Text>
         </Form>
       </Modal>
     </Card>
