@@ -8,6 +8,8 @@ import {
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import Hint from '../components/Hint.jsx';
+import PlayerName from '../components/PlayerName.jsx';
+import { plainIp } from '../lib/format.js';
 
 // Who is watching this customer right now, as the stream gateway sees it: every
 // device that fetched a gated channel's manifest within the idle window, oldest
@@ -21,14 +23,6 @@ function ago(iso) {
   if (s < 60) return `${s} сек. назад`;
   const m = Math.round(s / 60);
   return m < 60 ? `${m} мин. назад` : `${Math.round(m / 60)} ч. назад`;
-}
-
-// A User-Agent is long and mostly noise; the product token is what an admin
-// recognises ("TiviMate", "ExoPlayerLib", "VLC").
-function shortAgent(ua) {
-  if (!ua) return 'неизвестный плеер';
-  const first = ua.split(/[\s(]/)[0];
-  return first.length > 40 ? `${first.slice(0, 40)}…` : first;
 }
 
 // Shown at the top of Устройства when it is opened from a customer's card
@@ -116,8 +110,8 @@ export default function ClientDevicesCard({
                 title: 'Устройство',
                 render: (_, d) => (
                   <Space direction="vertical" size={0}>
-                    <Typography.Text>{shortAgent(d.user_agent)}</Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>{d.ip}</Typography.Text>
+                    <PlayerName name={d.player} userAgent={d.user_agent} />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>{plainIp(d.ip)}</Typography.Text>
                   </Space>
                 ),
               },

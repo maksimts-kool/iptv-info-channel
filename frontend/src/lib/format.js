@@ -63,3 +63,8 @@ export function watchTime(value) {
   if (h >= 100 || !rest) return `${count(h)} ч`;
   return `${h} ч ${rest} мин`;
 }
+
+// An IPv4 client reaches a dual-stack socket as "::ffff:1.2.3.4"; show the plain address.
+export function plainIp(ip) {
+  return (ip || '').replace(/^::ffff:/i, '');
+}

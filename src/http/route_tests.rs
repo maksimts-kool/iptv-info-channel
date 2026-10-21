@@ -470,6 +470,16 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
         .map(|l| l["player"].as_str().unwrap())
         .collect();
     assert!(players.contains(&"OTT Play · Samsung TV"), "{players:?}");
+    // The Devices screen names it the same way.
+    let devices = h.get(&format!("/admin/api/users/{uid}/devices")).await.json();
+    assert!(
+        devices["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["player"] == "OTT Play · Samsung TV" && d["user_agent"] == "samsung-agent/1.1"),
+        "{devices}"
+    );
     assert_eq!(h.get("/admin/api/stats?days=0").await.status, 400);
     assert_eq!(h.get("/admin/api/stats?user=999999").await.status, 404);
 

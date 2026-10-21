@@ -9,7 +9,8 @@ import {
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import ClientDevicesCard from '../clients/ClientDevicesCard.jsx';
 import { AuthError } from '../lib/api.js';
-import { count } from '../lib/format.js';
+import { count, plainIp } from '../lib/format.js';
+import PlayerName from '../components/PlayerName.jsx';
 
 // Live "who is watching" across every customer, plus the limits that decide it.
 // The data is the stream gateway's in-memory tracker, so it is polled rather
@@ -23,15 +24,6 @@ function ago(iso) {
   return m < 60 ? `${m} мин.` : `${Math.floor(m / 60)} ч. ${m % 60} мин.`;
 }
 
-// The product token of a User-Agent ("TiviMate", "ExoPlayerLib", "VLC").
-function shortAgent(ua) {
-  if (!ua) return 'неизвестный плеер';
-  const first = ua.split(/[\s(]/)[0];
-  return first.length > 32 ? `${first.slice(0, 32)}…` : first;
-}
-
-// An IPv4 client reaches a dual-stack socket as "::ffff:1.2.3.4"; show the plain address.
-const plainIp = (ip) => (ip || '').replace(/^::ffff:/i, '');
 
 const openClient = (id) => { window.location.hash = `#/clients/${id}`; };
 
@@ -141,11 +133,7 @@ export default function DevicesPage({
     { title: 'Канал', dataIndex: 'channel', ellipsis: true },
     {
       title: 'Плеер',
-      render: (_, d) => (
-        <Tooltip title={d.user_agent || 'User-Agent не передан'}>
-          <Typography.Text>{shortAgent(d.user_agent)}</Typography.Text>
-        </Tooltip>
-      ),
+      render: (_, d) => <PlayerName name={d.player} userAgent={d.user_agent} />,
     },
     {
       title: 'IP',

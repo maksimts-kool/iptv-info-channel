@@ -42,6 +42,7 @@ use crate::playlist::hls::{
 use crate::playlist::model::{
     INFO_CHANNEL_ID, INFO_MEDIA_CHANNEL_ID, INFO_MEDIA_DEFAULT_NAME, Resolve, resolve_channel_access,
 };
+use crate::playlist::players::describe_player;
 use crate::playlist::watch::{WatchHit, WatchRow, WatchTracker};
 
 const SESSION_TTL_MS: i64 = 10 * 60 * 1000;
@@ -110,6 +111,7 @@ pub struct Gateway {
 pub struct DeviceView {
     pub ip: String,
     pub user_agent: String,
+    pub player: String,
     pub channel: String,
     pub first_seen: String,
     pub last_seen: String,
@@ -212,6 +214,7 @@ impl Gateway {
             .map(|ListedDevice { device, allowed }| DeviceView {
                 ip: device.info.ip,
                 user_agent: device.info.ua,
+                player: device.info.player,
                 channel: device.info.channel,
                 first_seen: iso_ms(device.first_seen),
                 last_seen: iso_ms(device.last_seen),
@@ -446,6 +449,8 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         return redirect(&channel_url);
     }
 
+    let app_agent = st.gateway.app_agent(user.id, &req.ip, req.tag);
+    let player = describe_player(app_agent.as_deref(), &req.user_agent);
     let existing_splice = match &session {
         Some(Session::Media { splice, .. }) => *splice,
         _ => None,
@@ -458,6 +463,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         let info = DeviceInfo {
             ip: req.ip.clone(),
             ua: req.user_agent.clone(),
+            player,
             channel: channel_name.clone(),
         };
         let slot = st
@@ -545,7 +551,6 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     .await;
     match fetched {
         Ok(f) => {
-            let app_agent = st.gateway.app_agent(user.id, &req.ip, req.tag);
             st.gateway.record_watch(&WatchHit {
                 user_id: user.id,
                 device: &device,

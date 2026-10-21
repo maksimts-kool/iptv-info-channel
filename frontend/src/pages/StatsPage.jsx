@@ -10,7 +10,8 @@ import {
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
-import { count, watchTime } from '../lib/format.js';
+import { count, plainIp, watchTime } from '../lib/format.js';
+import PlayerName from '../components/PlayerName.jsx';
 import {
   BarList, ColumnChart, Heatmap, Legend, OTHER, SERIES, TipBody, useTooltip,
 } from '../stats/charts.jsx';
@@ -236,12 +237,12 @@ export default function StatsPage({
     {
       title: 'Плеер',
       dataIndex: 'player',
-      render: (v, r) => (r.user_agent ? <Tooltip title={r.user_agent}><span>{v || '—'}</span></Tooltip> : v || '—'),
+      render: (v, r) => <PlayerName name={v} userAgent={r.user_agent} />,
     },
     {
       title: 'IP',
       dataIndex: 'ip',
-      render: (v) => <Typography.Text type="secondary" style={{ fontSize: 12 }}>{(v || '').replace(/^::ffff:/i, '') || '—'}</Typography.Text>,
+      render: (v) => <Typography.Text type="secondary" style={{ fontSize: 12 }}>{plainIp(v) || '—'}</Typography.Text>,
     },
   ];
 

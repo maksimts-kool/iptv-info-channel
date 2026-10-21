@@ -45,6 +45,8 @@ pub fn device_key(ip: &str, tag: &str, user_agent: &str) -> String {
 pub struct DeviceInfo {
     pub ip: String,
     pub ua: String,
+    /// The app's name (`players::describe_player`), as the statistics show it.
+    pub player: String,
     pub channel: String,
 }
 
