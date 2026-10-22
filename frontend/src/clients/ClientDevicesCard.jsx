@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
-  Badge, Button, Card, Empty, Space, Typography,
+  Button, Card, Empty, Space, Typography,
 } from 'antd';
 import {
   ClearOutlined, CloseOutlined, DesktopOutlined, FolderOpenOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
-import { AuthError } from '../lib/api.js';
 import Hint from '../components/Hint.jsx';
 import PlayerName from '../components/PlayerName.jsx';
+import DeviceStatus from '../components/DeviceStatus.jsx';
 import { plainIp } from '../lib/format.js';
 
 // Who is watching this customer right now, as the stream gateway sees it: every
-// device that fetched a gated channel's manifest within the idle window, oldest
-// first. The first N (the limit) play; anyone after them is shown the
-// "превышен лимит устройств" notice instead of the channel. Polled while open —
-// the list is in server memory and changes every few seconds.
-const POLL_MS = 10_000;
+// device that played a gated channel or one of the built-in loops within the
+// idle window, oldest first. The first N gated devices (the limit) play;
+// anyone after them is shown the "превышен лимит устройств" notice instead of
+// the channel. The rows are the Устройства screen's own list (`watching`,
+// the shared device poll), so the two never disagree.
 
 function ago(iso) {
   const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
@@ -30,32 +30,19 @@ function ago(iso) {
 // watching right now, with their limit and the slot reset at hand. (A gateway
 // that is off is the page's own banner, right above this card.)
 export default function ClientDevicesCard({
-  user, api, onAuthError, message, onClose, onOpenClient, onReset,
+  user, watching, onRefresh, onClose, onOpenClient, onReset,
 }) {
-  const [data, setData] = useState(null);
+  const { devices, watching: playing, used } = watching.of(user.id);
+  const limit = user.device_limit ?? 0;
   const [loading, setLoading] = useState(false);
-
-  const load = useCallback(async () => {
+  const refresh = async () => {
     setLoading(true);
     try {
-      setData(await api.get(`/admin/api/users/${user.id}/devices`));
-    } catch (e) {
-      if (e instanceof AuthError) onAuthError();
-      else message.error(e.message);
+      await onRefresh();
     } finally {
       setLoading(false);
     }
-  }, [api, user.id, onAuthError, message]);
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
-  }, [load]);
-
-  const devices = data?.devices || [];
-  const limit = data?.limit ?? user.device_limit ?? 0;
-  const over = devices.filter((d) => !d.allowed).length;
+  };
 
   return (
     <Card
@@ -65,9 +52,11 @@ export default function ClientDevicesCard({
           <DesktopOutlined />
           {user.username}
           <Typography.Text type="secondary" style={{ fontWeight: 400 }}>
-            {limit > 0 ? `смотрят ${devices.length - over} из ${limit}` : `смотрят ${devices.length}, без ограничений`}
+            {limit > 0
+              ? `занято ${used} из ${limit}${playing > used ? ` · ещё ${playing - used} на своём канале` : ''}`
+              : `смотрят ${playing}, без ограничений`}
           </Typography.Text>
-          <Hint text={`Устройство считается смотрящим, пока плеер обновляет канал; после закрытия место освобождается через ${data?.idle_seconds ?? 60} сек. Два одинаковых плеера в одной домашней сети считаются одним устройством.`} />
+          <Hint text={`Устройство считается смотрящим, пока плеер обновляет канал; после закрытия место освобождается через ${watching.idleSeconds} сек. Два одинаковых плеера в одной домашней сети считаются одним устройством.`} />
         </Space>
       )}
       extra={(
@@ -79,12 +68,12 @@ export default function ClientDevicesCard({
             <Button
               size="small"
               icon={<ClearOutlined />}
-              onClick={async () => { await onReset(); load(); }}
+              onClick={onReset}
             >
               Освободить места
             </Button>
           ) : null}
-          <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={load} aria-label="Обновить" />
+          <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={refresh} aria-label="Обновить" />
           {onClose ? <Button size="small" type="text" icon={<CloseOutlined />} onClick={onClose} aria-label="Закрыть" /> : null}
         </Space>
       )}
@@ -98,13 +87,7 @@ export default function ClientDevicesCard({
             rowKey={(d) => `${d.ip}|${d.first_seen}`}
             dataSource={devices}
             columns={[
-              {
-                title: 'Статус',
-                width: 130,
-                render: (_, d) => (d.allowed
-                  ? <Badge status="success" text="смотрит" />
-                  : <Badge status="error" text="сверх лимита" />),
-              },
+              { title: 'Статус', width: 130, render: (_, d) => <DeviceStatus device={d} limited={limit > 0} /> },
               { title: 'Канал', dataIndex: 'channel', ellipsis: true },
               {
                 title: 'Устройство',

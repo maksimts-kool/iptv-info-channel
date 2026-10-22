@@ -4,7 +4,7 @@ import {
 import { createPortal } from 'react-dom';
 
 // Small hand-drawn charts for the statistics page: columns over time, a
-// weekday x hour heatmap and horizontal (optionally stacked) bars. They share
+// day x hour heatmap and horizontal (optionally stacked) bars. They share
 // one look — thin marks with a 4px rounded data end, a 2px surface gap
 // between touching fills, recessive hairline grid — and one hover layer:
 // every mark has a tooltip on pointer AND keyboard focus, and every value is
@@ -90,18 +90,21 @@ export function TipBody({ title, rows }) {
 // Columns over time
 // ---------------------------------------------------------------------------
 
-function useWidth() {
+function useSize() {
   const ref = useRef(null);
-  const [width, setWidth] = useState(0);
+  const [size, setSize] = useState({ width: 0, height: 0 });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
-    setWidth(el.clientWidth);
-    const ro = new ResizeObserver(([entry]) => setWidth(Math.floor(entry.contentRect.width)));
+    setSize({ width: el.clientWidth, height: el.clientHeight });
+    const ro = new ResizeObserver(([entry]) => setSize({
+      width: Math.floor(entry.contentRect.width),
+      height: Math.floor(entry.contentRect.height),
+    }));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  return [ref, width];
+  return [ref, size];
 }
 
 // Round axis steps for a duration in seconds: minutes below two hours, hours above.
@@ -120,10 +123,13 @@ function durationTicks(max) {
 
 // A column per bucket (day or hour). `items`: { key, label, value, tip }.
 // The tallest column carries its value; the rest are in the tooltip/table.
+// `height` is the minimum: the chart grows to fill a taller box (a card
+// stretched to the height of its neighbour in the row).
 export function ColumnChart({
-  items, height = 220, format, bind, ariaLabel,
+  items, height: minHeight = 220, format, bind, ariaLabel,
 }) {
-  const [ref, width] = useWidth();
+  const [ref, { width, height: boxHeight }] = useSize();
+  const height = Math.max(minHeight, boxHeight);
   const [hover, setHover] = useState(null);
   const max = Math.max(...items.map((d) => d.value), 0);
   const { ticks, label } = durationTicks(max);
@@ -140,7 +146,7 @@ export function ColumnChart({
   const peak = max > 0 ? items.findIndex((d) => d.value === max) : -1;
 
   return (
-    <div ref={ref} className="viz-columns">
+    <div ref={ref} className="viz-columns" style={{ minHeight }}>
       {width ? (
         <svg width={width} height={height} role="img" aria-label={ariaLabel}>
           {ticks.map((t) => (
@@ -185,17 +191,14 @@ export function ColumnChart({
           })}
           <line x1={m.left} x2={width - m.right} y1={m.top + innerH} y2={m.top + innerH} stroke="#d9dce2" />
         </svg>
-      ) : <div style={{ height }} />}
+      ) : null}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Weekday x hour heatmap
+// Heatmap (day x hour, or date x time of day)
 // ---------------------------------------------------------------------------
-
-const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-const WEEKDAYS_LONG = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'];
 
 function rampColor(value, max) {
   if (!value || !max) return EMPTY_CELL;
@@ -203,29 +206,45 @@ function rampColor(value, max) {
   return RAMP[i];
 }
 
-export function Heatmap({ grid, format, bind }) {
-  const max = Math.max(...grid.flat(), 0);
-  const hh = (h) => String(h).padStart(2, '0');
+// A grid of square cells. `columns`: { key, label, title } (a column without a
+// label leaves the axis quiet); `rows`: { key, label, title, values } with a
+// value per column. A cell's tooltip names its row and its column, the date
+// first: `datesAcross` when the columns are the dates.
+export function Heatmap({
+  rows, columns, format, bind, ariaLabel, datesAcross = false,
+}) {
+  const name = (row, col) => (datesAcross ? `${col.title}, ${row.title}` : `${row.title}, ${col.title}`);
+  const max = Math.max(...rows.flatMap((r) => r.values), 0);
+  const labelWidth = rows.some((r) => (r.label || '').length > 2) ? 46 : 24;
+  // Many columns (a month of dates) get smaller squares rather than a scroll.
+  const cell = columns.length > 24 ? 8 : 10;
+  const grid = { gridTemplateColumns: `${labelWidth}px repeat(${columns.length}, minmax(${cell}px, 1fr))` };
   return (
     <div className="viz-heat-scroll">
-      <div className="viz-heat" role="img" aria-label="Время просмотра по дням недели и часам">
-        <div className="viz-heat-row">
+      <div
+        className="viz-heat"
+        role="img"
+        aria-label={ariaLabel}
+        // Scrolls only below the smallest squares (2px gaps between them).
+        style={{ minWidth: labelWidth + columns.length * (cell + 2) }}
+      >
+        <div className="viz-heat-row viz-heat-head" style={grid}>
           <span />
-          {Array.from({ length: 24 }, (_, h) => (
-            <span key={h} className="viz-axis viz-heat-hour">{h % 3 === 0 ? hh(h) : ''}</span>
+          {columns.map((c) => (
+            <span key={c.key} className="viz-axis viz-heat-col">{c.label}</span>
           ))}
         </div>
-        {grid.map((row, d) => (
-          <div key={WEEKDAYS[d]} className="viz-heat-row">
-            <span className="viz-axis viz-heat-day">{WEEKDAYS[d]}</span>
-            {row.map((v, h) => (
+        {rows.map((row) => (
+          <div key={row.key} className="viz-heat-row" style={grid}>
+            <span className="viz-axis viz-heat-label">{row.label}</span>
+            {row.values.map((v, i) => (
               <span
-                key={`${WEEKDAYS[d]}${hh(h)}`}
+                key={`${row.key}|${columns[i].key}`}
                 className="viz-heat-cell viz-hit"
                 tabIndex={0}
-                aria-label={`${WEEKDAYS_LONG[d]}, ${hh(h)}:00: ${format(v)}`}
-                style={{ background: rampColor(v, max) }}
-                {...bind(<TipBody title={`${WEEKDAYS_LONG[d]}, ${hh(h)}:00–${hh((h + 1) % 24)}:00`} rows={[{ label: 'просмотра', value: format(v) }]} />)}
+                aria-label={`${name(row, columns[i])}: ${format(v)}`}
+                style={{ background: rampColor(v, max), minHeight: cell }}
+                {...bind(<TipBody title={name(row, columns[i])} rows={[{ label: 'просмотра', value: format(v) }]} />)}
               />
             ))}
           </div>

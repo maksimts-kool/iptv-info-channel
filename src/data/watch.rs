@@ -157,6 +157,8 @@ pub struct Day {
     pub sessions: usize,
     pub viewers: usize,
     pub peak: usize,
+    /// Seconds watched in each local hour of the day.
+    pub hours: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -215,8 +217,6 @@ pub struct Recent {
 pub struct Summary {
     pub totals: Totals,
     pub daily: Vec<Day>,
-    /// Seconds watched by local weekday (Monday first) x hour.
-    pub heatmap: Vec<Vec<i64>>,
     pub channels: Vec<ChannelStat>,
     pub customers: Vec<CustomerStat>,
     pub recent: Vec<Recent>,
@@ -241,9 +241,8 @@ fn ts(ms: i64) -> Timestamp {
     Timestamp::from_millisecond(ms).unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
-/// The end of the local hour `ms` falls in, its weekday (Monday = 0), hour
-/// and date.
-fn local_hour(ms: i64, tz: &TimeZone) -> (i64, usize, usize, jiff::civil::Date) {
+/// The end of the local hour `ms` falls in, the hour and the date.
+fn local_hour(ms: i64, tz: &TimeZone) -> (i64, usize, jiff::civil::Date) {
     let z = ts(ms).to_zoned(tz.clone());
     let next = z
         .with()
@@ -255,12 +254,7 @@ fn local_hour(ms: i64, tz: &TimeZone) -> (i64, usize, usize, jiff::civil::Date) 
         .map_or(ms - ms.rem_euclid(HOUR_MS) + HOUR_MS, |n| {
             n.timestamp().as_millisecond()
         });
-    (
-        next.max(ms + 1),
-        z.weekday().to_monday_zero_offset() as usize,
-        z.hour() as usize,
-        z.date(),
-    )
+    (next.max(ms + 1), z.hour() as usize, z.date())
 }
 
 pub fn summarize(rows: &[WatchRow], w: &Window<'_>) -> Summary {
@@ -279,7 +273,7 @@ pub fn summarize(rows: &[WatchRow], w: &Window<'_>) -> Summary {
     let mut day_sessions = vec![0_usize; dates.len()];
     let mut day_viewers: Vec<HashSet<i64>> = vec![HashSet::new(); dates.len()];
     let mut day_peak = vec![0_usize; dates.len()];
-    let mut heatmap = vec![vec![0_i64; 24]; 7];
+    let mut day_hours = vec![[0_i64; 24]; dates.len()];
 
     // Latest name per channel: a rename shows under the current name.
     let mut channel_names: HashMap<&str, (i64, &str)> = HashMap::new();
@@ -315,11 +309,11 @@ pub fn summarize(rows: &[WatchRow], w: &Window<'_>) -> Summary {
         let mut cursor = start;
         let mut first_piece = true;
         while cursor < end {
-            let (hour_end, weekday, hour, date) = local_hour(cursor, tz);
+            let (hour_end, hour, date) = local_hour(cursor, tz);
             let piece_end = hour_end.min(end);
-            heatmap[weekday][hour] += piece_end - cursor;
             if let Some(&d) = day_index.get(&date) {
                 day_ms[d] += piece_end - cursor;
+                day_hours[d][hour] += piece_end - cursor;
                 day_viewers[d].insert(r.user_id);
                 if first_piece {
                     day_sessions[d] += 1;
@@ -452,6 +446,7 @@ pub fn summarize(rows: &[WatchRow], w: &Window<'_>) -> Summary {
             sessions: day_sessions[i],
             viewers: day_viewers[i].len(),
             peak: day_peak[i],
+            hours: day_hours[i].iter().copied().map(secs).collect(),
         })
         .collect();
 
@@ -465,7 +460,6 @@ pub fn summarize(rows: &[WatchRow], w: &Window<'_>) -> Summary {
             peak_at: peak_at.map(|t| iso(ts(t))),
         },
         daily,
-        heatmap: heatmap.into_iter().map(|h| h.into_iter().map(secs).collect()).collect(),
         channels,
         customers,
         recent,
@@ -534,9 +528,9 @@ mod tests {
         assert_eq!(s.customers[1].channels[0].name, "Канал n1");
         assert_eq!(s.recent[0].id, "c");
         assert!(s.recent[0].live && !s.recent[1].live);
-        // Monday 18:00-19:00 and 19:00-19:10.
-        assert_eq!(s.heatmap[0][18], 85 * 60);
-        assert_eq!(s.heatmap[0][19], 10 * 60);
+        // 18:00-19:00 and 19:00-19:10.
+        assert_eq!(s.daily[0].hours[18], 85 * 60);
+        assert_eq!(s.daily[0].hours[19], 10 * 60);
         assert_eq!(s.daily.len(), 1);
         assert_eq!(s.daily[0].viewers, 2);
     }
@@ -556,8 +550,8 @@ mod tests {
         let days: Vec<(&str, i64, usize)> = s.daily.iter().map(|d| (d.date.as_str(), d.seconds, d.peak)).collect();
         assert_eq!(days, [("2026-10-19", 30 * 60, 1), ("2026-10-20", 30 * 60, 1)]);
         assert_eq!(s.daily[0].sessions + s.daily[1].sessions, 1);
-        assert_eq!(s.heatmap[0][23], 30 * 60);
-        assert_eq!(s.heatmap[1][0], 30 * 60);
+        assert_eq!((s.daily[0].hours[23], s.daily[1].hours[0]), (30 * 60, 30 * 60));
+        assert_eq!(s.daily[0].hours.iter().sum::<i64>(), 30 * 60);
         // The window cuts the part before it off.
         let cut = summary(&rows, at("2026-10-19T21:00:00Z"), at("2026-10-20T21:00:00Z"), &tz);
         assert_eq!(cut.totals.seconds, 30 * 60);

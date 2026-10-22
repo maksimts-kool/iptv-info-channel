@@ -628,8 +628,12 @@ body {
 .viz-value { font-size: 11px; font-weight: 600; fill: rgba(0, 0, 0, 0.88); }
 .viz-hit { cursor: default; outline: none; }
 .viz-hit:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
-.viz-columns { width: 100%; }
-.viz-columns svg { display: block; overflow: visible; }
+.viz-columns { width: 100%; flex: 1 1 auto; position: relative; }
+/* Out of the flow, so the box's height is the card's, never the chart's own. */
+.viz-columns svg { display: block; overflow: visible; position: absolute; inset: 0; }
+/* A card whose body fills the height the row stretched it to. */
+.card-fill { display: flex; flex-direction: column; }
+.card-fill > .ant-card-body { flex: 1; display: flex; flex-direction: column; }
 
 .viz-tip {
   position: fixed;
@@ -653,15 +657,17 @@ body {
 
 /* Weekday x hour: a phone scrolls the grid inside the card, not the page. */
 .viz-heat-scroll { overflow-x: auto; }
-.viz-heat { display: grid; gap: 2px; min-width: 380px; }
+.viz-heat { display: grid; gap: 2px; }
 .viz-heat-row {
   display: grid;
   grid-template-columns: 24px repeat(24, minmax(12px, 1fr));
   gap: 2px;
   align-items: center;
 }
-.viz-heat-hour { text-align: left; white-space: nowrap; }
-.viz-heat-day { line-height: 1; }
+.viz-heat-col { text-align: left; white-space: nowrap; }
+/* A date label runs on over the unlabelled columns after it, never past the grid. */
+.viz-heat-head { overflow: hidden; }
+.viz-heat-label { line-height: 1; white-space: nowrap; }
 .viz-heat-cell { display: block; aspect-ratio: 1; min-height: 12px; border-radius: 3px; }
 .viz-heat-cell:hover { box-shadow: inset 0 0 0 2px rgba(15, 23, 42, 0.35); }
 .viz-heat-legend {

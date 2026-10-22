@@ -142,14 +142,29 @@ impl WatchTracker {
         out
     }
 
-    /// Watches in progress (requested within the gap), oldest first.
+    /// Every watch not closed yet, including one a device just switched away
+    /// from, whose end is not written yet either.
+    pub fn open(&self) -> Vec<WatchRow> {
+        self.open.values().map(|o| o.row.clone()).collect()
+    }
+
+    /// Watches in progress (requested within the gap), oldest first. A
+    /// device that just switched channels is playing only the latest one;
+    /// devices are matched by address and player, as the device list does.
     pub fn live(&self, now: i64) -> Vec<WatchRow> {
-        let mut rows: Vec<WatchRow> = self
-            .open
-            .values()
-            .filter(|o| now - o.row.ended <= WATCH_GAP_MS)
-            .map(|o| o.row.clone())
-            .collect();
+        let mut latest: HashMap<(i64, &str, &str), &WatchRow> = HashMap::new();
+        for o in self.open.values().filter(|o| now - o.row.ended <= WATCH_GAP_MS) {
+            let r = &o.row;
+            latest
+                .entry((r.user_id, &r.ip, &r.player))
+                .and_modify(|cur| {
+                    if r.ended > cur.ended {
+                        *cur = r;
+                    }
+                })
+                .or_insert(r);
+        }
+        let mut rows: Vec<WatchRow> = latest.into_values().cloned().collect();
         rows.sort_by_key(|r| r.started);
         rows
     }
@@ -233,10 +248,25 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_leaves_one_live_watch() {
+        let mut t = WatchTracker::default();
+        t.touch(&hit("s1", "d1"), 0);
+        t.touch(&hit("s2", "d1"), 5_000);
+        let live = t.live(6_000);
+        assert_eq!(live.iter().map(|r| r.channel_id.as_str()).collect::<Vec<_>>(), ["s2"]);
+    }
+
+    #[test]
     fn devices_are_separate_and_forget_drops_everything() {
         let mut t = WatchTracker::default();
         t.touch(&hit("s1", "d1"), 0);
-        t.touch(&hit("s1", "d2"), 0);
+        t.touch(
+            &WatchHit {
+                ip: "10.0.0.3",
+                ..hit("s1", "d2")
+            },
+            0,
+        );
         assert_eq!(t.live(1_000).len(), 2);
         t.forget(7);
         assert!(t.live(1_000).is_empty());

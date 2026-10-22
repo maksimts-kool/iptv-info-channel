@@ -513,7 +513,7 @@ async fn state(State(st): State<AppState>) -> ApiResult {
         .map(|u| {
             let mut v = decorate_user(&st, u);
             v["personal_overrides"] = json!(override_counts.get(&u.id).copied().unwrap_or(0));
-            v["devices_active"] = json!(st.gateway.device_count(u.id));
+            v["devices_active"] = json!(st.gateway.watching_count(u));
             v
         })
         .collect();

@@ -14,6 +14,7 @@ import {
 } from './lib/api.js';
 import Login from './components/Login.jsx';
 import RegenBanner from './components/RegenBanner.jsx';
+import { WatchingProvider, useWatching } from './lib/watching.jsx';
 import OverviewPage from './pages/OverviewPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
 
@@ -30,6 +31,14 @@ const NotifyPage = lazy(() => import('./pages/NotifyPage.jsx'));
 const StatsPage = lazy(() => import('./pages/StatsPage.jsx'));
 
 const { Header, Content, Sider } = Layout;
+
+// "Watching now" on the Устройства entry, from the shared device poll.
+function WatchingBadge() {
+  const { watching } = useWatching();
+  return watching
+    ? <Badge count={watching} color="#16a34a" size="small" title={`Смотрят сейчас: ${watching}`} />
+    : null;
+}
 
 // Playlist + client management is the product now; the info channel is one
 // feature inside it, so it sits below them in the navigation.
@@ -276,14 +285,12 @@ export default function App() {
   const { Page } = active;
   const compact = !screens.lg;
   const users = state?.users || [];
-  // Live "watching now" count on the Устройства entry (from /api/state).
-  const watching = users.reduce((sum, u) => sum + (u.devices_active || 0), 0);
   // Customers waiting for a renewal, on the Оплаты entry: an open task the
   // admin should see from any screen, not only from Обзор.
   const due = users.filter((u) => u.status === 'expiring' || u.status === 'expired').length;
   const badges = {
     payments: due ? <Badge count={due} color="#d97706" size="small" title={`Ждут продления: ${due}`} /> : null,
-    devices: watching ? <Badge count={watching} color="#16a34a" size="small" title={`Смотрят сейчас: ${watching}`} /> : null,
+    devices: <WatchingBadge />,
   };
 
   const item = (s) => ({
@@ -326,62 +333,64 @@ export default function App() {
   );
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      {compact ? null : (
-        <Sider width={232} className="app-sider">
-          {brandMark}
-          {menu}
-        </Sider>
-      )}
-      <Layout>
-        <Header className="app-header">
-          <div className="app-header-title">
-            {compact ? (
-              <Button type="text" icon={<MenuOutlined />} aria-label="Меню" onClick={() => setNavOpen(true)} />
-            ) : null}
-            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-              <Typography.Text strong className="app-header-heading">{active.title}</Typography.Text>
-              {state?.publicBaseUrl ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
-                  {state.publicBaseUrl}
-                </Typography.Text>
+    <WatchingProvider api={api} enabled={authed} onAuthError={shared.onAuthError}>
+      <Layout style={{ minHeight: '100vh' }}>
+        {compact ? null : (
+          <Sider width={232} className="app-sider">
+            {brandMark}
+            {menu}
+          </Sider>
+        )}
+        <Layout>
+          <Header className="app-header">
+            <div className="app-header-title">
+              {compact ? (
+                <Button type="text" icon={<MenuOutlined />} aria-label="Меню" onClick={() => setNavOpen(true)} />
               ) : null}
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <Typography.Text strong className="app-header-heading">{active.title}</Typography.Text>
+                {state?.publicBaseUrl ? (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+                    {state.publicBaseUrl}
+                  </Typography.Text>
+                ) : null}
+              </div>
             </div>
-          </div>
-          <div className="app-header-actions">
-            {screens.md ? (
-              <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} />
-            ) : null}
-            <Tooltip title={screens.sm ? null : 'Выйти'}>
-              <Button icon={<LogoutOutlined />} onClick={handleLogout} aria-label="Выйти">
-                {screens.sm ? 'Выйти' : null}
-              </Button>
-            </Tooltip>
-          </div>
-        </Header>
-        <Content className="app-content">
-          <div className="app-content-inner">
-            <RegenBanner gen={gen} />
-            <Suspense fallback={<div className="page-loading"><Spin /></div>}>
-              <Page {...shared} />
-            </Suspense>
-          </div>
-        </Content>
-      </Layout>
+            <div className="app-header-actions">
+              {screens.md ? (
+                <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} />
+              ) : null}
+              <Tooltip title={screens.sm ? null : 'Выйти'}>
+                <Button icon={<LogoutOutlined />} onClick={handleLogout} aria-label="Выйти">
+                  {screens.sm ? 'Выйти' : null}
+                </Button>
+              </Tooltip>
+            </div>
+          </Header>
+          <Content className="app-content">
+            <div className="app-content-inner">
+              <RegenBanner gen={gen} />
+              <Suspense fallback={<div className="page-loading"><Spin /></div>}>
+                <Page {...shared} />
+              </Suspense>
+            </div>
+          </Content>
+        </Layout>
 
-      <Drawer
-        open={compact && navOpen}
-        placement="left"
-        width={260}
-        onClose={() => setNavOpen(false)}
-        styles={{ body: { padding: 0, background: '#0f172a' }, header: { display: 'none' } }}
-      >
-        {brandMark}
-        <div style={{ padding: '12px 12px 0' }}>
-          <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} block />
-        </div>
-        {menu}
-      </Drawer>
-    </Layout>
+        <Drawer
+          open={compact && navOpen}
+          placement="left"
+          width={260}
+          onClose={() => setNavOpen(false)}
+          styles={{ body: { padding: 0, background: '#0f172a' }, header: { display: 'none' } }}
+        >
+          {brandMark}
+          <div style={{ padding: '12px 12px 0' }}>
+            <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} block />
+          </div>
+          {menu}
+        </Drawer>
+      </Layout>
+    </WatchingProvider>
   );
 }

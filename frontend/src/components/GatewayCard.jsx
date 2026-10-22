@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import { count } from '../lib/format.js';
+import { useWatching } from '../lib/watching.jsx';
 
 // The stream gateway switch. No re-encode is involved (playlists are rendered
 // per request), so this saves directly instead of going through the regen
@@ -24,7 +25,7 @@ export default function GatewayCard({
   const direct = state?.catalog?.direct ?? 0;
   const total = gateable + direct;
   const percent = total ? Math.round((gateable / total) * 100) : 0;
-  const watching = (state?.users || []).reduce((sum, u) => sum + (u.devices_active || 0), 0);
+  const { watching } = useWatching();
   const [saving, setSaving] = useState(false);
 
   const toggle = async (checked) => {

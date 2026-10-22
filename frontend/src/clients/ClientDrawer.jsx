@@ -11,6 +11,7 @@ import { devicesLabel, periodSuffix, planOptions } from '../lib/plans.js';
 import ClientAccessTab from './ClientAccessTab.jsx';
 import ClientNotifyTab from './ClientNotifyTab.jsx';
 import Hint from '../components/Hint.jsx';
+import { useWatching } from '../lib/watching.jsx';
 
 // A shortcut from the customer's card into a section that manages this
 // customer among everyone else (payments, devices): the section opens with
@@ -46,6 +47,7 @@ export default function ClientDrawer({
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
   const screens = Grid.useBreakpoint();
+  const live = useWatching();
   const plans = state?.plans || [];
   const plan = plans.find((p) => p.id === user?.plan_id) || null;
 
@@ -168,7 +170,7 @@ export default function ClientDrawer({
           <SectionLink
             icon={<DesktopOutlined />}
             title="Устройства"
-            detail={`смотрят ${user.devices_active || 0} · ${devicesLabel(user.device_limit)}`}
+            detail={`смотрят ${live.of(user.id).watching} · ${devicesLabel(user.device_limit)}`}
             onClick={() => go(`devices/${user.id}`)}
           />
         </Col>

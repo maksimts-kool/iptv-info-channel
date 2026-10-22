@@ -10,12 +10,14 @@ import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import ClientDevicesCard from '../clients/ClientDevicesCard.jsx';
 import { AuthError } from '../lib/api.js';
 import { count, plainIp } from '../lib/format.js';
+import { summarizeWatching, useWatching } from '../lib/watching.jsx';
 import PlayerName from '../components/PlayerName.jsx';
+import DeviceStatus from '../components/DeviceStatus.jsx';
 
 // Live "who is watching" across every customer, plus the limits that decide it.
-// The data is the stream gateway's in-memory tracker, so it is polled rather
-// than loaded once; the admin can pause the polling to read a row in peace.
-const POLL_MS = 5_000;
+// The list is the shared device poll (lib/watching), the same one behind the
+// menu badge and Статистика; pausing freezes this screen's copy so the admin
+// can read a row in peace.
 
 function ago(iso) {
   const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
@@ -36,10 +38,9 @@ function focusFromHash() {
 export default function DevicesPage({
   api, state, reload, withRegen, message, onAuthError,
 }) {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [auto, setAuto] = useState(true);
-  const [updatedAt, setUpdatedAt] = useState(null);
+  const live = useWatching();
+  // While paused: the list as it was, and when.
+  const [frozen, setFrozen] = useState(null);
   const [enabling, setEnabling] = useState(false);
   const [focusId, setFocusId] = useState(focusFromHash);
 
@@ -59,24 +60,14 @@ export default function DevicesPage({
     else message.error(e.message);
   }, [onAuthError, message]);
 
+  const auto = !frozen;
+  const shown = frozen || live;
+  const setAuto = (on) => setFrozen(on ? null : { ...live, updatedAt: live.updatedAt || new Date() });
+  // Paused, a manual refresh replaces the frozen copy.
   const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setData(await api.get('/admin/api/devices'));
-      setUpdatedAt(new Date());
-    } catch (e) {
-      fail(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [api, fail]);
-
-  useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (!auto) return undefined;
-    const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
-  }, [auto, load]);
+    const next = await live.refresh();
+    if (next) setFrozen((f) => (f ? { ...summarizeWatching(next), updatedAt: new Date() } : f));
+  }, [live]);
 
   const enableGateway = async () => {
     setEnabling(true);
@@ -112,24 +103,16 @@ export default function DevicesPage({
     );
   };
 
-  const gatewayOn = data ? data.gateway_enabled : !!state?.gateway?.enabled;
-  const idle = data?.idle_seconds ?? state?.gateway?.device_idle_seconds ?? 60;
-  const clients = data?.clients || [];
-  const devices = clients.flatMap((c) => c.devices);
-  const over = devices.filter((d) => !d.allowed).length;
+  const gatewayOn = shown.ready ? shown.gatewayEnabled : !!state?.gateway?.enabled;
+  const idle = shown.ready ? shown.idleSeconds : state?.gateway?.device_idle_seconds ?? 60;
+  const { clients, over, updatedAt } = shown;
   const plans = state?.plans || [];
   const users = state?.users || [];
   const personal = users.filter((u) => u.max_devices !== null && u.max_devices !== undefined);
   const focused = users.find((u) => u.id === focusId) || null;
 
-  const deviceColumns = [
-    {
-      title: 'Статус',
-      width: 140,
-      render: (_, d) => (d.allowed
-        ? <Badge status="processing" color="green" text="смотрит" />
-        : <Badge status="error" text="сверх лимита" />),
-    },
+  const deviceColumns = (limit) => [
+    { title: 'Статус', width: 140, render: (_, d) => <DeviceStatus device={d} limited={limit > 0} /> },
     { title: 'Канал', dataIndex: 'channel', ellipsis: true },
     {
       title: 'Плеер',
@@ -160,12 +143,10 @@ export default function DevicesPage({
       title: 'Устройства',
       width: 280,
       render: (_, c) => {
-        const watching = c.devices.length;
-        const blocked = c.devices.filter((d) => !d.allowed).length;
+        const { watching, used, over: blocked } = shown.of(c.user_id);
         if (!c.limit) {
           return <Typography.Text>{`${watching} · без лимита`}</Typography.Text>;
         }
-        const used = watching - blocked;
         return (
           <Space size={8} style={{ whiteSpace: 'nowrap' }}>
             <Progress
@@ -176,6 +157,11 @@ export default function DevicesPage({
               size={[14, 10]}
             />
             <Typography.Text>{`${used} из ${c.limit}`}</Typography.Text>
+            {watching > used ? (
+              <Tooltip title="Смотрят свой канал (инфоканал или медиаканал): он не ограничен и места не занимает">
+                <Tag>{`+${watching - used} свой канал`}</Tag>
+              </Tooltip>
+            ) : null}
             {blocked ? (
               <Tooltip title="Устройства, которым отказано: вместо канала они видят экран «Превышен лимит устройств»">
                 <Tag color="red" icon={<WarningOutlined />}>{`+${blocked} не пущено`}</Tag>
@@ -216,7 +202,7 @@ export default function DevicesPage({
         <Alert
           type="warning"
           showIcon
-          message="Шлюз потоков выключен — лимит устройств не действует и просмотры не видны"
+          message="Шлюз потоков выключен — лимит устройств не действует, видны только просмотры своих каналов"
           action={(
             <Button type="primary" size="small" loading={enabling} onClick={enableGateway}>
               Включить шлюз
@@ -229,9 +215,8 @@ export default function DevicesPage({
         <ClientDevicesCard
           key={focused.id}
           user={focused}
-          api={api}
-          message={message}
-          onAuthError={onAuthError}
+          watching={shown}
+          onRefresh={load}
           onClose={unfocus}
           onOpenClient={() => openClient(focused.id)}
           onReset={() => resetSlots({ user_id: focused.id, username: focused.username })}
@@ -243,7 +228,7 @@ export default function DevicesPage({
           <Card size="small">
             <Statistic
               title="Смотрят сейчас"
-              value={devices.length - over}
+              value={shown.watching}
               formatter={count}
               prefix={<DesktopOutlined />}
             />
@@ -253,7 +238,7 @@ export default function DevicesPage({
           <Card size="small">
             <Statistic
               title="Клиентов онлайн"
-              value={clients.length}
+              value={shown.online}
               formatter={count}
               prefix={<TeamOutlined />}
             />
@@ -295,7 +280,7 @@ export default function DevicesPage({
               <Switch size="small" checked={auto} onChange={setAuto} />
               <Typography.Text>Автообновление</Typography.Text>
             </Space>
-            <Button size="small" icon={<ReloadOutlined />} loading={loading} onClick={load} />
+            <Button size="small" icon={<ReloadOutlined />} loading={live.loading} onClick={load} aria-label="Обновить" />
           </Space>
         )}
         styles={{ body: { padding: clients.length ? 0 : undefined } }}
@@ -318,7 +303,7 @@ export default function DevicesPage({
                   pagination={false}
                   rowKey={(d) => `${d.ip}|${d.first_seen}`}
                   dataSource={c.devices}
-                  columns={deviceColumns}
+                  columns={deviceColumns(c.limit)}
                 />
               ),
             }}
@@ -326,7 +311,7 @@ export default function DevicesPage({
         ) : (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={gatewayOn ? 'Сейчас никто не смотрит' : 'Без шлюза просмотры не видны'}
+            description={gatewayOn ? 'Сейчас никто не смотрит' : 'Свои каналы сейчас никто не смотрит, а каналы провайдера без шлюза не видны'}
           />
         )}
       </Card>

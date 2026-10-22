@@ -433,13 +433,38 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     assert!(m.text.contains(&format!("{}/live/seg_001.ts", h.upstream)));
     assert!(m.text.contains(&format!("URI=\"{}/live/key.bin\"", h.upstream)));
 
-    // Statistics: the watch is live at once (too short to count as history).
+    // The device is watching at once; too short yet to count as history.
+    let now_watching = |all: Value| -> Vec<(String, String, bool)> {
+        all["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["user_id"] == uid)
+            .flat_map(|c| c["devices"].as_array().unwrap().clone())
+            .map(|d| {
+                (
+                    d["channel"].as_str().unwrap().to_owned(),
+                    d["player"].as_str().unwrap().to_owned(),
+                    d["slot"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let watching = now_watching(h.get("/admin/api/devices").await.json());
+    assert_eq!(watching.len(), 1, "{watching:?}");
+    assert_eq!((watching[0].0.as_str(), watching[0].2), ("HLS Channel", true));
+    let state = h.get("/admin/api/state").await.json();
+    let me = state["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == uid)
+        .unwrap();
+    assert_eq!(me["devices_active"], 1);
     let viewing = h.get(&format!("/admin/api/stats?days=1&user={uid}")).await.json();
-    assert_eq!(viewing["live"][0]["channel"], "HLS Channel");
-    assert_eq!(viewing["live"][0]["channel_id"], hls_id.as_str());
     assert_eq!(viewing["totals"]["sessions"], 0);
     assert_eq!(viewing["daily"].as_array().unwrap().len(), 1);
-    assert_eq!(viewing["heatmap"].as_array().unwrap().len(), 7);
+    assert_eq!(viewing["daily"][0]["hours"].as_array().unwrap().len(), 24);
     // The player is named after the app that downloaded the playlist, not the
     // TV's media stack that fetches the stream.
     let app_pl = h
@@ -462,15 +487,12 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
         .await
         .unwrap();
     assert_eq!(tv.status().as_u16(), 200);
-    let viewing = h.get(&format!("/admin/api/stats?days=1&user={uid}")).await.json();
-    let players: Vec<&str> = viewing["live"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|l| l["player"].as_str().unwrap())
+    let players: Vec<String> = now_watching(h.get("/admin/api/devices").await.json())
+        .into_iter()
+        .map(|d| d.1)
         .collect();
-    assert!(players.contains(&"OTT Play · Samsung TV"), "{players:?}");
-    // The Devices screen names it the same way.
+    assert!(players.iter().any(|p| p == "OTT Play · Samsung TV"), "{players:?}");
+    // The customer's own device list names it the same way.
     let devices = h.get(&format!("/admin/api/users/{uid}/devices")).await.json();
     assert!(
         devices["devices"]
@@ -485,6 +507,25 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
 
     // Revoked mid-view: spliced onto the info card.
     h.write_info_loop(uid);
+    // A device on the info channel is watching too, but holds no slot.
+    let info = h
+        .http
+        .get(format!("{}/hls/{token}/index.m3u8", h.base))
+        .header(header::USER_AGENT, "VLC/3.0.21 LibVLC/3.0.21")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(info.status().as_u16(), 200);
+    let watching = now_watching(h.get("/admin/api/devices").await.json());
+    assert_eq!(watching.iter().filter(|d| !d.2).count(), 1, "{watching:?}");
+    let state = h.get("/admin/api/state").await.json();
+    let me = state["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == uid)
+        .unwrap();
+    assert_eq!(me["devices_active"], watching.len());
     h.patch(
         &format!("/admin/api/users/{uid}/channels"),
         json!({"channels": {hls_id.clone(): false}}),

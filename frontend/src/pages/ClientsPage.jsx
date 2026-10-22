@@ -13,6 +13,7 @@ import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { periodSuffix, planOptions, expiryForPlan } from '../lib/plans.js';
 import ClientDrawer from '../clients/ClientDrawer.jsx';
+import { useWatching } from '../lib/watching.jsx';
 
 // #/clients/12 opens that customer's card straight away (linked from the
 // Устройства and Оплаты sections).
@@ -44,6 +45,7 @@ export default function ClientsPage(shared) {
     state, api, withRegen, reload, message, onAuthError,
   } = shared;
   const screens = Grid.useBreakpoint();
+  const live = useWatching();
   const phone = screens.md === false;
   const users = state?.users || [];
   const plans = state?.plans || [];
@@ -223,13 +225,13 @@ export default function ClientsPage(shared) {
       },
     },
     {
-      // Devices watching right now vs. the limit that applies. Live numbers
-      // from the stream gateway; refreshed with the rest of /api/state.
+      // Devices holding a slot right now vs. the limit that applies, from
+      // the shared device poll.
       title: 'Устройства',
       key: 'devices',
       width: 120,
       render: (_, u) => {
-        const active = u.devices_active || 0;
+        const active = live.of(u.id).used;
         const limit = u.device_limit || 0;
         const text = limit > 0 ? `${active} / ${limit}` : `${active} / ∞`;
         return (

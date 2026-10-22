@@ -9,6 +9,7 @@ import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { count, seconds as secondsPretty } from '../lib/format.js';
 import { euros, periodWord } from '../lib/plans.js';
 import { PROVIDER_BLUE } from '../components/ProviderNewsCard.jsx';
+import { useWatching } from '../lib/watching.jsx';
 
 // A small "section at a glance" card: a title that opens the section, a few
 // lines of state underneath.
@@ -149,8 +150,7 @@ export default function OverviewPage({ state, go }) {
     .sort((a, b) => (a.days_left ?? 0) - (b.days_left ?? 0))
     .slice(0, 8);
 
-  const watching = users.reduce((sum, u) => sum + (u.devices_active || 0), 0);
-  const watchingClients = users.filter((u) => u.devices_active).length;
+  const live = useWatching();
   const verified = subscribers.filter((s) => s.verified).length;
   const newsReaders = subscribers.filter((s) => s.verified && s.options?.news).length;
 
@@ -280,12 +280,12 @@ export default function OverviewPage({ state, go }) {
           <StatCard hint="Устройства" onOpen={() => go('devices')}>
             <Statistic
               title="Смотрят сейчас"
-              value={gateway.enabled ? watching : '—'}
+              value={gateway.enabled ? live.watching : '—'}
               formatter={gateway.enabled ? count : undefined}
               prefix={<DesktopOutlined />}
               suffix={gateway.enabled ? (
                 <Typography.Text type="secondary" style={{ fontSize: 14 }}>
-                  {`устр. · ${count(watchingClients)} кл.`}
+                  {`устр. · ${count(live.online)} кл.`}
                 </Typography.Text>
               ) : null}
             />
@@ -404,8 +404,8 @@ export default function OverviewPage({ state, go }) {
         </Col>
         <Col xs={24} md={12} xl={8}>
           <Panel title="Устройства" icon={<DesktopOutlined />} onOpen={() => go('devices')}>
-            <Line label="Смотрят сейчас">{gateway.enabled ? `${count(watching)} устр.` : 'не видно без шлюза'}</Line>
-            <Line label="Клиентов онлайн">{gateway.enabled ? count(watchingClients) : '—'}</Line>
+            <Line label="Смотрят сейчас">{gateway.enabled ? `${count(live.watching)} устр.` : 'не видно без шлюза'}</Line>
+            <Line label="Клиентов онлайн">{gateway.enabled ? count(live.online) : '—'}</Line>
             <Line label="Тарифов с лимитом">{`${count(limitedPlans.length)} из ${count(plans.length)}`}</Line>
           </Panel>
         </Col>

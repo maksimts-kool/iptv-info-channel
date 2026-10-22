@@ -116,6 +116,8 @@ pub struct DeviceView {
     pub first_seen: String,
     pub last_seen: String,
     pub allowed: bool,
+    /// Counts against the limit; a device only on a built-in loop does not.
+    pub slot: bool,
 }
 
 fn iso_ms(ms: i64) -> String {
@@ -193,9 +195,26 @@ impl Gateway {
         self.watch().requeue(rows);
     }
 
-    /// The watches in progress right now.
+    /// The watches not written to the history yet (or not to their end).
+    pub fn open_watches(&self) -> Vec<WatchRow> {
+        self.watch().open()
+    }
+
+    /// The watches in progress right now: what each device listed by
+    /// [`Self::devices_of`] is playing, by the same idle window.
     pub fn live_watches(&self) -> Vec<WatchRow> {
-        self.watch().live(now_ms())
+        let now = now_ms();
+        let idle_ms = self.devices().idle_ms();
+        self.watch()
+            .live(now)
+            .into_iter()
+            .filter(|r| now - r.ended <= idle_ms)
+            .collect()
+    }
+
+    /// A device is playing a built-in loop (listed as watching, no slot).
+    pub fn view_loop(&self, user_id: i64, key: &str, info: DeviceInfo) {
+        self.devices().view(user_id, key, info, now_ms());
     }
 
     fn devices(&self) -> std::sync::MutexGuard<'_, DeviceTracker> {
@@ -211,7 +230,7 @@ impl Gateway {
         self.devices()
             .list(user.id, user.device_limit, now_ms())
             .into_iter()
-            .map(|ListedDevice { device, allowed }| DeviceView {
+            .map(|ListedDevice { device, allowed, slot }| DeviceView {
                 ip: device.info.ip,
                 user_agent: device.info.ua,
                 player: device.info.player,
@@ -219,12 +238,18 @@ impl Gateway {
                 first_seen: iso_ms(device.first_seen),
                 last_seen: iso_ms(device.last_seen),
                 allowed,
+                slot,
             })
             .collect()
     }
 
-    pub fn device_count(&self, user_id: i64) -> usize {
-        self.devices().count(user_id, now_ms())
+    /// How many of one customer's devices are watching (not turned away).
+    pub fn watching_count(&self, user: &DecoratedUser) -> usize {
+        self.devices()
+            .list(user.id, user.device_limit, now_ms())
+            .iter()
+            .filter(|d| d.allowed)
+            .count()
     }
 
     /// Drop a customer's devices and sessions (deleted account, new token).
@@ -294,14 +319,27 @@ pub fn builtin_channel_name(st: &AppState, channel_id: &str) -> String {
     }
 }
 
-/// Record a request for one of the built-in loops.
+/// Record a request for one of the built-in loops: in the history, and in
+/// the device list (watching, but the loops take no slot).
 pub fn record_builtin_watch(st: &AppState, user: &DecoratedUser, channel_id: &str, ip: &str, user_agent: &str) {
     let app_agent = st.gateway.app_agent(user.id, ip, "");
+    let device = device_key(ip, "", user_agent);
+    let channel_name = builtin_channel_name(st, channel_id);
+    st.gateway.view_loop(
+        user.id,
+        &device,
+        DeviceInfo {
+            ip: ip.to_owned(),
+            ua: user_agent.to_owned(),
+            player: describe_player(app_agent.as_deref(), user_agent),
+            channel: channel_name.clone(),
+        },
+    );
     st.gateway.record_watch(&WatchHit {
         user_id: user.id,
-        device: &device_key(ip, "", user_agent),
+        device: &device,
         channel_id,
-        channel_name: &builtin_channel_name(st, channel_id),
+        channel_name: &channel_name,
         user_agent,
         app_agent: app_agent.as_deref(),
         ip,

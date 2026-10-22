@@ -3,7 +3,8 @@
 //!
 //! The numbers combine the stored history with the watches still in
 //! progress, so the page is current to the second rather than to the last
-//! flush.
+//! flush. Who is watching right now comes from the device list, which every
+//! screen shares; this only flags the running watches.
 
 use std::collections::{HashMap, HashSet};
 
@@ -80,16 +81,16 @@ async fn stats(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
     let to_ms = now.as_millisecond();
 
     let stored = load(st.store.pool(), from_ms, to_ms, user_filter).await?;
-    let live: Vec<WatchRow> = st
-        .gateway
-        .live_watches()
-        .into_iter()
-        .filter(|r| user_filter.is_none_or(|id| r.user_id == id))
-        .collect();
+    let of_user = |r: &WatchRow| user_filter.is_none_or(|id| r.user_id == id);
     // The in-memory copy of a watch is newer than its last flush.
     let mut rows: HashMap<String, WatchRow> = stored.into_iter().map(|r| (r.id.clone(), r)).collect();
-    for r in live.iter().filter(|r| r.duration_ms() >= MIN_WATCH_MS) {
-        rows.insert(r.id.clone(), r.clone());
+    for r in st
+        .gateway
+        .open_watches()
+        .into_iter()
+        .filter(|r| of_user(r) && r.duration_ms() >= MIN_WATCH_MS)
+    {
+        rows.insert(r.id.clone(), r);
     }
     let rows: Vec<WatchRow> = rows.into_values().collect();
 
@@ -99,7 +100,15 @@ async fn stats(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
         .into_iter()
         .map(|u| (u.id, u.username.clone()))
         .collect();
-    let live_ids: HashSet<String> = live.iter().map(|r| r.id.clone()).collect();
+    // Who is watching right now is the device list's business
+    // (`/admin/api/devices`); here it only marks the watches still running.
+    let live_ids: HashSet<String> = st
+        .gateway
+        .live_watches()
+        .into_iter()
+        .filter(of_user)
+        .map(|r| r.id)
+        .collect();
     let summary = summarize(
         &rows,
         &Window {
@@ -110,18 +119,6 @@ async fn stats(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
             live: &live_ids,
         },
     );
-
-    let now_watching: Vec<Value> = live
-        .iter()
-        .map(|r| {
-            json!({
-                "user_id": r.user_id,
-                "username": usernames.get(&r.user_id).cloned().unwrap_or_default(),
-                "channel_id": r.channel_id, "channel": r.channel_name, "player": r.player, "ip": r.ip,
-                "since": Timestamp::from_millisecond(r.started).map(iso).unwrap_or_default(),
-            })
-        })
-        .collect();
 
     let mut out = serde_json::to_value(summary).map_err(anyhow::Error::from)?;
     if let Value::Object(map) = &mut out {
@@ -140,7 +137,6 @@ async fn stats(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
             "user".into(),
             user.map_or(Value::Null, |u| json!({ "id": u.id, "username": u.username })),
         );
-        map.insert("live".into(), Value::Array(now_watching));
     }
     ok(out)
 }

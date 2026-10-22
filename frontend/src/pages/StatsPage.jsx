@@ -1,5 +1,5 @@
 import {
-  useCallback, useEffect, useMemo, useState,
+  useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import {
   Alert, Button, Card, Col, Empty, Row, Segmented, Select, Space, Statistic, Tag, Tooltip, Typography,
@@ -12,6 +12,7 @@ import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import { AuthError } from '../lib/api.js';
 import { count, plainIp, watchTime } from '../lib/format.js';
 import PlayerName from '../components/PlayerName.jsx';
+import { useWatching } from '../lib/watching.jsx';
 import {
   BarList, ColumnChart, Heatmap, Legend, OTHER, SERIES, TipBody, useTooltip,
 } from '../stats/charts.jsx';
@@ -20,6 +21,10 @@ import {
 // Built from the history the stream gateway records (gated HLS channels and
 // the built-in loops), plus whatever is playing right now. #/stats/12 opens
 // it filtered to one customer (the link on the customer's card).
+//
+// "Смотрят сейчас" is the shared device poll (lib/watching), the same list as
+// Устройства; whenever it changes the numbers here are reloaded quietly, and
+// once a minute anyway so running watches keep growing.
 
 const PERIODS = [
   { value: 1, label: 'Сегодня' },
@@ -28,6 +33,15 @@ const PERIODS = [
   { value: 90, label: '90 дней' },
 ];
 const TOP_ROWS = 12;
+const REFRESH_MS = 60_000;
+// "Когда смотрят" by period length (in days); see `heat` below.
+const WEEK_DAYS = 7;
+// Dates across: at most this many columns, so 90 days is as wide as 30.
+const MAX_COLUMNS = 31;
+const BLOCK_HOURS = 3;
+const HOURS = Array.from({ length: 24 }, (_, h) => h);
+const BLOCKS = HOURS.filter((h) => h % BLOCK_HOURS === 0);
+const hh = (h) => String(h % 24).padStart(2, '0');
 // Channels that get their own colour in "Кто что смотрит"; the rest are «Другие».
 const STACKED = SERIES.length;
 
@@ -83,6 +97,7 @@ export default function StatsPage({
   const [loading, setLoading] = useState(false);
   const [channel, setChannel] = useState(null);
   const [tipNode, bind, hideTip] = useTooltip();
+  const live = useWatching();
 
   useEffect(() => {
     const onHash = () => setFilter(fromHash());
@@ -102,21 +117,39 @@ export default function StatsPage({
     hideTip();
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // `quiet`: a background refresh, no dimming and no error toast.
+  const load = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) setLoading(true);
     try {
       const qs = new URLSearchParams({ days: String(days) });
       if (user) qs.set('user', String(user));
       setData(await api.get(`/admin/api/stats?${qs}`));
     } catch (e) {
       if (e instanceof AuthError) onAuthError();
-      else message.error(e.message);
+      else if (!quiet) message.error(e.message);
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [api, days, user, onAuthError, message]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Someone started, stopped or switched: reload with the device list.
+  const liveKey = live.devices
+    .filter((d) => d.allowed)
+    .map((d) => `${d.ip}|${d.player}|${d.channel}`)
+    .sort()
+    .join('\n');
+  const seenKey = useRef(liveKey);
+  useEffect(() => {
+    if (seenKey.current === liveKey) return;
+    seenKey.current = liveKey;
+    load({ quiet: true });
+  }, [liveKey, load]);
+  useEffect(() => {
+    const id = setInterval(() => { if (!document.hidden) load({ quiet: true }); }, REFRESH_MS);
+    return () => clearInterval(id);
+  }, [load]);
 
   const users = state?.users || [];
   const userOptions = useMemo(() => users
@@ -124,23 +157,22 @@ export default function StatsPage({
     .sort((a, b) => a.label.localeCompare(b.label, 'ru')), [users]);
 
   const totals = data?.totals;
-  const live = data?.live || [];
+  const watchingNow = user ? live.of(user).watching : live.watching;
   const channels = data?.channels || [];
   const customers = data?.customers || [];
   const daily = data?.daily || [];
-  const heatmap = data?.heatmap || Array.from({ length: 7 }, () => Array(24).fill(0));
-  const hasData = !!totals && (totals.sessions > 0 || live.length > 0);
+  const hasData = !!totals && totals.sessions > 0;
+  const today = days === 1;
 
-  // Today: one column per hour (every watch falls on the same weekday, so
-  // that is one heatmap row). Longer: one column per day.
+  // Today: one column per hour, which is all "Когда смотрят" has to say for
+  // one day. Longer: one column per day, and the hours in the heatmap.
   const columns = useMemo(() => {
-    if (days === 1 && daily.length) {
-      const weekday = (dateOf(daily[0].date).getUTCDay() + 6) % 7;
-      return heatmap[weekday].map((v, h) => ({
+    if (today && daily.length) {
+      return daily[0].hours.map((v, h) => ({
         key: `h${h}`,
-        label: String(h).padStart(2, '0'),
+        label: hh(h),
         value: v,
-        tip: <TipBody title={`${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00`} rows={[{ label: 'просмотра', value: watchTime(v) }]} />,
+        tip: <TipBody title={`${hh(h)}:00–${hh(h + 1)}:00`} rows={[{ label: 'просмотра', value: watchTime(v) }]} />,
       }));
     }
     return daily.map((d) => ({
@@ -159,7 +191,56 @@ export default function StatsPage({
         />
       ),
     }));
-  }, [days, daily, heatmap]);
+  }, [today, daily]);
+
+  // A week: a row per date, a column per hour. Longer: the dates across, a
+  // row per three hours, so a month or a quarter is as tall as a week. Past
+  // a month a column holds several days (3 for 90), counted back from today
+  // so the last column ends now.
+  const across = daily.length > WEEK_DAYS;
+  const heat = useMemo(() => {
+    if (!across) {
+      return {
+        columns: HOURS.map((h) => ({
+          key: h, label: h % 3 === 0 ? hh(h) : '', title: `${hh(h)}:00–${hh(h + 1)}:00`,
+        })),
+        rows: daily.map((d) => ({
+          key: d.date, label: dayLabel(d.date, false), title: LONG_DAY.format(dateOf(d.date)), values: d.hours,
+        })),
+      };
+    }
+    const size = Math.ceil(daily.length / MAX_COLUMNS);
+    const groups = [];
+    for (let end = daily.length; end > 0; end -= size) groups.unshift(daily.slice(Math.max(0, end - size), end));
+    const marks = (g) => (size === 1
+      // A day per column: Mondays mark the weeks.
+      ? g.find((d) => dateOf(d.date).getUTCDay() === 1)
+      // Several: the 1st and the 15th mark the months.
+      : g.find((d) => [1, 15].includes(dateOf(d.date).getUTCDate())));
+    return {
+      columns: groups.map((g) => {
+        const first = g[0].date;
+        const last = g[g.length - 1].date;
+        const mark = marks(g);
+        return {
+          key: first,
+          label: mark ? dayLabel(mark.date, true) : '',
+          title: first === last
+            ? LONG_DAY.format(dateOf(first))
+            : `${dayLabel(first, true)} – ${dayLabel(last, true)}`,
+        };
+      }),
+      rows: BLOCKS.map((b) => ({
+        key: b,
+        label: `${hh(b)}–${hh(b + BLOCK_HOURS)}`,
+        title: `${hh(b)}:00–${hh(b + BLOCK_HOURS)}:00`,
+        values: groups.map((g) => g.reduce(
+          (sum, d) => sum + d.hours.slice(b, b + BLOCK_HOURS).reduce((a, v) => a + v, 0),
+          0,
+        )),
+      })),
+    };
+  }, [across, daily]);
 
   // A colour per top channel, fixed by its overall rank, so «Спорт» is the
   // same orange in every customer's bar.
@@ -306,35 +387,56 @@ export default function StatsPage({
         <Col flex="1 1 150px">
           <Tile
             title="Смотрят сейчас"
-            value={count(live.length)}
+            value={live.ready ? count(watchingNow) : '—'}
             icon={<DesktopOutlined />}
           />
         </Col>
       </Row>
 
       <Row gutter={[16, 16]} style={chartFrame}>
-        <Col xs={24} xl={14}>
-          <Card size="small" title={days === 1 ? 'Время просмотра по часам' : 'Время просмотра по дням'} style={{ height: '100%' }}>
+        <Col xs={24} xl={today ? 24 : 14}>
+          <Card
+            size="small"
+            title={today ? 'Когда смотрят сегодня' : 'Время просмотра по дням'}
+            extra={today ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{data?.range?.timezone || ''}</Typography.Text> : null}
+            className="card-fill"
+            style={{ height: '100%' }}
+          >
             {hasData ? (
               <ColumnChart
                 items={columns}
                 format={watchTime}
                 bind={bind}
-                ariaLabel={days === 1 ? 'Время просмотра по часам сегодня' : 'Время просмотра по дням'}
+                ariaLabel={today ? 'Время просмотра по часам сегодня' : 'Время просмотра по дням'}
               />
             ) : empty(noData)}
           </Card>
         </Col>
-        <Col xs={24} xl={10}>
-          <Card
-            size="small"
-            title="Когда смотрят"
-            extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>{data?.range?.timezone || ''}</Typography.Text>}
-            style={{ height: '100%' }}
-          >
-            {hasData ? <Heatmap grid={heatmap} format={watchTime} bind={bind} /> : empty(noData)}
-          </Card>
-        </Col>
+        {today ? null : (
+          <Col xs={24} xl={10}>
+            <Card
+              size="small"
+              title="Когда смотрят"
+              extra={(
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {data?.range?.timezone || ''}
+                </Typography.Text>
+              )}
+              style={{ height: '100%' }}
+            >
+              {hasData ? (
+                <Heatmap
+                  rows={heat.rows}
+                  columns={heat.columns}
+                  datesAcross={across}
+                  format={watchTime}
+                  bind={bind}
+                  ariaLabel="Время просмотра по дням и часам"
+                />
+              ) : empty(noData)}
+            </Card>
+          </Col>
+        )}
       </Row>
 
       <Row gutter={[16, 16]} style={chartFrame}>
