@@ -206,14 +206,15 @@ function rampColor(value, max) {
   return RAMP[i];
 }
 
-// A grid of square cells. `columns`: { key, label, title } (a column without a
-// label leaves the axis quiet); `rows`: { key, label, title, values } with a
-// value per column. A cell's tooltip names its row and its column, the date
-// first: `datesAcross` when the columns are the dates.
+// A grid of square cells, the dates across. `columns`: { key, label, sub,
+// title } (a column without a label leaves the axis quiet; `sub` is a second
+// header line); `rows`: { key, label, title, values, titles } with a value per
+// column. A cell's tooltip is `titles[i]` when the row has them, else its
+// column's title, then its row's.
 export function Heatmap({
-  rows, columns, format, bind, ariaLabel, datesAcross = false,
+  rows, columns, format, bind, ariaLabel,
 }) {
-  const name = (row, col) => (datesAcross ? `${col.title}, ${row.title}` : `${row.title}, ${col.title}`);
+  const name = (row, i) => row.titles?.[i] ?? `${columns[i].title}, ${row.title}`;
   const max = Math.max(...rows.flatMap((r) => r.values), 0);
   const labelWidth = rows.some((r) => (r.label || '').length > 2) ? 46 : 24;
   // Many columns (a month of dates) get smaller squares rather than a scroll.
@@ -234,6 +235,14 @@ export function Heatmap({
             <span key={c.key} className="viz-axis viz-heat-col">{c.label}</span>
           ))}
         </div>
+        {columns.some((c) => c.sub) ? (
+          <div className="viz-heat-row viz-heat-head" style={grid}>
+            <span />
+            {columns.map((c) => (
+              <span key={c.key} className="viz-axis viz-heat-col">{c.sub}</span>
+            ))}
+          </div>
+        ) : null}
         {rows.map((row) => (
           <div key={row.key} className="viz-heat-row" style={grid}>
             <span className="viz-axis viz-heat-label">{row.label}</span>
@@ -242,9 +251,9 @@ export function Heatmap({
                 key={`${row.key}|${columns[i].key}`}
                 className="viz-heat-cell viz-hit"
                 tabIndex={0}
-                aria-label={`${name(row, columns[i])}: ${format(v)}`}
+                aria-label={`${name(row, i)}: ${format(v)}`}
                 style={{ background: rampColor(v, max), minHeight: cell }}
-                {...bind(<TipBody title={name(row, columns[i])} rows={[{ label: 'просмотра', value: format(v) }]} />)}
+                {...bind(<TipBody title={name(row, i)} rows={[{ label: 'просмотра', value: format(v) }]} />)}
               />
             ))}
           </div>

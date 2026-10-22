@@ -38,9 +38,10 @@ const REFRESH_MS = 60_000;
 const WEEK_DAYS = 7;
 // Dates across: at most this many columns, so 90 days is as wide as 30.
 const MAX_COLUMNS = 31;
+// A week: each date split into parts of this many hours, a row per hour.
+const WEEK_PART_HOURS = 8;
 const BLOCK_HOURS = 3;
-const HOURS = Array.from({ length: 24 }, (_, h) => h);
-const BLOCKS = HOURS.filter((h) => h % BLOCK_HOURS === 0);
+const BLOCKS = Array.from({ length: 24 / BLOCK_HOURS }, (_, i) => i * BLOCK_HOURS);
 const hh = (h) => String(h % 24).padStart(2, '0');
 // Channels that get their own colour in "Кто что смотрит"; the rest are «Другие».
 const STACKED = SERIES.length;
@@ -193,19 +194,30 @@ export default function StatsPage({
     }));
   }, [today, daily]);
 
-  // A week: a row per date, a column per hour. Longer: the dates across, a
-  // row per three hours, so a month or a quarter is as tall as a week. Past
-  // a month a column holds several days (3 for 90), counted back from today
-  // so the last column ends now.
-  const across = daily.length > WEEK_DAYS;
+  // The dates across, in square cells about as tall as each other:
+  // - a week: three columns per date (from 00, 08 and 16) and a row per
+  //   hour into them, so every cell is one hour;
+  // - longer: a column per date and a row per three hours. Past a month a
+  //   column holds several days (3 for 90), counted back from today so the
+  //   last column ends now.
   const heat = useMemo(() => {
-    if (!across) {
+    if (daily.length <= WEEK_DAYS) {
+      const parts = Array.from({ length: 24 / WEEK_PART_HOURS }, (_, i) => i * WEEK_PART_HOURS);
+      const columns = daily.flatMap((d) => parts.map((p) => ({
+        key: `${d.date}|${p}`,
+        // The date over its first column runs on over the other two.
+        label: p === 0 ? dayLabel(d.date, false) : '',
+        sub: hh(p),
+        day: d,
+        start: p,
+      })));
       return {
-        columns: HOURS.map((h) => ({
-          key: h, label: h % 3 === 0 ? hh(h) : '', title: `${hh(h)}:00–${hh(h + 1)}:00`,
-        })),
-        rows: daily.map((d) => ({
-          key: d.date, label: dayLabel(d.date, false), title: LONG_DAY.format(dateOf(d.date)), values: d.hours,
+        columns,
+        rows: Array.from({ length: WEEK_PART_HOURS }, (_, r) => ({
+          key: r,
+          label: `+${r} ч`,
+          values: columns.map((c) => c.day.hours[c.start + r]),
+          titles: columns.map((c) => `${LONG_DAY.format(dateOf(c.day.date))}, ${hh(c.start + r)}:00–${hh(c.start + r + 1)}:00`),
         })),
       };
     }
@@ -240,7 +252,7 @@ export default function StatsPage({
         )),
       })),
     };
-  }, [across, daily]);
+  }, [daily]);
 
   // A colour per top channel, fixed by its overall rank, so «Спорт» is the
   // same orange in every customer's bar.
@@ -428,7 +440,6 @@ export default function StatsPage({
                 <Heatmap
                   rows={heat.rows}
                   columns={heat.columns}
-                  datesAcross={across}
                   format={watchTime}
                   bind={bind}
                   ariaLabel="Время просмотра по дням и часам"
