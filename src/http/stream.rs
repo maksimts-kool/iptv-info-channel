@@ -226,6 +226,12 @@ fn valid_tag(tag: &str) -> bool {
     (1..=40).contains(&tag.len()) && tag.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// A variant link's `<tag>[.<play>]` segment.
+fn split_play(segment: &str) -> Option<(&str, &str)> {
+    let (tag, play) = segment.split_once('.').unwrap_or((segment, ""));
+    (valid_tag(tag) && (play.is_empty() || valid_tag(play))).then_some((tag, play))
+}
+
 async fn gate_legacy(
     State(st): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -235,6 +241,7 @@ async fn gate_legacy(
     let req = GateRequest {
         token: &token,
         tag: "",
+        play: "",
         channel_id: strip_ext(&id),
         variant: None,
         ip: client_ip(&headers, peer, st.config.trust_proxy),
@@ -255,6 +262,7 @@ async fn gate_tagged(
     let req = GateRequest {
         token: &token,
         tag: if tag == "_" { "" } else { &tag },
+        play: "",
         channel_id: strip_ext(&id),
         variant: None,
         ip: client_ip(&headers, peer, st.config.trust_proxy),
@@ -269,12 +277,13 @@ async fn gate_variant(
     headers: HeaderMap,
     UrlPath((token, tag, id, sig, reference)): UrlPath<(String, String, String, String, String)>,
 ) -> Response {
-    if !valid_tag(&tag) {
+    let Some((tag, play)) = split_play(&tag) else {
         return text(StatusCode::NOT_FOUND, "Not found");
-    }
+    };
     let req = GateRequest {
         token: &token,
-        tag: if tag == "_" { "" } else { &tag },
+        tag: if tag == "_" { "" } else { tag },
+        play,
         channel_id: strip_ext(&id),
         variant: Some((&sig, &reference)),
         ip: client_ip(&headers, peer, st.config.trust_proxy),
@@ -647,6 +656,11 @@ mod tests {
         assert!(safe_file("index.m3u8") && safe_file("seg_000.ts") && safe_file("seg_1234.ts"));
         assert!(!safe_file("../db.json") && !safe_file("seg_1.ts") && !safe_file("loop.json"));
         assert!(valid_tag("_") && valid_tag("aB-9_x") && !valid_tag("") && !valid_tag("a/b"));
+        assert_eq!(split_play("aB-9_x"), Some(("aB-9_x", "")));
+        assert_eq!(split_play("_.k3m9p2qx7a"), Some(("_", "k3m9p2qx7a")));
+        assert_eq!(split_play("tag."), Some(("tag", "")));
+        assert_eq!(split_play(".play"), None);
+        assert_eq!(split_play("a.b.c"), None);
         assert_eq!(strip_ext("ch1.m3u8"), "ch1");
         assert_eq!(strip_ext("ch1"), "ch1");
     }

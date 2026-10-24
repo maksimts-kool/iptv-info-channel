@@ -428,7 +428,23 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     let gate = re.captures(&pl).expect("tagged gate link")[1].to_owned();
     assert!(pl.lines().any(|l| l == "http://provider/2.ts"), "raw TS stays direct");
 
-    let m = h.get(&gate).await;
+    // A media playlist channel is handed out as a one-variant master: the
+    // player refreshes a link of this tune-in's own.
+    let variant_of = |master: &str| -> String {
+        let links: Vec<&str> = master
+            .lines()
+            .filter(|l| l.starts_with("https://iptv.example/c/"))
+            .collect();
+        assert_eq!(links.len(), 1, "{master}");
+        links[0].replace("https://iptv.example", "")
+    };
+    let entry = h.get(&gate).await;
+    assert_eq!(entry.status, 200);
+    assert!(entry.text.contains("#EXT-X-STREAM-INF:BANDWIDTH="), "{}", entry.text);
+    let media = variant_of(&entry.text);
+    assert!(media.ends_with(".m3u8"), "{media}");
+    assert_ne!(variant_of(&h.get(&gate).await.text), media, "each tune-in has its own link");
+    let m = h.get(&media).await;
     assert_eq!(m.status, 200);
     assert!(m.text.contains(&format!("{}/live/seg_001.ts", h.upstream)));
     assert!(m.text.contains(&format!("URI=\"{}/live/key.bin\"", h.upstream)));
@@ -531,7 +547,7 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
         json!({"channels": {hls_id.clone(): false}}),
     )
     .await;
-    let cut = h.get(&gate).await;
+    let cut = h.get(&media).await;
     assert!(cut.text.contains(&format!("{}/live/seg_002.ts", h.upstream)));
     let splice = regex::Regex::new(&format!(r"#EXT-X-DISCONTINUITY\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6\.000000,\nhttps://iptv\.example/hls/{token}/seg_000\.ts\?s=\d+")).unwrap();
     assert!(splice.is_match(&cut.text), "{}", cut.text);
@@ -543,9 +559,10 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     // Sticky until a fresh tune-in.
     h.post(&format!("/admin/api/users/{uid}/channels/reset"), json!({}))
         .await;
-    assert!(h.get(&gate).await.text.contains("/hls/"));
+    assert!(h.get(&media).await.text.contains("/hls/"));
+    let tune2 = variant_of(&h.get(&format!("/c/{token}/tune2/{hls_id}.m3u8")).await.text);
     assert!(
-        h.get(&format!("/c/{token}/tune2/{hls_id}.m3u8"))
+        h.get(&tune2)
             .await
             .text
             .contains(&format!("{}/live/seg_001.ts", h.upstream))
@@ -608,8 +625,8 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     h.write_info_loop(oid);
     let tv = format!("/c/{otok}/tv/{hls_id}.m3u8");
     let phone = format!("/c/{otok}/phone/{hls_id}.m3u8");
-    assert_eq!(h.get(&tv).await.status, 200);
-    assert_eq!(h.get(&tv).await.status, 200);
+    let tv_media = variant_of(&h.get(&tv).await.text);
+    assert_eq!(h.get(&tv_media).await.status, 200);
     assert_eq!(
         h.get(&phone).await.location.as_deref(),
         Some("https://iptv.example/notice/devices/index.m3u8")
@@ -628,7 +645,8 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
             .json()["device_limit"],
         2
     );
-    assert_eq!(h.get(&phone).await.status, 200);
+    let phone_media = variant_of(&h.get(&phone).await.text);
+    assert_eq!(h.get(&phone_media).await.status, 200);
     assert_eq!(
         h.patch(&format!("/admin/api/users/{oid}"), json!({"max_devices": null}))
             .await
@@ -636,13 +654,13 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
         1
     );
     assert!(
-        h.get(&phone)
+        h.get(&phone_media)
             .await
             .text
             .contains(&format!("{}/live/seg_002.ts", h.upstream)),
         "later device cut over mid-view"
     );
-    assert!(!h.get(&tv).await.text.contains("#EXT-X-DISCONTINUITY"));
+    assert!(!h.get(&tv_media).await.text.contains("#EXT-X-DISCONTINUITY"));
     assert_eq!(
         h.patch(&format!("/admin/api/users/{oid}"), json!({"max_devices": "x"}))
             .await

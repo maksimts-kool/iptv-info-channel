@@ -7,7 +7,11 @@
 //! Only the manifest passes through; segments go provider -> player.
 //!
 //! - Master playlists hand out their variants as signed `/c/…/<sig>/<ref>`
-//!   links back here, so a revocation lands while the customer watches.
+//!   links back here, so a revocation lands while the customer watches. A
+//!   channel that is a plain media playlist is handed out as a one-variant
+//!   master the same way. Each tune-in's links carry a play id of its own
+//!   (`<tag>.<play>`): identical devices sharing one key refresh different
+//!   links, which is how the device limit tells them apart.
 //! - A refusal mid-view is a SPLICE (provider's last window + our own loop as
 //!   the continuation), sticky until a fresh tune-in. A refusal at tune-in is
 //!   a 302 to the customer's own info card (same origin, so no protocol issue).
@@ -31,7 +35,7 @@ use sha2::Sha256;
 use super::playlist::{media_stream_url, notice_stream_url, user_stream_url};
 use super::{AppState, enc, manifest, redirect, text};
 use crate::core::fetch::fetch_bounded;
-use crate::core::util::{AccountStatus, account_status, now_ms};
+use crate::core::util::{AccountStatus, account_status, make_token, now_ms};
 use crate::data::model::DecoratedUser;
 use crate::encode::liveloop::{LIVE_WINDOW_SEGMENTS, Segment, loop_segments};
 use crate::encode::queue::Priority;
@@ -279,13 +283,21 @@ fn variant_signature(secret: &str, token: &str, channel_id: &str, url: &str) -> 
     sig
 }
 
-fn variant_gate_url(st: &AppState, user: &DecoratedUser, tag: &str, channel_id: &str, url: &str) -> String {
+/// Characters in a play id (see the module docs).
+const PLAY_ID_LEN: usize = 10;
+
+fn variant_gate_url(st: &AppState, user: &DecoratedUser, tag: &str, play: &str, channel_id: &str, url: &str) -> String {
     let tag = if tag.is_empty() { "_" } else { tag };
+    let tag = if play.is_empty() {
+        tag.to_owned()
+    } else {
+        format!("{tag}.{play}")
+    };
     format!(
         "{}/c/{}/{}/{}/{}/{}.m3u8",
         st.config.public_base_url,
         enc(&user.token),
-        enc(tag),
+        enc(&tag),
         enc(channel_id),
         variant_signature(&st.config.session_secret, &user.token, channel_id, url),
         URL_SAFE_NO_PAD.encode(url)
@@ -334,6 +346,7 @@ pub fn record_builtin_watch(st: &AppState, user: &DecoratedUser, channel_id: &st
             ua: user_agent.to_owned(),
             player: describe_player(app_agent.as_deref(), user_agent),
             channel: channel_name.clone(),
+            play: String::new(),
         },
     );
     st.gateway.record_watch(&WatchHit {
@@ -403,11 +416,20 @@ fn filler_for(st: &AppState, user: &DecoratedUser, refusal: Refusal) -> Option<F
     None
 }
 
+/// A master playlist with one variant: a media playlist channel handed out
+/// through a link of the tune-in's own. The bandwidth is nominal (there is
+/// nothing to choose between).
+fn single_variant_master(uri: &str) -> String {
+    format!("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000\n{uri}\n")
+}
+
 /// The gate's inputs, from the route.
 #[derive(Debug)]
 pub struct GateRequest<'a> {
     pub token: &'a str,
     pub tag: &'a str,
+    /// The tune-in a variant link was handed to (empty on entry links).
+    pub play: &'a str,
     pub channel_id: &'a str,
     pub variant: Option<(&'a str, &'a str)>,
     pub ip: String,
@@ -430,7 +452,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     let now = now_ms();
     let device = device_key(&req.ip, req.tag, &req.user_agent);
     let prefix = format!("{}|{device}|{}|", user.id, req.channel_id);
-    let session_key = format!("{prefix}{}", upstream.as_deref().unwrap_or(""));
+    let session_key = format!("{prefix}{}|{}", req.play, upstream.as_deref().unwrap_or(""));
     let session = {
         let mut sessions = st.gateway.sessions();
         if sessions.get(&session_key).is_some_and(|s| s.is_stale(now)) {
@@ -438,9 +460,12 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         }
         let current = sessions.get(&session_key).cloned();
         // The entry URL of a master is only fetched at tune-in: this is a zap
-        // back onto the channel, so its variants start over.
+        // back onto the channel, so its variants start over. Those of a play
+        // id are its own (another device may share the key); links handed
+        // out without one are this key's.
         if req.variant.is_none() && !matches!(current, Some(Session::Media { .. })) {
-            sessions.retain(|k, _| !k.starts_with(&prefix) || *k == session_key);
+            let unplayed = format!("{prefix}|");
+            sessions.retain(|k, _| !k.starts_with(&unplayed) || *k == session_key);
         }
         current
     };
@@ -490,6 +515,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
 
     let app_agent = st.gateway.app_agent(user.id, &req.ip, req.tag);
     let player = describe_player(app_agent.as_deref(), &req.user_agent);
+    let mut watch_device = device.clone();
     let existing_splice = match &session {
         Some(Session::Media { splice, .. }) => *splice,
         _ => None,
@@ -504,11 +530,13 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
             ua: req.user_agent.clone(),
             player,
             channel: channel_name.clone(),
+            play: req.play.to_owned(),
         };
         let slot = st
             .gateway
             .devices()
             .admit(user.id, &device, user.device_limit, info, now);
+        watch_device = slot.slot;
         (!slot.allowed).then_some(Refusal::Devices)
     };
 
@@ -590,10 +618,9 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     .await;
     match fetched {
         Ok(f) => {
-            let device = st.gateway.devices().slot_key(user.id, &device);
             st.gateway.record_watch(&WatchHit {
                 user_id: user.id,
-                device: &device,
+                device: &watch_device,
                 channel_id: req.channel_id,
                 channel_name: &channel_name,
                 user_agent: &req.user_agent,
@@ -601,12 +628,27 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
                 ip: &req.ip,
             });
             let body = f.text();
+            // A tune-in: its own play id for the links it is handed.
+            let play = if req.variant.is_none() {
+                make_token(PLAY_ID_LEN)
+            } else {
+                req.play.to_owned()
+            };
+            let gate = |abs: &str| variant_gate_url(st, &user, req.tag, &play, req.channel_id, abs);
             if is_master_playlist(&body) {
                 st.gateway
                     .sessions()
                     .insert(session_key, Session::Master { last_seen: now });
-                let gate = |abs: &str| variant_gate_url(st, &user, req.tag, req.channel_id, abs);
                 return manifest(rewrite_hls_manifest(&body, &f.final_url, Some(&gate)));
+            }
+            if req.variant.is_none() {
+                // Refreshed through a link of this tune-in's own, like a
+                // master's variants. The channel URL, not where it
+                // redirected: that is what every refresh fetched so far.
+                st.gateway
+                    .sessions()
+                    .insert(session_key, Session::Master { last_seen: now });
+                return manifest(single_variant_master(&gate(&url)));
             }
             let rewritten = rewrite_hls_manifest(&body, &f.final_url, None);
             st.gateway.sessions().insert(
