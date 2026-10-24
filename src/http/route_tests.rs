@@ -442,8 +442,15 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
     assert_eq!(entry.status, 200);
     assert!(entry.text.contains("#EXT-X-STREAM-INF:BANDWIDTH="), "{}", entry.text);
     let media = variant_of(&entry.text);
-    assert!(media.ends_with(".m3u8"), "{media}");
-    assert_ne!(variant_of(&h.get(&gate).await.text), media, "each tune-in has its own link");
+    assert!(
+        std::path::Path::new(&media).extension().is_some_and(|e| e == "m3u8"),
+        "{media}"
+    );
+    assert_ne!(
+        variant_of(&h.get(&gate).await.text),
+        media,
+        "each tune-in has its own link"
+    );
     let m = h.get(&media).await;
     assert_eq!(m.status, 200);
     assert!(m.text.contains(&format!("{}/live/seg_001.ts", h.upstream)));

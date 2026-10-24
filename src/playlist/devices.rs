@@ -21,8 +21,10 @@
 //! HTTP stack and hands it to the TV's media stack (a tagless link has only
 //! the User-Agent to go by), or the playlist was downloaded again by another
 //! User-Agent. A newcomer from the address of a device already watching the
-//! same channel, with another User-Agent, is that device and counts against
-//! its slot. Two devices of one kind send the same User-Agent and stay two.
+//! same channel, with another User-Agent, counts as that device, and is let
+//! in on its slot. Only playing alongside it tells a second device apart (a
+//! phone and a TV at home on one channel): a playback of its own refreshed
+//! next to that device's for longer than [`ZAP_MS`]. A probe stops first.
 //!
 //! WHO WINS when there are more devices than slots: the ones that started
 //! first. A newcomer is refused, never the device already watching. A refused
@@ -267,10 +269,6 @@ impl DeviceTracker {
     pub fn admit(&mut self, user: i64, key: &str, limit: i64, mut info: DeviceInfo, now: i64) -> Admission {
         prune(&mut self.users, user, now, self.idle_ms);
         let holder = self.holder_of(user, key, &info, now);
-        if holder.is_some() {
-            // Another key's playbacks are not this device's: go by channel.
-            info.play.clear();
-        }
         let base = holder.as_deref().map_or(key, base_key).to_owned();
         let lane = self.lane(user, &base, &info, limit, now);
         let active = self.users.get(&user).map_or(0, HashMap::len);
@@ -656,6 +654,48 @@ mod tests {
         assert!(!t.admit(1, "tablet", 2, kodi, T0 + 4000).allowed);
         let away = stack("10.1.1.1", "OTT-play/1.6", "OTT Play", "Россия 1");
         assert!(!t.admit(1, "away", 2, away, T0 + 4000).allowed);
+    }
+
+    #[test]
+    fn another_app_playing_alongside_is_another_device() {
+        let home = "89.235.208.216";
+        let tv = stack(home, "samsung-agent/1.1", "Samsung TV", "Россия 1");
+        let app = stack(home, "OTT-play/1.6", "OTT Play", "Россия 1");
+        let watching = playing(&tv, "aaaaaaaaaa");
+
+        // The TV's app probes the channel and stops: one device.
+        let mut t = DeviceTracker::new(60_000);
+        assert!(t.admit(1, "tv", 1, tv.clone(), T0).allowed);
+        assert!(t.admit(1, "tv-app", 1, app.clone(), T0 + 500).allowed);
+        assert!(t.admit(1, "tv-app", 1, playing(&app, "pppppppppp"), T0 + 800).allowed);
+        assert!(poll(&mut t, "tv", 1, &watching, 1000, 60_000).iter().all(|a| *a));
+        assert_eq!(
+            rows(&mut t, 1, 61_000),
+            [("Samsung TV".into(), "Россия 1".into(), true)]
+        );
+
+        // A phone at home plays the same channel next to the TV: two.
+        let mut t = DeviceTracker::new(60_000);
+        assert!(t.admit(1, "tv", 1, tv, T0).allowed);
+        assert!(poll(&mut t, "tv", 1, &watching, 1000, 20_000).iter().all(|a| *a));
+        assert!(t.admit(1, "phone", 1, app.clone(), T0 + 21_000).allowed);
+        let phone = playing(&app, "pppppppppp");
+        let mut both = Vec::new();
+        for at in (22_000..=47_000).step_by(5000) {
+            both.push((
+                t.admit(1, "tv", 1, watching.clone(), T0 + at - 1000).allowed,
+                t.admit(1, "phone", 1, phone.clone(), T0 + at).allowed,
+            ));
+        }
+        assert!(both.iter().all(|(a, _)| *a));
+        assert_eq!(both.last(), Some(&(true, false)));
+        assert_eq!(
+            rows(&mut t, 1, 48_000),
+            [
+                ("Samsung TV".into(), "Россия 1".into(), true),
+                ("OTT Play".into(), "Россия 1".into(), false),
+            ]
+        );
     }
 
     #[test]
