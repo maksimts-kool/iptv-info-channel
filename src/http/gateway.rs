@@ -520,22 +520,43 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         Some(Session::Media { splice, .. }) => *splice,
         _ => None,
     };
+    let info = DeviceInfo {
+        ip: req.ip.clone(),
+        ua: req.user_agent.clone(),
+        player,
+        channel: channel_name.clone(),
+        play: req.play.to_owned(),
+    };
     let refusal = if !allowed {
         Some(Refusal::Access)
     } else if let Some((_, r)) = existing_splice {
+        if r == Refusal::Devices {
+            // Still there: listed over the limit, and known if it tunes in again.
+            st.gateway
+                .devices()
+                .admit(user.id, &device, user.device_limit, info, now);
+        }
         Some(r)
     } else {
-        let info = DeviceInfo {
-            ip: req.ip.clone(),
-            ua: req.user_agent.clone(),
-            player,
-            channel: channel_name.clone(),
-            play: req.play.to_owned(),
-        };
-        let slot = st
+        let mut slot = st
             .gateway
             .devices()
-            .admit(user.id, &device, user.device_limit, info, now);
+            .admit(user.id, &device, user.device_limit, info.clone(), now);
+        if let Some(contest) = slot.contest.take() {
+            // Whose tune-in this is shows within a refresh (bounded by
+            // CONTEST_MS): hold it until then.
+            loop {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let settled = st
+                    .gateway
+                    .devices()
+                    .settle(user.id, user.device_limit, &info, &contest, now_ms());
+                if let Some(settled) = settled {
+                    slot = settled;
+                    break;
+                }
+            }
+        }
         watch_device = slot.slot;
         (!slot.allowed).then_some(Refusal::Devices)
     };

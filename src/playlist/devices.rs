@@ -101,7 +101,27 @@ pub struct Admission {
     pub limit: i64,
     /// The device the request was counted as, for the viewing history.
     pub slot: String,
+    /// Not decided yet: hold the request and ask [`DeviceTracker::settle`].
+    #[serde(skip)]
+    pub contest: Option<Contest>,
 }
+
+/// A playback started on a key one of whose devices is over the limit, so it
+/// must not be that device's way around it. Each device keeps refreshing its
+/// own playback; the one that stops started this. Their last refreshes when
+/// it began.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contest {
+    key: String,
+    lanes: Vec<(String, i64)>,
+    since: i64,
+    other_key: bool,
+}
+
+/// The longest a contested request is held: past the refresh interval of
+/// usual live playlists (so a device still on its playback has refreshed it),
+/// and short of the 8 s players such as ExoPlayer wait for a response.
+pub const CONTEST_MS: i64 = 7_000;
 
 /// How long a key may refresh a second playback before that is a second
 /// device rather than a zap. Above the reload interval of any live playlist,
@@ -134,6 +154,8 @@ enum Lane {
     /// Started too recently to tell: whether it may play, and the device it
     /// is counted as meanwhile.
     Pending(bool, String),
+    /// Wait and see (see [`Contest`]): the devices' last refreshes.
+    Contest(Vec<(String, i64)>),
 }
 
 /// The key a device's slot belongs to: devices sharing one key are
@@ -214,8 +236,12 @@ impl DeviceTracker {
             return Lane::Slot(key.to_owned());
         };
         let on_channel = |d: &Device| d.info.channel == info.channel;
+        let rank_of = |first: i64| devices.values().filter(|d| d.first_seen < first).count() as i64;
+        // One of them is over the limit: a request that does not say which
+        // playback it is cannot be told by its channel either.
+        let contested = limit > 0 && lanes.len() > 1 && lanes.iter().any(|(_, d)| rank_of(d.first_seen) >= limit);
         let found = if info.play.is_empty() {
-            lanes.iter().find(|(_, d)| on_channel(d))
+            lanes.iter().find(|(_, d)| !contested && on_channel(d))
         } else {
             // Its own playback, or a device on that channel not tied to one yet.
             lanes
@@ -225,6 +251,9 @@ impl DeviceTracker {
         };
         if let Some((k, _)) = found {
             return Lane::Slot((*k).clone());
+        }
+        if contested {
+            return Lane::Contest(lanes.iter().map(|(k, d)| ((*k).clone(), d.last_seen)).collect());
         }
         let quiet = lanes
             .iter()
@@ -243,14 +272,19 @@ impl DeviceTracker {
             .or_insert((now, now));
         if now - first < ZAP_MS {
             // A zap or a second device: it plays if the device it would be does.
-            let rank = devices.values().filter(|d| d.first_seen < oldest).count() as i64;
-            return Lane::Pending(!(limit > 0 && rank >= limit), oldest_key);
+            return Lane::Pending(!(limit > 0 && rank_of(oldest) >= limit), oldest_key);
         }
         pending.remove(&started);
         if let Some(k) = quiet {
             return Lane::Slot(k);
         }
-        let k = (1..=devices.len())
+        Lane::Slot(self.new_lane(user, key, info, first, now))
+    }
+
+    /// Another device behind `key`, playing since `first`.
+    fn new_lane(&mut self, user: i64, key: &str, info: &DeviceInfo, first: i64, now: i64) -> String {
+        let devices = self.users.entry(user).or_default();
+        let k = (1..=devices.len() + 1)
             .map(|i| format!("{key}#{i}"))
             .find(|k| !devices.contains_key(k))
             .unwrap_or_else(|| format!("{key}#0"));
@@ -262,62 +296,118 @@ impl DeviceTracker {
                 last_seen: now,
             },
         );
-        Lane::Slot(k)
+        k
     }
 
     /// Ask for a slot. `limit` 0 = unlimited.
-    pub fn admit(&mut self, user: i64, key: &str, limit: i64, mut info: DeviceInfo, now: i64) -> Admission {
+    pub fn admit(&mut self, user: i64, key: &str, limit: i64, info: DeviceInfo, now: i64) -> Admission {
         prune(&mut self.users, user, now, self.idle_ms);
         let holder = self.holder_of(user, key, &info, now);
+        let other_key = holder.is_some();
         let base = holder.as_deref().map_or(key, base_key).to_owned();
-        let lane = self.lane(user, &base, &info, limit, now);
-        let active = self.users.get(&user).map_or(0, HashMap::len);
-        let slot = match lane {
-            Lane::Slot(k) => k,
-            Lane::Pending(allowed, slot) => {
-                return Admission {
-                    allowed,
-                    active,
-                    limit,
-                    slot,
-                };
-            }
-        };
-        let key = slot.as_str();
+        match self.lane(user, &base, &info, limit, now) {
+            Lane::Slot(slot) => self.take(user, slot, limit, info, other_key, now),
+            Lane::Pending(allowed, slot) => Admission {
+                allowed,
+                active: self.users.get(&user).map_or(0, HashMap::len),
+                limit,
+                slot,
+                contest: None,
+            },
+            Lane::Contest(lanes) => Admission {
+                allowed: false,
+                active: self.users.get(&user).map_or(0, HashMap::len),
+                limit,
+                slot: base.clone(),
+                contest: Some(Contest {
+                    key: base,
+                    lanes,
+                    since: now,
+                    other_key,
+                }),
+            },
+        }
+    }
 
+    /// Decide a held request (see [`Contest`]): `None` while more than one of
+    /// the devices could have started it. Decided within [`CONTEST_MS`], on
+    /// the side of the limit.
+    pub fn settle(
+        &mut self,
+        user: i64,
+        limit: i64,
+        info: &DeviceInfo,
+        contest: &Contest,
+        now: i64,
+    ) -> Option<Admission> {
+        prune(&mut self.users, user, now, self.idle_ms);
+        let devices = self.users.get(&user);
+        let device = |k: &str| devices.and_then(|m| m.get(k));
+        // The devices that have not refreshed since.
+        let quiet: Vec<&String> = contest
+            .lanes
+            .iter()
+            .filter(|(k, seen)| device(k).is_some_and(|d| d.last_seen <= *seen))
+            .map(|(k, _)| k)
+            .collect();
+        if quiet.len() > 1 && now - contest.since < CONTEST_MS {
+            return None;
+        }
+        // All refreshed: a device more. Still undecided: the latest arrival.
+        let slot = quiet
+            .iter()
+            .filter_map(|k| device(k).map(|d| (d.first_seen, *k)))
+            .max()
+            .map(|(_, k)| k.clone());
+        let slot = slot.unwrap_or_else(|| self.new_lane(user, &contest.key, info, contest.since, now));
+        Some(self.take(user, slot, limit, info.clone(), contest.other_key, now))
+    }
+
+    /// Count a request as the device `slot` (or a newcomer, if it has none).
+    fn take(
+        &mut self,
+        user: i64,
+        slot: String,
+        limit: i64,
+        mut info: DeviceInfo,
+        other_key: bool,
+        now: i64,
+    ) -> Admission {
+        let active = self.users.get(&user).map_or(0, HashMap::len);
+        let key = slot.as_str();
         if let Some(devices) = self.users.get_mut(&user)
             && let Some(first_seen) = devices.get(key).map(|d| d.first_seen)
         {
             // Oldest first: a device keeps its slot only while it is among the
             // first `limit` arrivals still watching (matters after lowering it).
             let rank = devices.values().filter(|d| d.first_seen < first_seen).count() as i64;
-            if limit > 0 && rank >= limit {
-                return Admission {
-                    allowed: false,
-                    active,
-                    limit,
-                    slot,
-                };
-            }
             if let Some(d) = devices.get_mut(key) {
-                if !info.play.is_empty() {
-                    d.info.play = std::mem::take(&mut info.play);
-                }
+                // Its playback: this one, or, on another channel, the next.
+                let play = if !info.play.is_empty() {
+                    std::mem::take(&mut info.play)
+                } else if d.info.channel == info.channel {
+                    std::mem::take(&mut d.info.play)
+                } else {
+                    String::new()
+                };
                 // A device keeps the name it is known by: its other key, or a
                 // request that names nothing, only says what it plays now.
-                if !d.info.player.is_empty() && (holder.is_some() || info.player.is_empty()) {
+                if !d.info.player.is_empty() && (other_key || info.player.is_empty()) {
                     d.info.channel = info.channel;
                 } else {
-                    info.play = std::mem::take(&mut d.info.play);
                     d.info = info;
                 }
+                d.info.play = play;
+                // Refused or not: one over the limit stays listed (and known)
+                // while it keeps asking.
                 d.last_seen = now;
             }
             return Admission {
-                allowed: true,
+                allowed: !(limit > 0 && rank >= limit),
                 active,
                 limit,
                 slot,
+                contest: None,
             };
         }
 
@@ -337,6 +427,7 @@ impl DeviceTracker {
                 active,
                 limit,
                 slot,
+                contest: None,
             };
         }
         if let Some(r) = self.refused.get_mut(&user) {
@@ -356,6 +447,7 @@ impl DeviceTracker {
             active: devices.len(),
             limit,
             slot,
+            contest: None,
         }
     }
 
@@ -491,7 +583,8 @@ mod tests {
                 allowed: false,
                 active: 2,
                 limit: 2,
-                slot: "tablet".into()
+                slot: "tablet".into(),
+                contest: None
             }
         );
         assert!(t.admit(1, "tv", 2, DeviceInfo::default(), T0 + 3).allowed);
@@ -702,9 +795,13 @@ mod tests {
     fn two_channels_on_one_key_are_two_devices() {
         // Identical TVs behind one router: one key.
         let mut t = DeviceTracker::new(60_000);
-        let first = stack("88.196.217.142", "samsung-agent/1.1", "Samsung TV", "Россия 1");
+        let first = playing(
+            &stack("88.196.217.142", "samsung-agent/1.1", "Samsung TV", "Россия 1"),
+            "aaaaaaaaaa",
+        );
         let second = DeviceInfo {
             channel: "НТВ".into(),
+            play: "bbbbbbbbbb".into(),
             ..first.clone()
         };
         assert!(poll(&mut t, "home", 1, &first, 0, 20_000).iter().all(|a| *a));
@@ -832,5 +929,156 @@ mod tests {
         );
         assert_ne!(device_key("1.2.3.4", &tag, ""), device_key("5.6.7.8", &tag, ""));
         assert_ne!(device_key("1.2.3.4", "", "VLC"), device_key("1.2.3.4", "", "Kodi"));
+    }
+}
+
+/// Players against the tracker the way the gateway puts them: an entry link
+/// at tune-in, then the tune-in's own link every 5 s; a refused playback
+/// stays on the notice but keeps refreshing; a held request waits for
+/// [`DeviceTracker::settle`].
+#[cfg(test)]
+mod household {
+    use super::*;
+
+    struct Player {
+        key: &'static str,
+        info: DeviceInfo,
+        play: String,
+        tunes: u32,
+        /// Refused: on the notice (the gateway's splice is sticky).
+        blocked: bool,
+        held: Option<(Contest, DeviceInfo)>,
+        /// Seconds of the provider's stream it got.
+        watched: i64,
+    }
+
+    impl Player {
+        fn new(key: &'static str, ua: &str, player: &str) -> Self {
+            Self {
+                key,
+                info: DeviceInfo {
+                    ip: "88.196.217.142".into(),
+                    ua: ua.into(),
+                    player: player.into(),
+                    ..DeviceInfo::default()
+                },
+                play: String::new(),
+                tunes: 0,
+                blocked: false,
+                held: None,
+                watched: 0,
+            }
+        }
+
+        fn ask(&mut self, t: &mut DeviceTracker, info: DeviceInfo, now: i64) {
+            let mut seen = t.admit(1, self.key, 1, info.clone(), now);
+            match seen.contest.take() {
+                Some(c) => self.held = Some((c, info)),
+                None => self.blocked = !seen.allowed,
+            }
+        }
+
+        fn tune(&mut self, t: &mut DeviceTracker, channel: &str, now: i64) {
+            // Random in the gateway: unique per tune-in.
+            static PLAYS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            self.info.channel = channel.into();
+            self.tunes += 1;
+            self.play = format!("p{}", PLAYS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            self.blocked = false;
+            self.ask(t, self.info.clone(), now);
+        }
+
+        /// One second of playing.
+        fn tick(&mut self, t: &mut DeviceTracker, now: i64) {
+            if let Some((c, info)) = self.held.take() {
+                match t.settle(1, 1, &info, &c, now) {
+                    Some(seen) => self.blocked = !seen.allowed,
+                    None => self.held = Some((c, info)),
+                }
+                return;
+            }
+            if now % 5000 == 0 {
+                let info = DeviceInfo {
+                    play: self.play.clone(),
+                    ..self.info.clone()
+                };
+                if self.blocked {
+                    t.admit(1, self.key, 1, info, now);
+                } else {
+                    self.ask(t, info, now);
+                }
+            }
+            if !self.blocked && self.held.is_none() {
+                self.watched += 1;
+            }
+        }
+    }
+
+    /// Two TVs, limit 1: the second keeps switching channels.
+    fn run(second: &mut Player, switches: &[(i64, &str)], first_switches: &[(i64, &str)]) -> (Player, DeviceTracker) {
+        let mut t = DeviceTracker::new(60_000);
+        let mut first = Player::new("home", "samsung-agent/1.1", "Samsung TV");
+        first.tune(&mut t, "Россия 1", 0);
+        for s in (1000..=600_000).step_by(1000) {
+            if let Some((_, ch)) = first_switches.iter().find(|(at, _)| *at == s) {
+                first.tune(&mut t, ch, s);
+            }
+            if let Some((_, ch)) = switches.iter().find(|(at, _)| *at == s) {
+                second.tune(&mut t, ch, s);
+            }
+            first.tick(&mut t, s);
+            if second.tunes > 0 {
+                second.tick(&mut t, s);
+            }
+            if s > 40_000 {
+                let listed = t.list(1, 1, s);
+                assert_eq!(listed.iter().filter(|d| d.allowed).count(), 1, "at {s}: {listed:?}");
+                assert_eq!(listed.len(), 2, "the second stays listed, at {s}: {listed:?}");
+            }
+        }
+        (first, t)
+    }
+
+    const SWITCHES: &[(i64, &str)] = &[
+        (20_000, "Россия 1"),
+        (100_000, "НТВ"),
+        (130_000, "Матч ТВ"),
+        (131_000, "СТС"),
+        (300_000, "Россия 1"),
+        (500_000, "НТВ"),
+    ];
+
+    #[test]
+    fn switching_channels_does_not_get_round_the_limit() {
+        for mut second in [
+            Player::new("home", "samsung-agent/1.1", "Samsung TV"),
+            Player::new("phone", "OTT-play/1.6", "OTT Play"),
+        ] {
+            let (first, _) = run(&mut second, SWITCHES, &[]);
+            assert_eq!(first.watched, 600, "the first TV is never interrupted");
+            // Once caught (within the first ~20 s), never again.
+            assert!(second.watched <= 20, "{}: watched {} s", second.key, second.watched);
+        }
+    }
+
+    #[test]
+    fn the_first_tv_still_switches_while_the_second_is_blocked() {
+        let mut second = Player::new("home", "samsung-agent/1.1", "Samsung TV");
+        let (first, mut t) = run(
+            &mut second,
+            &[(20_000, "Россия 1")],
+            &[(200_000, "НТВ"), (260_000, "СТС"), (400_000, "Россия 1")],
+        );
+        // A switch is held at most until the blocked TV's next refresh.
+        assert!(first.watched >= 600 - 3 * 6, "watched {} s", first.watched);
+        assert!(second.watched <= 20);
+        let listed = t.list(1, 1, 600_000);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|d| (d.device.info.channel.as_str(), d.allowed))
+                .collect::<Vec<_>>(),
+            [("Россия 1", true), ("Россия 1", false)]
+        );
     }
 }
