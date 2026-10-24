@@ -9,11 +9,18 @@
 //! taken from each request's User-Agent, because one app often fetches through
 //! two HTTP stacks (okhttp probe, then ExoPlayer) and would count twice.
 //!
-//! One device can still arrive under a second key: the app probes a channel
-//! itself and hands it to the TV's media stack (a tagless link has only the
-//! User-Agent to go by), or the playlist was downloaded again by another
+//! TWO DEVICES CAN SHARE A KEY: identical TVs behind one router with the same
+//! app send byte-identical requests. A device plays one channel at a time, so
+//! a key whose requests keep coming for two channels side by side for longer
+//! than [`ZAP_MS`] is two devices; until then it may be a zap. The same
+//! channel on both stays indistinguishable.
+//!
+//! ONE DEVICE CAN HAVE TWO KEYS: the app probes a channel through its own
+//! HTTP stack and hands it to the TV's media stack (a tagless link has only
+//! the User-Agent to go by), or the playlist was downloaded again by another
 //! User-Agent. A newcomer from the address of a device already watching the
-//! same channel is that device: it counts against its slot ([`DeviceTracker::admit`]).
+//! same channel, with another User-Agent, is that device and counts against
+//! its slot. Two devices of one kind send the same User-Agent and stay two.
 //!
 //! WHO WINS when there are more devices than slots: the ones that started
 //! first. A newcomer is refused, never the device already watching. A refused
@@ -86,6 +93,11 @@ pub struct Admission {
     pub limit: i64,
 }
 
+/// How long a key may play a second channel before that is a second device
+/// rather than a zap. Above the reload interval of any live playlist, so a
+/// device still on its old channel has polled it again by then.
+pub const ZAP_MS: i64 = 15_000;
+
 type Slots = HashMap<i64, HashMap<String, Device>>;
 
 /// A second key of a device holding a slot: `(holder key, last seen)`.
@@ -99,6 +111,23 @@ pub struct DeviceTracker {
     /// Devices playing a built-in loop: listed, but holding no slot.
     viewing: Slots,
     aliases: Aliases,
+    /// Per (customer, key): channels it started that none of its devices
+    /// plays yet, `(first, last)` request, until [`ZAP_MS`] tells which.
+    pending: HashMap<(i64, String), HashMap<String, (i64, i64)>>,
+}
+
+/// Which of the devices behind one key a request is.
+enum Lane {
+    /// A device holding (or ranked out of) a slot, by its slot key.
+    Slot(String),
+    /// A channel started too recently to tell; whether it may play.
+    Pending(bool),
+}
+
+/// The key a device's slot belongs to: devices sharing one key are
+/// `key`, `key#1`, `key#2`…
+fn base_key(slot: &str) -> &str {
+    slot.split('#').next().unwrap_or(slot)
 }
 
 fn prune(map: &mut Slots, user: i64, now: i64, idle_ms: i64) {
@@ -120,7 +149,8 @@ impl DeviceTracker {
 
     /// The slot holder `key` belongs to, when it is another key of a device
     /// already watching: known as one, or new and from that device's address
-    /// on the channel it plays. Call after pruning `users`.
+    /// on the channel it plays through another HTTP stack. Call after
+    /// pruning `users`.
     fn holder_of(&mut self, user: i64, key: &str, info: &DeviceInfo, now: i64) -> Option<String> {
         let empty = HashMap::new();
         let devices = self.users.get(&user).unwrap_or(&empty);
@@ -136,7 +166,7 @@ impl DeviceTracker {
         } else {
             let holder = devices
                 .iter()
-                .filter(|(_, d)| d.info.ip == info.ip && d.info.channel == info.channel)
+                .filter(|(_, d)| d.info.ip == info.ip && d.info.channel == info.channel && d.info.ua != info.ua)
                 .min_by_key(|(_, d)| d.first_seen)
                 .map(|(k, _)| k.clone());
             if let Some(holder) = &holder {
@@ -162,12 +192,71 @@ impl DeviceTracker {
             .map_or_else(|| key.to_owned(), |(holder, _)| holder.clone())
     }
 
+    /// Which device behind `key` asks for `info.channel`: the one already
+    /// on it, else after [`ZAP_MS`] the one that went quiet (it zapped) or a
+    /// new one (two devices on one key). Call after pruning `users`.
+    fn lane(&mut self, user: i64, key: &str, info: &DeviceInfo, limit: i64, now: i64) -> Lane {
+        self.pending.retain(|(u, _), channels| {
+            channels.retain(|_, (_, last)| now - *last < ZAP_MS);
+            *u != user || !channels.is_empty()
+        });
+        let Some(devices) = self.users.get_mut(&user) else {
+            return Lane::Slot(key.to_owned());
+        };
+        let lanes: Vec<(&String, &Device)> = devices.iter().filter(|(k, _)| base_key(k) == key).collect();
+        if lanes.is_empty() {
+            return Lane::Slot(key.to_owned());
+        }
+        if let Some((k, _)) = lanes.iter().find(|(_, d)| d.info.channel == info.channel) {
+            return Lane::Slot((*k).clone());
+        }
+        let quiet = lanes
+            .iter()
+            .filter(|(_, d)| now - d.last_seen >= ZAP_MS)
+            .max_by_key(|(_, d)| d.last_seen)
+            .map(|(k, _)| (*k).clone());
+        let oldest = lanes.iter().map(|(_, d)| d.first_seen).min().unwrap_or(now);
+        let pending = self.pending.entry((user, key.to_owned())).or_default();
+        let (first, _) = *pending
+            .entry(info.channel.clone())
+            .and_modify(|p| p.1 = now)
+            .or_insert((now, now));
+        if now - first < ZAP_MS {
+            // A zap or a second device: it plays if the device it would be does.
+            let rank = devices.values().filter(|d| d.first_seen < oldest).count() as i64;
+            return Lane::Pending(!(limit > 0 && rank >= limit));
+        }
+        pending.remove(&info.channel);
+        if let Some(k) = quiet {
+            return Lane::Slot(k);
+        }
+        let k = (1..=devices.len())
+            .map(|i| format!("{key}#{i}"))
+            .find(|k| !devices.contains_key(k))
+            .unwrap_or_else(|| format!("{key}#0"));
+        devices.insert(
+            k.clone(),
+            Device {
+                info: info.clone(),
+                first_seen: first,
+                last_seen: now,
+            },
+        );
+        Lane::Slot(k)
+    }
+
     /// Ask for a slot. `limit` 0 = unlimited.
     pub fn admit(&mut self, user: i64, key: &str, limit: i64, info: DeviceInfo, now: i64) -> Admission {
         prune(&mut self.users, user, now, self.idle_ms);
-        let active = self.users.get(&user).map_or(0, HashMap::len);
         let holder = self.holder_of(user, key, &info, now);
-        let key = holder.as_deref().unwrap_or(key);
+        let base = holder.as_deref().map_or(key, base_key).to_owned();
+        let lane = self.lane(user, &base, &info, limit, now);
+        let active = self.users.get(&user).map_or(0, HashMap::len);
+        let key = match lane {
+            Lane::Slot(k) => k,
+            Lane::Pending(allowed) => return Admission { allowed, active, limit },
+        };
+        let key = key.as_str();
 
         if let Some(devices) = self.users.get_mut(&user)
             && let Some(first_seen) = devices.get(key).map(|d| d.first_seen)
@@ -183,9 +272,9 @@ impl DeviceTracker {
                 };
             }
             if let Some(d) = devices.get_mut(key) {
-                // The holder keeps its own name; its other key only says
-                // what it plays now.
-                if holder.is_some() {
+                // A device keeps the name it is known by: its other key, or a
+                // request that names nothing, only says what it plays now.
+                if !d.info.player.is_empty() && (holder.is_some() || info.player.is_empty()) {
                     d.info.channel = info.channel;
                 } else {
                     d.info = info;
@@ -335,6 +424,7 @@ impl DeviceTracker {
         self.refused.remove(&user);
         self.viewing.remove(&user);
         self.aliases.remove(&user);
+        self.pending.retain(|(u, _), _| *u != user);
     }
 }
 
@@ -480,54 +570,109 @@ mod tests {
         assert!(t.list(1, 1, T0 + 200_001).is_empty());
     }
 
-    #[test]
-    fn second_key_of_a_watching_device_shares_its_slot() {
-        let mut t = DeviceTracker::new(60_000);
-        let home = "89.235.208.216";
-        assert!(t.admit(1, "tv", 2, on(home, "Samsung TV", "Россия 1"), T0).allowed);
-        assert!(
-            t.admit(1, "phone", 2, on(home, "OTT Play", "Матч ТВ"), T0 + 1000)
-                .allowed
-        );
-        // The TV's app fetches the same channel under another key.
-        assert!(
-            t.admit(1, "tv-app", 2, on(home, "OTT Play", "Россия 1"), T0 + 2000)
-                .allowed
-        );
-        assert_eq!(t.slot_key(1, "tv-app"), "tv");
-        let rows: Vec<(String, String, bool)> = t
-            .list(1, 2, T0 + 3000)
+    fn stack(ip: &str, ua: &str, player: &str, c: &str) -> DeviceInfo {
+        DeviceInfo {
+            ua: ua.into(),
+            ..on(ip, player, c)
+        }
+    }
+
+    /// One player refreshing its playlist every 5 s over `[from, to]`.
+    fn poll(t: &mut DeviceTracker, key: &str, limit: i64, info: &DeviceInfo, from: i64, to: i64) -> Vec<bool> {
+        (from..=to)
+            .step_by(5000)
+            .map(|at| t.admit(1, key, limit, info.clone(), T0 + at).allowed)
+            .collect()
+    }
+
+    fn rows(t: &mut DeviceTracker, limit: i64, at: i64) -> Vec<(String, String, bool)> {
+        t.list(1, limit, T0 + at)
             .into_iter()
             .map(|d| (d.device.info.player, d.device.info.channel, d.allowed))
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn second_stack_of_a_watching_device_shares_its_slot() {
+        let mut t = DeviceTracker::new(60_000);
+        let home = "89.235.208.216";
+        let tv = stack(home, "samsung-agent/1.1", "Samsung TV", "Россия 1");
+        assert!(t.admit(1, "tv", 2, tv.clone(), T0).allowed);
+        let phone = stack(home, "OTT-play/1.6", "OTT Play", "Матч ТВ");
+        assert!(t.admit(1, "phone", 2, phone, T0 + 1000).allowed);
+        // The TV's app fetches the same channel itself, under another key.
+        let app = stack(home, "OTT-play/1.6", "OTT Play", "Россия 1");
+        assert!(t.admit(1, "tv-app", 2, app, T0 + 2000).allowed);
+        assert_eq!(t.slot_key(1, "tv-app"), "tv");
         assert_eq!(
-            rows,
+            rows(&mut t, 2, 3000),
             [
                 ("Samsung TV".into(), "Россия 1".into(), true),
                 ("OTT Play".into(), "Матч ТВ".into(), true),
             ]
         );
-        // It stays that device when it zaps first, and keeps the slot alive.
-        assert!(
-            t.admit(1, "tv-app", 2, on(home, "OTT Play", "НТВ"), T0 + 50_000)
-                .allowed
+        // Another TV of the same kind on the same channel, a device at home
+        // on another channel or one elsewhere: over the limit.
+        assert!(!t.admit(1, "tv2", 2, tv, T0 + 4000).allowed);
+        let kodi = stack(home, "Kodi/20", "Kodi", "Спорт");
+        assert!(!t.admit(1, "tablet", 2, kodi, T0 + 4000).allowed);
+        let away = stack("10.1.1.1", "OTT-play/1.6", "OTT Play", "Россия 1");
+        assert!(!t.admit(1, "away", 2, away, T0 + 4000).allowed);
+    }
+
+    #[test]
+    fn two_channels_on_one_key_are_two_devices() {
+        // Identical TVs behind one router: one key.
+        let mut t = DeviceTracker::new(60_000);
+        let first = stack("88.196.217.142", "samsung-agent/1.1", "Samsung TV", "Россия 1");
+        let second = DeviceInfo {
+            channel: "НТВ".into(),
+            ..first.clone()
+        };
+        assert!(poll(&mut t, "home", 1, &first, 0, 20_000).iter().all(|a| *a));
+        // Could be a zap at first, so the second plays…
+        assert!(t.admit(1, "home", 1, second.clone(), T0 + 21_000).allowed);
+        assert_eq!(rows(&mut t, 1, 22_000).len(), 1);
+        // …but the first keeps playing its channel: the second is a newcomer.
+        let mut both = Vec::new();
+        for at in (26_000..=46_000).step_by(5000) {
+            both.push((
+                t.admit(1, "home", 1, first.clone(), T0 + at - 1000).allowed,
+                t.admit(1, "home", 1, second.clone(), T0 + at).allowed,
+            ));
+        }
+        assert!(both.iter().all(|(a, _)| *a));
+        assert_eq!(both.last(), Some(&(true, false)));
+        assert_eq!(
+            rows(&mut t, 1, 47_000),
+            [
+                ("Samsung TV".into(), "Россия 1".into(), true),
+                ("Samsung TV".into(), "НТВ".into(), false),
+            ]
         );
-        assert!(
-            t.admit(1, "phone", 2, on(home, "OTT Play", "Матч ТВ"), T0 + 50_000)
-                .allowed
+        assert_eq!(rows(&mut t, 2, 47_000).iter().filter(|r| r.2).count(), 2);
+        // The first leaves: the second has the slot.
+        assert_eq!(poll(&mut t, "home", 1, &second, 51_000, 120_000).last(), Some(&true));
+        assert_eq!(rows(&mut t, 1, 121_000), [("Samsung TV".into(), "НТВ".into(), true)]);
+    }
+
+    #[test]
+    fn a_zap_stays_one_device() {
+        let mut t = DeviceTracker::new(60_000);
+        let r1 = stack("10.0.0.2", "samsung-agent/1.1", "Samsung TV", "Россия 1");
+        let ntv = DeviceInfo {
+            channel: "НТВ".into(),
+            ..r1.clone()
+        };
+        assert!(poll(&mut t, "tv", 1, &r1, 0, 20_000).iter().all(|a| *a));
+        assert!(poll(&mut t, "tv", 1, &ntv, 21_000, 61_000).iter().all(|a| *a));
+        assert!(poll(&mut t, "tv", 1, &r1, 62_000, 92_000).iter().all(|a| *a));
+        let listed = t.list(1, 1, T0 + 93_000);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].device.info.channel.as_str(), listed[0].device.first_seen),
+            ("Россия 1", T0)
         );
-        let tv = &t.list(1, 2, T0 + 70_000)[0];
-        assert_eq!((tv.device.info.channel.as_str(), tv.allowed), ("НТВ", true));
-        // A third device at home on another channel, or elsewhere on the
-        // same one, is still over the limit.
-        assert!(!t.admit(1, "tablet", 2, on(home, "Kodi", "Спорт"), T0 + 70_000).allowed);
-        assert!(!t.admit(1, "away", 2, on("10.1.1.1", "VLC", "НТВ"), T0 + 70_000).allowed);
-        // Once the holder is gone, the old key is a device of its own again.
-        assert!(
-            t.admit(1, "tv-app", 2, on(home, "OTT Play", "НТВ"), T0 + 200_000)
-                .allowed
-        );
-        assert_eq!(t.slot_key(1, "tv-app"), "tv-app");
     }
 
     #[test]
