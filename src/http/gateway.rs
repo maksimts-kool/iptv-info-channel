@@ -589,6 +589,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     .await;
     match fetched {
         Ok(f) => {
+            let device = st.gateway.devices().slot_key(user.id, &device);
             st.gateway.record_watch(&WatchHit {
                 user_id: user.id,
                 device: &device,
