@@ -731,3 +731,79 @@ async fn catalog_playlist_gateway_and_payments_end_to_end() {
 
     db.drop().await;
 }
+
+/// The encode queue through the admin API: edits and a bulk rebuild queue
+/// jobs, a failure is retried and then reported, and the panel can retry,
+/// cancel and clear — plus the live feed's first event.
+#[tokio::test]
+async fn encode_queue_admin_api() {
+    let db = TestDb::new().await;
+    let h = harness(&db).await;
+    let anon = h.http.get(format!("{}/admin/api/jobs", h.base)).send().await.unwrap();
+    assert_eq!(anon.status().as_u16(), 401);
+
+    let plan = h.get("/admin/api/state").await.json()["plans"][0]["id"].clone();
+    let u = h
+        .post(
+            "/admin/api/users",
+            json!({"username": "queue", "plan_id": plan, "expires_at": days_from_now(30)}),
+        )
+        .await;
+    assert_eq!(u.status, 201);
+
+    let bulk = h.post("/admin/api/regenerate-all", json!({})).await.json();
+    assert_eq!(bulk["queued"], 1);
+    let jobs = h.get("/admin/api/jobs").await.json();
+    assert_eq!(jobs["queue"]["workers"], 2);
+    assert_eq!(jobs["queue"]["batches"][0]["reason"], "admin manual bulk regeneration");
+
+    // ffmpeg is absent here: the encode fails, is retried once, then lands in
+    // the recent list as a failure (with the batch counting it).
+    let mut failed = Value::Null;
+    for _ in 0..100 {
+        let jobs = h.get("/admin/api/jobs").await.json();
+        if let Some(f) = jobs["queue"]["recent"]
+            .as_array()
+            .and_then(|r| r.iter().find(|j| j["outcome"] == "failed"))
+        {
+            assert_eq!(f["attempt"], 2);
+            assert_eq!(f["label"], "queue");
+            failed = f.clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let failed_id = failed["id"].as_u64().expect("a failed job in the recent list");
+    let status = h.get("/admin/api/generation-status").await.json();
+    assert!(status.get("active").is_some() && status.get("queue").is_some());
+
+    assert_eq!(
+        h.post(&format!("/admin/api/jobs/{failed_id}/retry"), json!({}))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(h.post("/admin/api/jobs/999999/cancel", json!({})).await.status, 404);
+    let cleared = h.post("/admin/api/jobs/clear", json!({})).await;
+    assert_eq!(cleared.status, 200);
+    assert!(cleared.json()["dropped"].is_u64());
+
+    let mut feed = h
+        .http
+        .get(format!("{}/admin/api/jobs/events", h.base))
+        .header(header::COOKIE, &h.cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        feed.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let first = feed.chunk().await.unwrap().unwrap();
+    let first = String::from_utf8_lossy(&first);
+    assert!(first.starts_with("event: jobs\n"), "{first}");
+    assert!(first.contains("\"queue\""));
+    drop(feed);
+
+    db.drop().await;
+}

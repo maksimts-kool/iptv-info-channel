@@ -34,6 +34,7 @@ use crate::core::fetch::fetch_bounded;
 use crate::core::util::{AccountStatus, account_status, now_ms};
 use crate::data::model::DecoratedUser;
 use crate::encode::liveloop::{LIVE_WINDOW_SEGMENTS, Segment, loop_segments};
+use crate::encode::queue::Priority;
 use crate::playlist::devices::{DeviceInfo, DeviceTracker, ListedDevice, device_key, device_tag};
 use crate::playlist::hls::{
     MediaPlaylist, Splice, build_spliced_playlist, is_hls_url, is_master_playlist, parse_media_playlist,
@@ -391,7 +392,7 @@ fn filler_for(st: &AppState, user: &DecoratedUser, refusal: Refusal) -> Option<F
         let result = match refusal {
             Refusal::Devices => channels.ensure_device_notice(false).await.map(|_| ()),
             Refusal::Access => channels
-                .generate_for_user(user_id, "gateway filler", false)
+                .generate_with(user_id, "gateway filler", Priority::Viewer, false)
                 .await
                 .map(|_| ()),
         };

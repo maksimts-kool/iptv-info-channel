@@ -50,6 +50,8 @@ services:
       CHANNEL_FPS: ${CHANNEL_FPS:-12}
       CHANNEL_STILL_FPS: ${CHANNEL_STILL_FPS:-4}
       FFMPEG_PRESET: ${FFMPEG_PRESET:-ultrafast}
+      # Info-channel encodes at once; the queue holds the rest.
+      ENCODE_WORKERS: ${ENCODE_WORKERS:-2}
       HLS_TIME: ${HLS_TIME:-6}
       ACCOUNT_SLIDE_SECONDS: ${ACCOUNT_SLIDE_SECONDS:-120}
       CHANNEL_LIVE_LOOP: ${CHANNEL_LIVE_LOOP:-true}

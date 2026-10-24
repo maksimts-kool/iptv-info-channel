@@ -6,6 +6,7 @@ import {
   CheckCircleOutlined, DesktopOutlined, PictureOutlined, TeamOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
+import { useJobs } from '../lib/jobs.jsx';
 import { count } from '../lib/format.js';
 import ChannelHeader from '../components/ChannelHeader.jsx';
 import BrandingCard from '../components/BrandingCard.jsx';
@@ -22,6 +23,10 @@ export default function InfoChannelPage(shared) {
     state, api, message, reload, withRegen, onAuthError,
   } = shared;
   const [busy, setBusy] = useState(false);
+  // A bulk rebuild runs in the background queue; the button stays busy
+  // while one does, whoever started it.
+  const { summary: jobs } = useJobs();
+  const rebuilding = busy || !!jobs.batch;
   const channel = (state?.builtinChannels || []).find((c) => c.id === INFO_CHANNEL_ID);
   const status = state?.status;
   const users = state?.users || [];
@@ -50,7 +55,7 @@ export default function InfoChannelPage(shared) {
     await withRegen(
       'Пересборка потоков',
       () => api.post('/admin/api/regenerate-all'),
-      { success: 'Все потоки пересобраны', reload: false },
+      { success: 'Пересборка всех потоков поставлена в очередь', reload: false },
     );
     setBusy(false);
   };
@@ -70,7 +75,7 @@ export default function InfoChannelPage(shared) {
         status={<Tag icon={<CheckCircleOutlined />} color="success">в эфире</Tag>}
         toggleLocked="Инфоканал есть у каждого клиента всегда: после окончания подписки он объясняет, что случилось и сколько стоит продление."
         onRebuild={rebuildAll}
-        rebuilding={busy}
+        rebuilding={rebuilding}
         rebuildHint="Обычно не нужно: потоки пересобираются сами при правках и ежедневно в 00:05."
       />
 

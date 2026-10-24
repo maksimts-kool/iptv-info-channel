@@ -6,6 +6,7 @@ pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod gateway;
+pub mod jobs;
 pub mod media;
 pub mod playlist;
 pub mod ratelimit;

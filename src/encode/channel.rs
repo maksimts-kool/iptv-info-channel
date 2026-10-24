@@ -7,16 +7,19 @@
 //!   music) is not re-encoded unless forced.
 //! - **In-flight abort**: a newer request for the same user cancels the
 //!   running ffmpeg so the latest data wins.
+//! - **One queue**: every encode goes through [`EncodeQueue`] (merged repeat
+//!   requests, priorities, bounded workers, one retry) — see `queue`.
 //! - **Atomic swap**: build in a temp dir on the SAME filesystem as the target
 //!   (a cross-device rename fails with a mounted data volume), then replace.
 //! - **Monotonic live counters**: a new generation starts past the previous
 //!   one's window so open players reload instead of treating it as old.
 
-use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Instant;
 
+use futures_util::FutureExt;
 use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::json;
@@ -27,8 +30,10 @@ use tokio_util::sync::CancellationToken;
 use super::channel_args::{EncodeParams, Extra, Slides, intro_ffmpeg_args, still_ffmpeg_args};
 use super::ffmpeg::{RunError, run};
 use super::liveloop::{LIVE_WINDOW_SEGMENTS, LoopStart, current_loop_position, write_loop_state};
+use super::queue::{EncodeQueue, JobResult, Priority, Request};
 use crate::config::Config;
-use crate::core::util::{iso_now, now_ms};
+use crate::core::activity::Activity;
+use crate::core::util::now_ms;
 use crate::data::model::DecoratedUser;
 use crate::data::store::{Store, setting_str};
 use crate::news::providernews::ProviderNews;
@@ -65,28 +70,23 @@ impl From<std::io::Error> for GenError {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct UserJob {
-    user_id: i64,
-    username: String,
-    reason: String,
-    started_at: String,
+impl From<JobResult> for Result<PathBuf, GenError> {
+    fn from(r: JobResult) -> Self {
+        match r {
+            JobResult::Encoded(p) | JobResult::UpToDate(p) => Ok(p),
+            JobResult::Cancelled => Err(RunError::Aborted.into()),
+            JobResult::NotFound => Err(GenError::UserNotFound),
+            JobResult::Failed(e) => Err(GenError::Other(anyhow::anyhow!(e))),
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
-struct BulkJob {
-    reason: String,
-    total: usize,
-    completed: usize,
-    started_at: String,
-}
-
-#[derive(Debug, Default)]
-struct Jobs {
-    seq: u64,
-    in_flight: HashMap<i64, (u64, CancellationToken, UserJob)>,
-    bulk_seq: u64,
-    bulk: Vec<(u64, BulkJob)>,
+/// A bulk rebuild in the queue, awaited by [`ChannelEncoder::finish_all`].
+#[derive(Debug)]
+pub struct QueuedBulk {
+    pub batch_id: u64,
+    pub users: usize,
+    waiting: Vec<(i64, tokio::sync::oneshot::Receiver<JobResult>)>,
 }
 
 /// Result of one user in a bulk rebuild.
@@ -106,7 +106,8 @@ pub struct ChannelEncoder {
     news: Arc<ProviderNews>,
     notifier: Arc<Notifier>,
     raster: Rasterizer,
-    jobs: Mutex<Jobs>,
+    activity: Arc<Activity>,
+    queue: EncodeQueue,
     music: OnceCell<PathBuf>,
     notice_lock: AsyncMutex<()>,
 }
@@ -166,21 +167,70 @@ impl ChannelEncoder {
         notifier: Arc<Notifier>,
         raster: Rasterizer,
     ) -> Self {
+        let activity = Arc::new(Activity::default());
+        let queue = EncodeQueue::new(config.channel.workers, Arc::clone(&activity));
         Self {
+            activity,
+            queue,
             config,
             store,
             catalog,
             news,
             notifier,
             raster,
-            jobs: Mutex::default(),
             music: OnceCell::new(),
             notice_lock: AsyncMutex::new(()),
         }
     }
 
-    fn jobs(&self) -> std::sync::MutexGuard<'_, Jobs> {
-        self.jobs.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Start the queue's workers; each runs one encode at a time until the
+    /// queue closes.
+    pub fn start(self: &Arc<Self>) {
+        for _ in 0..self.queue.workers() {
+            let me = Arc::clone(self);
+            tokio::spawn(async move {
+                while let Some(job) = me.queue.next().await {
+                    let run = me.encode_user(job.user_id, &job.reason, job.force, &job.cancel);
+                    let result = match AssertUnwindSafe(run).catch_unwind().await {
+                        Ok(Ok((path, true))) => JobResult::Encoded(path),
+                        Ok(Ok((path, false))) => JobResult::UpToDate(path),
+                        Ok(Err(e)) if e.is_aborted() => JobResult::Cancelled,
+                        Ok(Err(GenError::UserNotFound)) => JobResult::NotFound,
+                        Ok(Err(e)) => {
+                            tracing::error!(target: "channel", user_id = job.user_id, reason = %job.reason, error = %e, "generation failed");
+                            JobResult::Failed(e.to_string().chars().take(300).collect())
+                        }
+                        Err(_) => {
+                            tracing::error!(target: "channel", user_id = job.user_id, "generation panicked");
+                            JobResult::Failed("encoder panicked".to_owned())
+                        }
+                    };
+                    me.queue.finish(job.id, &result);
+                }
+            });
+        }
+    }
+
+    pub fn queue(&self) -> &EncodeQueue {
+        &self.queue
+    }
+
+    /// Poked whenever background work the admin can watch changes.
+    pub fn activity(&self) -> &Arc<Activity> {
+        &self.activity
+    }
+
+    /// Queue one customer's stream without waiting for it.
+    pub fn enqueue(&self, user_id: i64, reason: &str, priority: Priority) {
+        if let Some(user) = self.store.user(user_id) {
+            drop(self.queue.enqueue(&Request {
+                user_id,
+                label: user.username.clone(),
+                reason: reason.to_owned(),
+                priority,
+                force: false,
+            }));
+        }
     }
 
     pub fn user_hls_dir(&self, user_id: i64) -> PathBuf {
@@ -292,52 +342,50 @@ impl ChannelEncoder {
         hex::encode(Sha1::digest(payload.to_string().as_bytes()))
     }
 
-    /// Admin-panel view of running encodes.
+    /// Admin-panel view of running encodes (the original summary shape, plus
+    /// the full queue under `queue`).
     pub fn generation_status(&self) -> serde_json::Value {
-        let jobs = self.jobs();
-        let users: Vec<&UserJob> = jobs.in_flight.values().map(|(_, _, j)| j).collect();
-        let started = users
+        let q = self.queue.snapshot();
+        let active_batch = q.batches.iter().rfind(|b| b.finished_at.is_none());
+        let started = q
+            .running
             .iter()
-            .map(|j| j.started_at.clone())
-            .chain(jobs.bulk.iter().map(|(_, b)| b.started_at.clone()))
+            .map(|r| r.started_at.clone())
+            .chain(active_batch.map(|b| b.started_at.clone()))
             .min();
-        let latest_bulk = jobs.bulk.last().map(|(_, b)| b);
         json!({
-            "active": !users.is_empty() || !jobs.bulk.is_empty(),
+            "active": !q.running.is_empty() || q.queued_total > 0,
             "started_at": started,
-            "reason": latest_bulk.map(|b| b.reason.clone()).or_else(|| users.last().map(|j| j.reason.clone())),
-            "active_users": users.iter().map(|j| json!({ "id": j.user_id, "username": j.username })).collect::<Vec<_>>(),
-            "bulk": latest_bulk.map(|b| json!({ "total": b.total, "completed": b.completed })),
+            "reason": active_batch.map(|b| b.reason.clone()).or_else(|| q.running.last().and_then(|r| r.reasons.last().cloned())),
+            "active_users": q.running.iter().map(|r| json!({ "id": r.user_id, "username": r.label })).collect::<Vec<_>>(),
+            "bulk": active_batch.map(|b| json!({ "total": b.total, "completed": b.done })),
+            "queued": q.queued_total,
+            "queue": q,
         })
     }
 
-    /// (Re)generate one customer's stream. A newer call for the same user
-    /// aborts this one.
+    /// (Re)generate one customer's stream at admin priority. A newer request
+    /// for the same user supersedes this one, and this call gets its result.
     pub async fn generate_for_user(&self, user_id: i64, reason: &str, force: bool) -> Result<PathBuf, GenError> {
+        self.generate_with(user_id, reason, Priority::Admin, force).await
+    }
+
+    pub async fn generate_with(
+        &self,
+        user_id: i64,
+        reason: &str,
+        priority: Priority,
+        force: bool,
+    ) -> Result<PathBuf, GenError> {
         let user = self.store.user(user_id).ok_or(GenError::UserNotFound)?;
-        let cancel = CancellationToken::new();
-        let gen_id = {
-            let mut jobs = self.jobs();
-            if let Some((_, old, _)) = jobs.in_flight.get(&user_id) {
-                old.cancel();
-            }
-            jobs.seq += 1;
-            let id = jobs.seq;
-            let job = UserJob {
-                user_id,
-                username: user.username.clone(),
-                reason: reason.to_owned(),
-                started_at: iso_now(),
-            };
-            jobs.in_flight.insert(user_id, (id, cancel.clone(), job));
-            id
-        };
-        let result = self.encode_user(user_id, reason, force, &cancel).await;
-        let mut jobs = self.jobs();
-        if jobs.in_flight.get(&user_id).is_some_and(|(id, ..)| *id == gen_id) {
-            jobs.in_flight.remove(&user_id);
-        }
-        result
+        let rx = self.queue.enqueue(&Request {
+            user_id,
+            label: user.username.clone(),
+            reason: reason.to_owned(),
+            priority,
+            force,
+        });
+        rx.await.unwrap_or(JobResult::Cancelled).into()
     }
 
     async fn encode_user(
@@ -346,7 +394,7 @@ impl ChannelEncoder {
         reason: &str,
         force: bool,
         cancel: &CancellationToken,
-    ) -> Result<PathBuf, GenError> {
+    ) -> Result<(PathBuf, bool), GenError> {
         let started = Instant::now();
         // Re-read so the latest values are encoded, not a caller's snapshot.
         let user = self.store.user(user_id).ok_or(GenError::UserNotFound)?;
@@ -391,7 +439,7 @@ impl ChannelEncoder {
         if !force && self.playlist_path(user.id).exists() && read_sig(&final_dir).as_deref() == Some(signature.as_str())
         {
             tracing::info!(target: "channel", user_id = user.id, username = %user.username, %reason, "stream up to date; skipping encode");
-            return Ok(self.playlist_path(user.id));
+            return Ok((self.playlist_path(user.id), false));
         }
         if cancel.is_cancelled() {
             return Err(RunError::Aborted.into());
@@ -418,7 +466,7 @@ impl ChannelEncoder {
             remove_dir(&tmp);
             return Err(e);
         }
-        Ok(self.playlist_path(user.id))
+        Ok((self.playlist_path(user.id), true))
     }
 
     /// Rasterize the frames (off the async runtime) and run the encode.
@@ -478,57 +526,58 @@ impl ChannelEncoder {
         Ok(())
     }
 
-    /// Rebuild every customer's stream, one after another.
+    /// Rebuild every customer's stream through the queue and wait for it.
     pub async fn generate_all(&self, reason: &str) -> Vec<GenResult> {
-        let started = Instant::now();
-        let users = self.store.users();
-        let bulk_id = {
-            let mut jobs = self.jobs();
-            jobs.bulk_seq += 1;
-            let id = jobs.bulk_seq;
-            jobs.bulk.push((
-                id,
-                BulkJob {
-                    reason: reason.to_owned(),
-                    total: users.len(),
-                    completed: 0,
-                    started_at: iso_now(),
-                },
-            ));
-            id
-        };
+        let bulk = self.queue_all(reason);
+        self.finish_all(reason, bulk).await
+    }
+
+    /// Queue every customer's stream as one batch (behind single-customer
+    /// work), without waiting.
+    pub fn queue_all(&self, reason: &str) -> QueuedBulk {
+        let users: Vec<(i64, String)> = self
+            .store
+            .users()
+            .into_iter()
+            .map(|u| (u.id, u.username.clone()))
+            .collect();
         if users.len() > 1 {
             tracing::info!(target: "channel", %reason, users = users.len(), "rebuilding streams");
         }
-        // The device-limit notice carries the brand too; skipped by its own
-        // signature when nothing it shows changed.
+        let (batch_id, waiting) = self.queue.enqueue_batch(reason, &users, Priority::Background);
+        QueuedBulk {
+            batch_id,
+            users: users.len(),
+            waiting,
+        }
+    }
+
+    /// Wait for a queued bulk rebuild (and refresh the device-limit notice,
+    /// which carries the brand too) and report each customer.
+    pub async fn finish_all(&self, reason: &str, bulk: QueuedBulk) -> Vec<GenResult> {
+        let started = Instant::now();
+        // Skipped by its own signature when nothing it shows changed.
         if let Err(e) = self.ensure_device_notice(false).await {
             tracing::error!(target: "channel", error = %e, "device-limit notice generation failed");
         }
-        let mut results = Vec::with_capacity(users.len());
-        for user in &users {
-            let result = self.generate_for_user(user.id, reason, false).await;
-            if let Err(e) = &result {
-                tracing::error!(target: "channel", user_id = user.id, username = %user.username, error = %e, "generation failed");
-            }
+        let mut results = Vec::with_capacity(bulk.waiting.len());
+        for (id, rx) in bulk.waiting {
+            let result: Result<PathBuf, GenError> = rx.await.unwrap_or(JobResult::Cancelled).into();
             results.push(GenResult {
-                id: user.id,
+                id,
                 ok: result.is_ok(),
                 error: result.err().map(|e| e.to_string()),
             });
-            if let Some((_, b)) = self.jobs().bulk.iter_mut().find(|(id, _)| *id == bulk_id) {
-                b.completed += 1;
-            }
         }
-        self.jobs().bulk.retain(|(id, _)| *id != bulk_id);
-        if users.len() != 1 {
+        if bulk.users != 1 {
             let ok = results.iter().filter(|r| r.ok).count();
-            tracing::info!(target: "channel", succeeded = ok, failed = results.len() - ok, duration_ms = started.elapsed().as_millis() as u64, "stream rebuild complete");
+            tracing::info!(target: "channel", %reason, succeeded = ok, failed = results.len() - ok, duration_ms = started.elapsed().as_millis() as u64, "stream rebuild complete");
         }
         results
     }
 
     pub fn remove_user_hls(&self, user_id: i64) {
+        self.queue.forget_user(user_id);
         remove_dir(&self.user_hls_dir(user_id));
     }
 
@@ -538,7 +587,8 @@ impl ChannelEncoder {
             return Ok(self.playlist_path(user.id));
         }
         tracing::warn!(target: "stream", user_id = user.id, username = %user.username, "playlist missing; starting lazy generation");
-        self.generate_for_user(user.id, "lazy stream request", false).await
+        self.generate_with(user.id, "lazy stream request", Priority::Viewer, false)
+            .await
     }
 
     /// The global "too many devices" loop. Same still-card encode and live
@@ -609,23 +659,21 @@ impl ChannelEncoder {
     }
 }
 
-/// Fire-and-forget regeneration helpers used by the HTTP layer.
+/// Fire-and-forget regeneration helpers used by the HTTP layer: they queue
+/// the work and return at once.
 pub fn spawn_regen(encoder: &Arc<ChannelEncoder>, user_id: i64, reason: &'static str) {
-    let enc = Arc::clone(encoder);
-    tokio::spawn(async move {
-        if let Err(e) = enc.generate_for_user(user_id, reason, false).await
-            && !e.is_aborted()
-        {
-            tracing::error!(target: "admin", %reason, error = %e, "user regeneration failed");
-        }
-    });
+    encoder.enqueue(user_id, reason, Priority::Admin);
 }
 
-pub fn spawn_regen_all(encoder: &Arc<ChannelEncoder>, reason: &'static str) {
+/// Queue a bulk rebuild; returns its batch id.
+pub fn spawn_regen_all(encoder: &Arc<ChannelEncoder>, reason: &'static str) -> u64 {
+    let bulk = encoder.queue_all(reason);
+    let batch_id = bulk.batch_id;
     let enc = Arc::clone(encoder);
     tokio::spawn(async move {
-        enc.generate_all(reason).await;
+        enc.finish_all(reason, bulk).await;
     });
+    batch_id
 }
 
 #[cfg(test)]

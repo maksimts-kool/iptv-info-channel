@@ -1,5 +1,6 @@
 //! Cross-cutting primitives shared by every concern.
 
+pub mod activity;
 pub mod audience;
 pub mod fetch;
 pub mod util;

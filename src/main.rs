@@ -150,6 +150,7 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
         Arc::clone(&notifier),
         raster,
     ));
+    channels.start();
     let media_store = Arc::new(
         media::store::MediaStore::open(pool, media::store::MediaDirs::new(&config.media_dir, &config.hls_dir)).await?,
     );
@@ -247,8 +248,9 @@ fn start_background(st: &AppState) {
     }
     if st.config.status_slide.enabled {
         let channels = Arc::clone(&st.channels);
-        st.news
-            .start_watcher(move || encode::channel::spawn_regen_all(&channels, "provider service notices changed"));
+        st.news.start_watcher(move || {
+            encode::channel::spawn_regen_all(&channels, "provider service notices changed");
+        });
     }
     let gw = Arc::clone(&st.gateway);
     tokio::spawn(async move {
@@ -316,10 +318,18 @@ async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
 
     start_watch_history(&st);
     let history = st.clone();
+    let activity = Arc::clone(st.channels.activity());
     axum::serve(listener, app(st).into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            // Live job feeds end so open admin tabs don't hold the drain.
+            activity.close();
+        })
         .await
         .context("HTTP server")?;
+    // Queued encodes are dropped and running ffmpeg stopped; the next start
+    // rebuilds whatever is stale.
+    history.channels.queue().close();
     tracing::info!(target: "shutdown", "HTTP server closed");
     // Watches still open are written up to their last request.
     http::stats::flush_history(&history).await;

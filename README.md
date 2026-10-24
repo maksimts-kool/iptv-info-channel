@@ -10,6 +10,7 @@ The backend uses axum and tokio. PostgreSQL stores customers, plans, settings, t
 - Per-plan categories and per-customer category/channel overrides.
 - Optional HLS gateway with signed variant URLs, checks on every manifest refresh, mid-view splicing into the information channel, and simultaneous-device limits.
 - Personal HLS information channels with account details, expiry status, branding, incidents, provider notices, music and QR codes.
+- One encode queue for the information channels: repeat requests merge, a waiting player goes first, `ENCODE_WORKERS` caps parallel ffmpeg runs, and failures retry once. The admin follows it, and the media channel's builds, live in a job panel with cancel, retry and clear.
 - XMLTV and OTT-play FOSS programme guides.
 - Provider news polling and optional AI summaries through OpenRouter.
 - Email double opt-in, expiry/status notifications, and audience-targeted newsletters through Brevo or Resend.
@@ -134,7 +135,7 @@ src/data/            PostgreSQL store, models and transactional JSON import
 src/playlist/        M3U catalog, entitlement resolution, HLS and device tracking
 src/http/            Admin, catalog, media, customer, gateway and sign-up routes
 src/render/          SVG/PNG rendering and shaped media-article layout
-src/encode/          ffmpeg arguments, information channel and live HLS windows
+src/encode/          ffmpeg arguments, information channel, encode queue and live HLS windows
 src/media/           Article documents, audience variants, assets and loop builds
 src/epg/             XMLTV and OTT-play guides
 src/news/            Provider news and AI summaries

@@ -90,6 +90,8 @@ pub struct Channel {
     pub hls_time: u32,
     pub live_loop: bool,
     pub slide_timer: SlideTimer,
+    /// Info-channel encodes run at once (the queue holds the rest).
+    pub workers: usize,
 }
 
 #[derive(Debug)]
@@ -269,6 +271,7 @@ impl Config {
                 preset: env.str("FFMPEG_PRESET", "ultrafast"),
                 hls_time: env.num("HLS_TIME", 6),
                 live_loop: env.flag("CHANNEL_LIVE_LOOP", true),
+                workers: env.num("ENCODE_WORKERS", 2),
                 slide_timer: SlideTimer {
                     enabled: env.flag("SLIDE_TIMER_ENABLED", true),
                     font_file: env.str("TIMER_FONT_FILE", ""),

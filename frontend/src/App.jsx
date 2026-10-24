@@ -1,19 +1,21 @@
 import {
-  Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState,
+  Suspense, lazy, useCallback, useEffect, useMemo, useState,
 } from 'react';
 import {
   App as AntApp, Badge, Button, Drawer, Grid, Layout, Menu, Spin, Tooltip, Typography,
 } from 'antd';
 import {
   BarChartOutlined, DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
-  MenuOutlined, PictureOutlined, PlaySquareOutlined, TeamOutlined, WalletOutlined, WifiOutlined,
+  MenuOutlined, PictureOutlined, PlaySquareOutlined, SyncOutlined, TeamOutlined, UnorderedListOutlined, WalletOutlined,
+  WifiOutlined,
 } from '@ant-design/icons';
 import ClientJump from './components/ClientJump.jsx';
 import {
   api, AuthError, login, logout, setCsrfToken,
 } from './lib/api.js';
 import Login from './components/Login.jsx';
-import RegenBanner from './components/RegenBanner.jsx';
+import JobsDock from './components/JobsDock.jsx';
+import { JobsProvider, useJobsFeed } from './lib/jobs.jsx';
 import { WatchingProvider, useWatching } from './lib/watching.jsx';
 import OverviewPage from './pages/OverviewPage.jsx';
 import ClientsPage from './pages/ClientsPage.jsx';
@@ -51,6 +53,30 @@ function WatchingBadge() {
 // Icons are Ant Design's icon set (vector, themed with the rest of the UI and
 // identical on every platform) rather than emoji, which render as a different
 // picture on every OS and sit off the text baseline.
+// Header entry to the job dock: spins with a count while anything runs, and
+// opens the dock (recent results included) when nothing does.
+function JobsButton({
+  summary, open, onClick, labelled,
+}) {
+  const busy = summary.active > 0;
+  return (
+    <Tooltip title={labelled ? null : 'Фоновые задачи'}>
+      <Badge count={summary.active} size="small" color="#2563eb" offset={[-4, 4]}>
+        <Button
+          type={open ? 'primary' : 'default'}
+          ghost={open}
+          icon={busy ? <SyncOutlined spin /> : <UnorderedListOutlined />}
+          onClick={onClick}
+          aria-label="Фоновые задачи"
+          aria-pressed={open}
+        >
+          {labelled ? 'Задачи' : null}
+        </Button>
+      </Badge>
+    </Tooltip>
+  );
+}
+
 const SECTIONS = [
   {
     key: 'overview', label: 'Обзор', Icon: DashboardOutlined, title: 'Обзор', Page: OverviewPage,
@@ -88,10 +114,6 @@ const BRAND = 'IPTV Panel';
 
 const DEFAULT_SECTION = 'overview';
 
-const HIDDEN = {
-  visible: false, complete: false, title: '', percent: 0, count: '', indeterminate: false,
-};
-
 // Section routing lives in the URL hash (#/clients) so a screen can be
 // bookmarked and the browser's back button works — without pulling in a router.
 // Only the first segment picks the section; the rest (#/clients/12,
@@ -107,7 +129,8 @@ export default function App() {
   const [authed, setAuthed] = useState(null); // null = probing
   const [state, setState] = useState(null);
   const [reloadToken, setReloadToken] = useState(0); // bumped so pages refetch
-  const [gen, setGen] = useState(HIDDEN);
+  const [pending, setPending] = useState(false); // a save whose encode isn't queued yet
+  const [dockOpen, setDockOpen] = useState(false);
   const [section, setSection] = useState(sectionFromHash);
   const [navOpen, setNavOpen] = useState(false);
 
@@ -131,82 +154,12 @@ export default function App() {
     setNavOpen(false);
   }, []);
 
-  // Generation-status banner state machine (only the info-channel encode uses
-  // it; catalog edits are served live and never trigger a rebuild).
-  const inProgress = useRef(false);
-  const complete = useRef(false);
-  const completeTimer = useRef(null);
+  const onAuthError = useCallback(() => setAuthed(false), []);
 
-  // Concise, generic label the instant a change is saved; the poll below refines
-  // it (bulk vs single) within a beat. Any title callers pass is ignored on
-  // purpose — the banner stays short ("just updating") by design.
-  const showPending = useCallback(() => {
-    clearTimeout(completeTimer.current);
-    inProgress.current = true;
-    complete.current = false;
-    setGen({
-      visible: true, complete: false, title: 'Обновление потоков',
-      percent: 0, count: '', indeterminate: true,
-    });
-  }, []);
-
-  const clearPending = useCallback(() => {
-    clearTimeout(completeTimer.current);
-    inProgress.current = false;
-    complete.current = false;
-    setGen(HIDDEN);
-  }, []);
-
-  const showComplete = useCallback(() => {
-    inProgress.current = false;
-    complete.current = true;
-    setGen({
-      visible: true, complete: true, title: 'Готово',
-      percent: 100, count: '', indeterminate: false,
-    });
-    clearTimeout(completeTimer.current);
-    completeTimer.current = setTimeout(() => {
-      complete.current = false;
-      setGen(HIDDEN);
-    }, 2500);
-  }, []);
-
-  const renderGen = useCallback((status) => {
-    if (!status.active) {
-      if (inProgress.current) showComplete();
-      else if (!complete.current) clearPending();
-      return;
-    }
-    clearTimeout(completeTimer.current);
-    inProgress.current = true;
-    complete.current = false;
-    const names = (status.active_users || []).map((u) => u.username).filter(Boolean);
-    const bulk = status.bulk;
-    if (bulk?.total) {
-      // Real progress: the encoder finishes users one by one (channel.js).
-      const completed = Math.min(bulk.completed, bulk.total);
-      setGen({
-        visible: true, complete: false, title: 'Пересборка потоков',
-        percent: Math.round((completed / bulk.total) * 100),
-        count: `${completed} / ${bulk.total}`, indeterminate: false,
-      });
-    } else {
-      // A single encode reports no sub-progress — show an honest indeterminate bar.
-      setGen({
-        visible: true, complete: false, title: 'Обновление потока',
-        percent: 0, count: names.join(', '), indeterminate: true,
-      });
-    }
-  }, [showComplete, clearPending]);
-
-  const refreshGen = useCallback(async () => {
-    try {
-      renderGen(await api.get('/admin/api/generation-status'));
-    } catch (e) {
-      if (e instanceof AuthError) setAuthed(false);
-      // else keep the current indicator through brief network failures
-    }
-  }, [renderGen]);
+  // The background job queue (info-channel encodes, media builds), live from
+  // the server for every screen and the dock.
+  const jobsFeed = useJobsFeed({ api, enabled: !!authed, onAuthError });
+  const refreshJobs = jobsFeed.refresh;
 
   const reloadAll = useCallback(async () => {
     const next = await api.get('/admin/api/state');
@@ -215,20 +168,24 @@ export default function App() {
     setReloadToken((t) => t + 1);
   }, []);
 
-  // Shared mutate lifecycle: pending banner -> action -> toast + reload -> refresh.
-  const withRegen = useCallback(async (pendingTitle, action, { success = null, reload = true } = {}) => {
-    showPending(pendingTitle);
+  // Shared mutate lifecycle: the dock shows "updating" the instant a change is
+  // saved -> action -> toast + reload -> a fresh queue snapshot, which carries
+  // the encodes the save queued (the dock follows them from there). The
+  // pending title callers pass is not shown: the dock names the real work.
+  const withRegen = useCallback(async (_pendingTitle, action, { success = null, reload = true } = {}) => {
+    setPending(true);
     try {
       await action();
       if (success) message.success(success);
       if (reload) await reloadAll();
-      await refreshGen();
+      await refreshJobs();
     } catch (e) {
       if (e instanceof AuthError) { setAuthed(false); return; }
       message.error(e.message);
-      clearPending();
+    } finally {
+      setPending(false);
     }
-  }, [showPending, clearPending, reloadAll, refreshGen, message]);
+  }, [reloadAll, refreshJobs, message]);
 
   // Initial auth probe.
   useEffect(() => {
@@ -243,20 +200,11 @@ export default function App() {
     })();
   }, [reloadAll, message]);
 
-  // Poll the generation status while signed in.
-  useEffect(() => {
-    if (!authed) return undefined;
-    refreshGen();
-    const id = setInterval(refreshGen, 1500);
-    return () => clearInterval(id);
-  }, [authed, refreshGen]);
-
   const handleLogin = useCallback(async (password) => {
     await login(password);
     await reloadAll();
     setAuthed(true);
-    refreshGen();
-  }, [reloadAll, refreshGen]);
+  }, [reloadAll]);
 
   const handleLogout = useCallback(async () => {
     await logout();
@@ -267,9 +215,8 @@ export default function App() {
   // Note: catalog edits are served live from the .m3u and never re-encode, so
   // those screens save directly instead of going through `withRegen`.
   const shared = useMemo(() => ({
-    state, api, withRegen, reload: reloadAll, reloadToken, message, go,
-    onAuthError: () => setAuthed(false),
-  }), [state, withRegen, reloadAll, reloadToken, message, go]);
+    state, api, withRegen, reload: reloadAll, reloadToken, message, go, onAuthError,
+  }), [state, withRegen, reloadAll, reloadToken, message, go, onAuthError]);
 
   if (authed === null) {
     return (
@@ -333,64 +280,79 @@ export default function App() {
   );
 
   return (
-    <WatchingProvider api={api} enabled={authed} onAuthError={shared.onAuthError}>
-      <Layout style={{ minHeight: '100vh' }}>
-        {compact ? null : (
-          <Sider width={232} className="app-sider">
-            {brandMark}
-            {menu}
-          </Sider>
-        )}
-        <Layout>
-          <Header className="app-header">
-            <div className="app-header-title">
-              {compact ? (
-                <Button type="text" icon={<MenuOutlined />} aria-label="Меню" onClick={() => setNavOpen(true)} />
-              ) : null}
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <Typography.Text strong className="app-header-heading">{active.title}</Typography.Text>
-                {state?.publicBaseUrl ? (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
-                    {state.publicBaseUrl}
-                  </Typography.Text>
+    <JobsProvider value={jobsFeed}>
+      <WatchingProvider api={api} enabled={authed} onAuthError={onAuthError}>
+        <Layout style={{ minHeight: '100vh' }}>
+          {compact ? null : (
+            <Sider width={232} className="app-sider">
+              {brandMark}
+              {menu}
+            </Sider>
+          )}
+          <Layout>
+            <Header className="app-header">
+              <div className="app-header-title">
+                {compact ? (
+                  <Button type="text" icon={<MenuOutlined />} aria-label="Меню" onClick={() => setNavOpen(true)} />
                 ) : null}
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                  <Typography.Text strong className="app-header-heading">{active.title}</Typography.Text>
+                  {state?.publicBaseUrl ? (
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis>
+                      {state.publicBaseUrl}
+                    </Typography.Text>
+                  ) : null}
+                </div>
               </div>
-            </div>
-            <div className="app-header-actions">
-              {screens.md ? (
-                <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} />
-              ) : null}
-              <Tooltip title={screens.sm ? null : 'Выйти'}>
-                <Button icon={<LogoutOutlined />} onClick={handleLogout} aria-label="Выйти">
-                  {screens.sm ? 'Выйти' : null}
-                </Button>
-              </Tooltip>
-            </div>
-          </Header>
-          <Content className="app-content">
-            <div className="app-content-inner">
-              <RegenBanner gen={gen} />
-              <Suspense fallback={<div className="page-loading"><Spin /></div>}>
-                <Page {...shared} />
-              </Suspense>
-            </div>
-          </Content>
-        </Layout>
+              <div className="app-header-actions">
+                <JobsButton
+                  summary={jobsFeed.summary}
+                  open={dockOpen}
+                  onClick={() => setDockOpen((v) => !v)}
+                  labelled={!!screens.sm}
+                />
+                {screens.md ? (
+                  <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} />
+                ) : null}
+                <Tooltip title={screens.sm ? null : 'Выйти'}>
+                  <Button icon={<LogoutOutlined />} onClick={handleLogout} aria-label="Выйти">
+                    {screens.sm ? 'Выйти' : null}
+                  </Button>
+                </Tooltip>
+              </div>
+            </Header>
+            <Content className="app-content">
+              <div className="app-content-inner">
+                <JobsDock
+                  open={dockOpen}
+                  onOpenChange={setDockOpen}
+                  pending={pending}
+                  api={api}
+                  message={message}
+                  onAuthError={onAuthError}
+                />
+                <Suspense fallback={<div className="page-loading"><Spin /></div>}>
+                  <Page {...shared} />
+                </Suspense>
+              </div>
+            </Content>
+          </Layout>
 
-        <Drawer
-          open={compact && navOpen}
-          placement="left"
-          width={260}
-          onClose={() => setNavOpen(false)}
-          styles={{ body: { padding: 0, background: '#0f172a' }, header: { display: 'none' } }}
-        >
-          {brandMark}
-          <div style={{ padding: '12px 12px 0' }}>
-            <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} block />
-          </div>
-          {menu}
-        </Drawer>
-      </Layout>
-    </WatchingProvider>
+          <Drawer
+            open={compact && navOpen}
+            placement="left"
+            width={260}
+            onClose={() => setNavOpen(false)}
+            styles={{ body: { padding: 0, background: '#0f172a' }, header: { display: 'none' } }}
+          >
+            {brandMark}
+            <div style={{ padding: '12px 12px 0' }}>
+              <ClientJump users={users} onPick={(id) => go(`clients/${id}`)} block />
+            </div>
+            {menu}
+          </Drawer>
+        </Layout>
+      </WatchingProvider>
+    </JobsProvider>
   );
 }

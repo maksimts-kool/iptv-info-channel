@@ -79,6 +79,7 @@ fn mtime_ms(p: &Path) -> f64 {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct BuildStatus {
     pub state: &'static str,
+    pub reason: Option<String>,
     pub error: Option<String>,
     pub built_at: Option<String>,
     pub started_at: Option<String>,
@@ -95,6 +96,15 @@ pub struct Laid {
     pub layer_height: u32,
     pub timeline: Timeline,
     pub videos: Vec<(PlacedVideo, Asset)>,
+}
+
+/// An uploaded video waiting for, or in, its one-time encode.
+#[derive(Debug)]
+struct VideoJob {
+    cancel: CancellationToken,
+    name: String,
+    queued_at: String,
+    started_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +126,7 @@ pub struct MediaChannel {
     current: Mutex<Option<CancellationToken>>,
     build_lock: AsyncMutex<()>,
     video_lock: AsyncMutex<()>,
-    video_jobs: Mutex<std::collections::HashMap<String, CancellationToken>>,
+    video_jobs: Mutex<std::collections::HashMap<String, VideoJob>>,
 }
 
 impl MediaChannel {
@@ -148,6 +158,15 @@ impl MediaChannel {
 
     fn status_mut(&self) -> std::sync::MutexGuard<'_, BuildStatus> {
         self.status.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn video_jobs(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, VideoJob>> {
+        self.video_jobs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tell the admin's live job feed something changed.
+    fn bump(&self) {
+        self.channels.activity().bump();
     }
 
     /// Everything every clip depends on; a video copy made under another key
@@ -182,6 +201,36 @@ impl MediaChannel {
         v["ready"] = json!(self.ready());
         v["total_articles"] = json!(self.store.read().articles.len());
         v
+    }
+
+    /// The builder and the video encodes, for the admin's job panel.
+    pub fn jobs_json(&self) -> Value {
+        let status = self.status_json();
+        let mut videos: Vec<Value> = self
+            .video_jobs()
+            .iter()
+            .map(|(id, j)| {
+                json!({
+                    "asset_id": id,
+                    "name": j.name,
+                    "state": if j.started_at.is_some() { "running" } else { "queued" },
+                    "queued_at": j.queued_at,
+                    "started_at": j.started_at,
+                })
+            })
+            .collect();
+        videos.sort_by(|a, b| a["queued_at"].as_str().cmp(&b["queued_at"].as_str()));
+        json!({
+            "build": {
+                "state": status["state"],
+                "pending": status["pending"],
+                "reason": status["reason"],
+                "started_at": status["started_at"],
+                "built_at": status["built_at"],
+                "error": status["error"],
+            },
+            "videos": videos,
+        })
     }
 
     /// The loop this customer is served, or `None` when there is nothing for
@@ -231,6 +280,7 @@ impl MediaChannel {
         {
             old.abort();
         }
+        self.bump();
     }
 
     /// Build now; a newer build cancels this one.
@@ -261,6 +311,7 @@ impl MediaChannel {
             }
             Ok(()) => {}
         }
+        self.bump();
         result
     }
 
@@ -270,31 +321,35 @@ impl MediaChannel {
     /// encode. `raw` is deleted afterwards.
     pub fn queue_video(self: &Arc<Self>, asset_id: String, raw: PathBuf, probe: Probe) {
         let cancel = CancellationToken::new();
-        self.video_jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(asset_id.clone(), cancel.clone());
+        let name = self.store.asset(&asset_id).map(|a| a.original_name).unwrap_or_default();
+        self.video_jobs().insert(
+            asset_id.clone(),
+            VideoJob {
+                cancel: cancel.clone(),
+                name,
+                queued_at: iso_now(),
+                started_at: None,
+            },
+        );
+        self.bump();
         let me = Arc::clone(self);
         tokio::spawn(async move {
             let _one_at_a_time = me.video_lock.lock().await;
+            if let Some(j) = me.video_jobs().get_mut(&asset_id) {
+                j.started_at = Some(iso_now());
+            }
+            me.bump();
             me.process_video(&asset_id, &raw, probe, &cancel).await;
             let _ = std::fs::remove_file(&raw);
-            me.video_jobs
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&asset_id);
+            me.video_jobs().remove(&asset_id);
+            me.bump();
         });
     }
 
     /// Stop a video's encode (its article was deleted mid-way).
     pub fn cancel_video(&self, asset_id: &str) {
-        if let Some(c) = self
-            .video_jobs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(asset_id)
-        {
-            c.cancel();
+        if let Some(j) = self.video_jobs().get(asset_id) {
+            j.cancel.cancel();
         }
     }
 
@@ -722,9 +777,11 @@ impl MediaChannel {
         {
             let mut s = self.status_mut();
             s.state = "building";
+            s.reason = Some(reason.to_owned());
             s.error = None;
             s.started_at = Some(iso_now());
         }
+        self.bump();
         let music = self.channels.ensure_music().await?;
         let articles = self.store.articles();
         let (_, variants) = media_variants(&articles, &self.users.users());

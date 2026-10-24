@@ -409,6 +409,7 @@ pub fn router(st: &AppState) -> Router<AppState> {
         .merge(super::catalog::router())
         .merge(super::media::router(st))
         .merge(super::stats::router())
+        .merge(super::jobs::router())
         .layer(axum::middleware::from_fn_with_state(st.clone(), require_admin));
 
     Router::new()
@@ -1226,10 +1227,11 @@ async fn delete_newsletter(State(st): State<AppState>, UrlPath(id): UrlPath<Stri
     ok(json!({ "ok": true }))
 }
 
+/// Queues the rebuild and returns; the job panel follows its progress.
 async fn regenerate_all(State(st): State<AppState>) -> ApiResult {
     tracing::info!(target: "admin", "manual bulk regeneration requested");
-    let results = st.channels.generate_all("admin manual bulk regeneration").await;
-    ok(json!({ "ok": true, "results": results }))
+    let batch = spawn_regen_all(&st.channels, "admin manual bulk regeneration");
+    ok(json!({ "ok": true, "batch": batch, "queued": st.store.users().len() }))
 }
 
 #[cfg(test)]
