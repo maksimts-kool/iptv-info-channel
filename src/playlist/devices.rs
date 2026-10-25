@@ -26,6 +26,14 @@
 //! phone and a TV at home on one channel): a playback of its own refreshed
 //! next to that device's for longer than [`ZAP_MS`]. A probe stops first.
 //!
+//! A PLAYER THAT CHECKS IN NOW AND THEN IS NOT WATCHING: a TV in standby
+//! with the app still running can go on refreshing its old playback once
+//! every couple of minutes, far too seldom to play a live window. Every tune-in
+//! starts with an entry link, so a playback refreshed by no device watching
+//! is one coming back after more than the idle window of silence (or one from
+//! before a restart). It is neither listed nor counted until it refreshes
+//! again within [`WAKE_MS`]; meanwhile it plays only if a slot is free.
+//!
 //! WHO WINS when there are more devices than slots: the ones that started
 //! first. A newcomer is refused, never the device already watching. A refused
 //! device holds no slot, but is remembered (same idle window) so the admin
@@ -128,6 +136,11 @@ pub const CONTEST_MS: i64 = 7_000;
 /// so a device still on its old playback has refreshed it again by then.
 pub const ZAP_MS: i64 = 15_000;
 
+/// How soon a playback coming back (see the module docs) must be refreshed
+/// again to be watching: well above any live playlist's reload interval, well
+/// below the minutes a sleeping player waits between retries.
+pub const WAKE_MS: i64 = 30_000;
+
 type Slots = HashMap<i64, HashMap<String, Device>>;
 
 /// A second key of a device holding a slot: `(holder key, last seen)`.
@@ -145,6 +158,10 @@ pub struct DeviceTracker {
     /// none of its devices plays yet, `(first, last)` request, until
     /// [`ZAP_MS`] tells whose they are.
     pending: HashMap<(i64, String), HashMap<String, (i64, i64)>>,
+    /// Per (customer, key, playback): playbacks coming back with no device
+    /// watching them, `(first, last)` request, until [`WAKE_MS`] tells
+    /// whether they are watched again.
+    waking: HashMap<(i64, String, String), (i64, i64)>,
 }
 
 /// Which of the devices behind one key a request is.
@@ -411,9 +428,32 @@ impl DeviceTracker {
             };
         }
 
+        let mut first_seen = now;
+        // A newcomer turned away keeps asking at its pace: known already.
+        let turned_away = self
+            .refused
+            .get(&user)
+            .and_then(|r| r.get(key))
+            .is_some_and(|d| now - d.last_seen <= self.idle_ms);
+        if !info.play.is_empty() && !other_key && !turned_away {
+            self.waking.retain(|_, (_, last)| now - *last <= WAKE_MS);
+            let waking = (user, key.to_owned(), info.play.clone());
+            let Some((first, _)) = self.waking.remove(&waking) else {
+                // Not watching yet: unlisted, and playing only on a free slot.
+                self.waking.insert(waking, (now, now));
+                return Admission {
+                    allowed: !(limit > 0 && active as i64 >= limit),
+                    active,
+                    limit,
+                    slot,
+                    contest: None,
+                };
+            };
+            first_seen = first;
+        }
         if limit > 0 && active as i64 >= limit {
             let refused = self.refused.entry(user).or_default();
-            let first_seen = refused.get(key).map_or(now, |d| d.first_seen);
+            let first_seen = refused.get(key).map_or(first_seen, |d| d.first_seen);
             refused.insert(
                 key.to_owned(),
                 Device {
@@ -438,7 +478,7 @@ impl DeviceTracker {
             key.to_owned(),
             Device {
                 info,
-                first_seen: now,
+                first_seen,
                 last_seen: now,
             },
         );
@@ -552,6 +592,7 @@ impl DeviceTracker {
         self.viewing.remove(&user);
         self.aliases.remove(&user);
         self.pending.retain(|(u, _), _| *u != user);
+        self.waking.retain(|(u, _, _), _| *u != user);
     }
 }
 
@@ -714,7 +755,10 @@ mod tests {
             .collect()
     }
 
-    fn rows(t: &mut DeviceTracker, limit: i64, at: i64) -> Vec<(String, String, bool)> {
+    /// (player, channel, allowed)
+    type Row = (String, String, bool);
+
+    fn rows(t: &mut DeviceTracker, limit: i64, at: i64) -> Vec<Row> {
         t.list(1, limit, T0 + at)
             .into_iter()
             .map(|d| (d.device.info.player, d.device.info.channel, d.allowed))
@@ -916,6 +960,109 @@ mod tests {
             (listed[0].device.info.channel.as_str(), listed[0].device.first_seen),
             ("Россия 1", T0)
         );
+    }
+
+    /// A customer's day from the access log, in seconds: a TV's app plays
+    /// Россия 1 (a refresh every 7 s), then, in standby, refreshes that
+    /// playback only every two to two and a half minutes for hours. A Mi Box
+    /// at the same address tunes in to Матч ТВ HD meanwhile (every 11 s).
+    /// Then the TV is back to a normal pace. `[(at, TV allowed, listed)]`.
+    fn standby_evening(limit: i64) -> Vec<(i64, bool, Vec<Row>)> {
+        const AWAKE: i64 = 1000;
+        const BOX_AT: i64 = 7200;
+        const WAKES: i64 = 10_800;
+        let home = "89.235.208.216";
+        let ott = "OTT-play FOSS/1.54 (Linux;Android 9) ExoPlayerLib/2.11.7";
+        let tv = stack(home, ott, "OTT Play", "Россия 1");
+        let mi_box = stack(home, ott, "OTT Play", "Матч ТВ HD");
+        let mut sleeping = vec![AWAKE + 59];
+        for gap in [145, 145, 116, 145, 117].iter().cycle() {
+            let next = sleeping[sleeping.len() - 1] + gap;
+            if next >= WAKES {
+                break;
+            }
+            sleeping.push(next);
+        }
+        let mut t = DeviceTracker::new(60_000);
+        let mut out = Vec::new();
+        for s in 0..WAKES + 120 {
+            let tv_asks = match s {
+                0 => Some(tv.clone()),
+                _ if (s - 1) % 7 == 0 && (s <= AWAKE || s >= WAKES) => Some(playing(&tv, "ss9a9gyszg")),
+                _ if sleeping.contains(&s) => Some(playing(&tv, "ss9a9gyszg")),
+                _ => None,
+            };
+            let tv_allowed = tv_asks.map(|info| t.admit(1, "mitv", limit, info, T0 + s * 1000).allowed);
+            if s == BOX_AT {
+                assert!(t.admit(1, "mibox", limit, mi_box.clone(), T0 + s * 1000).allowed);
+            } else if s > BOX_AT && (s - BOX_AT) % 11 == 0 {
+                let info = playing(&mi_box, "c64jf6aef2");
+                assert!(t.admit(1, "mibox", limit, info, T0 + s * 1000).allowed);
+            }
+            if let Some(allowed) = tv_allowed {
+                out.push((s, allowed, rows(&mut t, limit, s * 1000)));
+            }
+            if s > BOX_AT {
+                let listed = t.list(1, limit, T0 + s * 1000);
+                let mi_box = listed.iter().find(|d| d.device.info.channel == "Матч ТВ HD");
+                assert_eq!(mi_box.map(|d| d.device.first_seen), Some(T0 + BOX_AT * 1000), "at {s}");
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_player_in_standby_is_not_watching() {
+        let r1 = ("OTT Play".to_owned(), "Россия 1".to_owned(), true);
+        let mi_box = ("OTT Play".to_owned(), "Матч ТВ HD".to_owned(), true);
+        let asked = standby_evening(2);
+        let (awake, rest): (Vec<_>, Vec<_>) = asked.into_iter().partition(|(s, ..)| *s <= 1000);
+        let (sleeping, woke): (Vec<_>, Vec<_>) = rest.into_iter().partition(|(s, ..)| *s < 10_800);
+        assert!(
+            awake
+                .iter()
+                .all(|(_, allowed, listed)| *allowed && *listed == [r1.clone()])
+        );
+        // Its polls still play (a slot is free) but list nothing.
+        assert!(sleeping.len() > 60);
+        for (s, allowed, listed) in &sleeping {
+            assert!(*allowed, "at {s}");
+            assert!(listed.iter().all(|r| r.1 != "Россия 1"), "at {s}: {listed:?}");
+        }
+        // Refreshing at a normal pace again: watching, since then.
+        assert_eq!(woke[0].2, [mi_box.clone()]);
+        assert_eq!(woke[1].2, [mi_box.clone(), r1.clone()]);
+        let mut t = DeviceTracker::new(60_000);
+        let tv = playing(
+            &stack("89.235.208.216", "OTT-play", "OTT Play", "Россия 1"),
+            "ss9a9gyszg",
+        );
+        t.admit(1, "mitv", 2, tv.clone(), T0);
+        t.admit(1, "mitv", 2, tv, T0 + 7000);
+        assert_eq!(t.list(1, 2, T0 + 8000)[0].device.first_seen, T0);
+    }
+
+    #[test]
+    fn a_player_in_standby_takes_no_slot() {
+        let mi_box = ("OTT Play".to_owned(), "Матч ТВ HD".to_owned(), true);
+        for (s, allowed, listed) in standby_evening(1) {
+            if s < 7200 {
+                continue;
+            }
+            if s < 10_800 {
+                // The box has the slot: the TV's polls are turned away, unlisted.
+                assert!(!allowed, "at {s}");
+                assert_eq!(listed, [mi_box.clone()], "at {s}");
+            } else if s > 10_810 {
+                // Awake again: a device over the limit, listed as such.
+                assert!(!allowed, "at {s}");
+                assert_eq!(
+                    listed,
+                    [mi_box.clone(), ("OTT Play".into(), "Россия 1".into(), false)],
+                    "at {s}"
+                );
+            }
+        }
     }
 
     #[test]
