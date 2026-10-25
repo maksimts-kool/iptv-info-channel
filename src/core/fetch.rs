@@ -14,8 +14,32 @@ pub enum FetchError {
     Status(u16),
     #[error("response is larger than the {0} byte limit")]
     TooLarge(usize),
-    #[error("{0}")]
-    Http(#[from] reqwest::Error),
+    #[error("{}", describe_http(.0))]
+    Http(reqwest::Error),
+}
+
+impl From<reqwest::Error> for FetchError {
+    /// Upstream URLs carry provider credentials, so the URL is dropped
+    /// before the error reaches a log line or the admin.
+    fn from(e: reqwest::Error) -> Self {
+        Self::Http(e.without_url())
+    }
+}
+
+/// reqwest's own message ("error sending request") plus its source chain,
+/// which holds the actual cause: a timeout, refused connection, DNS failure.
+fn describe_http(e: &reqwest::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = std::error::Error::source(e);
+    while let Some(s) = source {
+        let msg = s.to_string();
+        if !out.contains(&msg) {
+            out.push_str(": ");
+            out.push_str(&msg);
+        }
+        source = s.source();
+    }
+    out
 }
 
 /// A fetched body plus where it finally came from (after redirects) — HLS
@@ -64,4 +88,32 @@ pub async fn read_bounded(res: reqwest::Response, max_bytes: usize, require_ok: 
         body.extend_from_slice(&chunk);
     }
     Ok(Fetched { final_url, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn transport_errors_name_the_cause_without_the_url() {
+        // A port nothing listens on: the connection is refused.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/ch1/mono.m3u8?token=secret-token");
+        let err = fetch_bounded(
+            &reqwest::Client::new(),
+            &url,
+            HeaderMap::new(),
+            Duration::from_secs(5),
+            1024,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(!err.contains("secret-token") && !err.contains("mono.m3u8"), "{err}");
+        assert!(err.starts_with("error sending request: "), "{err}");
+    }
 }
