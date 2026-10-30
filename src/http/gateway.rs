@@ -135,12 +135,13 @@ fn iso_ms(ms: i64) -> String {
 
 impl Gateway {
     pub fn new(idle_seconds: u64) -> Self {
+        let idle_ms = i64::try_from(idle_seconds).unwrap_or(60) * 1000;
         Self {
-            devices: Mutex::new(DeviceTracker::new(i64::try_from(idle_seconds).unwrap_or(60) * 1000)),
+            devices: Mutex::new(DeviceTracker::new(idle_ms)),
             sessions: Mutex::default(),
             watch: Mutex::default(),
             agents: Mutex::default(),
-            diagnostics: Mutex::default(),
+            diagnostics: Mutex::new(Diagnostics::new(idle_ms)),
         }
     }
 

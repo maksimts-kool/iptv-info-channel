@@ -22,6 +22,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
+use super::devices::WAKE_MS;
 use crate::core::util::make_token;
 
 /// Minutes of per-channel history the live view shows.
@@ -35,8 +36,8 @@ pub const SLOW_MS: i64 = 1_500;
 
 const MINUTE_MS: i64 = 60_000;
 
-/// A viewer without a request for this long is gone (the device list's idle
-/// window by default).
+/// A viewer without a request for this long is gone: the device list's idle
+/// window (`DEVICE_IDLE_SECONDS`), this by default.
 const LIVE_MS: i64 = 60_000;
 
 /// How far back a viewer's or channel's state looks.
@@ -45,12 +46,11 @@ const RECENT_MS: i64 = 120_000;
 /// Fetch samples kept per channel (the oldest go first).
 const SAMPLES_MAX: usize = 5_000;
 
-/// A refresh this many target durations after the previous one is late...
+/// A refresh this many target durations after the previous one is late
+/// (a longer gap than the idle window is a new viewing)...
 const LATE_FACTOR: f64 = 2.5;
 /// ...and never earlier than this.
 const LATE_MIN_MS: i64 = 15_000;
-/// A longer gap is a new viewing, not a late refresh.
-const GAP_MAX_MS: i64 = 90_000;
 
 /// Late refreshes within [`RECENT_MS`] that make a viewer "buffering".
 const LATE_COUNT: usize = 2;
@@ -294,6 +294,11 @@ struct Viewer {
     /// When its player was found not to play the channel; cleared by a
     /// quality refresh.
     stuck: Option<i64>,
+    /// Watching, as the device list counts it: a viewing starts as a lone
+    /// request (a TV in standby checking in on its old playback every couple
+    /// of minutes, an app probing a channel) and is only watching once a
+    /// second request follows within [`WAKE_MS`].
+    confirmed: bool,
 }
 
 #[derive(Debug)]
@@ -332,8 +337,10 @@ struct Pending {
     at: i64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Diagnostics {
+    /// The device list's idle window.
+    live_ms: i64,
     channels: HashMap<String, ChannelHealth>,
     /// Tune-ins waiting for their player's first quality request, by play id.
     pending: HashMap<String, Pending>,
@@ -343,6 +350,12 @@ pub struct Diagnostics {
     closed: Vec<IncidentRow>,
     /// Channels in the problem register (stored or open), for the menu badge.
     problem_channels: HashSet<String>,
+}
+
+impl Default for Diagnostics {
+    fn default() -> Self {
+        Self::new(LIVE_MS)
+    }
 }
 
 fn minute_of(ms: i64) -> i64 {
@@ -438,6 +451,19 @@ impl Viewer {
 }
 
 impl Diagnostics {
+    /// `live_ms`: the device list's idle window, so both agree on who is
+    /// watching.
+    pub fn new(live_ms: i64) -> Self {
+        Self {
+            live_ms,
+            channels: HashMap::new(),
+            pending: HashMap::new(),
+            open: HashMap::new(),
+            closed: Vec::new(),
+            problem_channels: HashSet::new(),
+        }
+    }
+
     /// Channels in the problem register at startup.
     pub fn load_problem_channels(&mut self, channel_ids: impl IntoIterator<Item = String>) {
         self.problem_channels.extend(channel_ids);
@@ -467,17 +493,8 @@ impl Diagnostics {
         while ch.samples.front().is_some_and(|s| s.at < horizon) || ch.samples.len() > SAMPLES_MAX {
             ch.samples.pop_front();
         }
-        {
-            let minute = ch.minute(now);
-            minute.requests += 1;
-            minute.viewers.insert(f.device.to_owned());
-            if failed {
-                minute.failures += 1;
-            } else {
-                minute.latencies.push(f.latency_ms);
-            }
-        }
-
+        let live_ms = self.live_ms;
+        let quiet = ch.viewers.get(f.device).map(|v| now - v.last_seen);
         let viewer = ch.viewers.entry(f.device.to_owned()).or_insert_with(|| Viewer {
             user_id: f.user_id,
             player: f.player.to_owned(),
@@ -491,13 +508,20 @@ impl Diagnostics {
             last_error: None,
             last_ok: None,
             stuck: None,
+            confirmed: false,
         });
-        if now - viewer.last_seen > GAP_MAX_MS {
-            viewer.first_seen = now;
-            viewer.last_refresh = None;
+        match quiet {
+            Some(gap) if gap > live_ms => {
+                viewer.first_seen = now;
+                viewer.last_refresh = None;
+                viewer.confirmed = false;
+            }
+            Some(gap) if gap <= WAKE_MS => viewer.confirmed = true,
+            _ => {}
         }
+        let confirmed = viewer.confirmed;
         // Watching before this request (a failure at tune-in then is not "never opened").
-        let was_watching = now - viewer.last_seen <= LIVE_MS && viewer.first_seen < now;
+        let was_watching = quiet.is_some_and(|gap| gap <= live_ms) && viewer.first_seen < now;
         viewer.last_seen = now;
         f.player.clone_into(&mut viewer.player);
         f.ip.clone_into(&mut viewer.ip);
@@ -552,7 +576,7 @@ impl Diagnostics {
                     if let Some(prev) = viewer.last_refresh {
                         let gap = now - prev;
                         let late_after = LATE_MIN_MS.max((LATE_FACTOR * media.target_ms as f64) as i64);
-                        if gap > late_after && gap <= GAP_MAX_MS {
+                        if gap > late_after && gap <= live_ms {
                             viewer.late.push_back((now, gap));
                             troubled = true;
                             if viewer.late.len() >= LATE_COUNT {
@@ -592,8 +616,18 @@ impl Diagnostics {
                 }
             }
         }
-        if troubled {
-            ch.trouble(f.device, now);
+        let minute = ch.minute(now);
+        minute.requests += 1;
+        if failed {
+            minute.failures += 1;
+        } else {
+            minute.latencies.push(f.latency_ms);
+        }
+        if confirmed {
+            minute.viewers.insert(f.device.to_owned());
+            if troubled {
+                minute.troubled.insert(f.device.to_owned());
+            }
         }
         ch.positions.retain(|_, p| now - p.last_seen <= RECENT_MS);
         let name = ch.name.clone();
@@ -668,10 +702,14 @@ impl Diagnostics {
             {
                 continue;
             }
+            let mut confirmed = false;
             if let Some(v) = ch.viewers.get_mut(&p.device) {
                 v.stuck = Some(now);
+                confirmed = v.confirmed;
             }
-            ch.trouble(&p.device, now);
+            if confirmed {
+                ch.trouble(&p.device, now);
+            }
             let name = ch.name.clone();
             self.sight(&p.channel_id, &name, Kind::Player, p.user_id, "", 1, now);
         }
@@ -690,7 +728,7 @@ impl Diagnostics {
 
         let horizon = now - MINUTES as i64 * MINUTE_MS;
         for ch in self.channels.values_mut() {
-            ch.viewers.retain(|_, v| now - v.last_seen <= GAP_MAX_MS);
+            ch.viewers.retain(|_, v| now - v.last_seen <= self.live_ms);
         }
         self.channels.retain(|_, ch| ch.last_activity >= horizon);
     }
@@ -756,7 +794,7 @@ impl Diagnostics {
             .channels
             .iter()
             .filter_map(|(id, ch)| {
-                let view = Self::view_of(id, ch, now);
+                let view = Self::view_of(id, ch, now, self.live_ms);
                 (!view.viewers.is_empty()).then_some(view)
             })
             .collect();
@@ -773,16 +811,16 @@ impl Diagnostics {
     pub fn channel(&mut self, channel_id: &str, now: i64) -> Option<ChannelView> {
         self.tick(now);
         let ch = self.channels.get(channel_id)?;
-        Some(Self::view_of(channel_id, ch, now))
+        Some(Self::view_of(channel_id, ch, now, self.live_ms))
     }
 
-    fn view_of(channel_id: &str, ch: &ChannelHealth, now: i64) -> ChannelView {
+    fn view_of(channel_id: &str, ch: &ChannelHealth, now: i64, live_ms: i64) -> ChannelView {
         let recent = now - RECENT_MS;
         let frozen_since = ch.frozen_since(now);
         let mut viewers: Vec<ViewerView> = ch
             .viewers
             .values()
-            .filter(|v| now - v.last_seen <= LIVE_MS)
+            .filter(|v| v.confirmed && now - v.last_seen <= live_ms)
             .map(|v| ViewerView {
                 user_id: v.user_id,
                 player: v.player.clone(),
@@ -988,8 +1026,14 @@ mod tests {
         let mut d = Diagnostics::default();
         d.record(&fetch("phone", "", true, 8_000, Outcome::Failed("timeout".into())), T0);
         assert_eq!(kinds(&d), [Kind::NoOpen]);
-        let live = d.live(T0);
-        assert_eq!(live[0].viewers[0].state, ViewerState::Noconn, "it never got in");
+        assert!(d.live(T0).is_empty(), "one attempt is not somebody watching");
+        // The player tries again: it is there, and never got in.
+        d.record(
+            &fetch("phone", "", true, 8_000, Outcome::Failed("timeout".into())),
+            T0 + 10_000,
+        );
+        let live = d.live(T0 + 10_000);
+        assert_eq!(live[0].viewers[0].state, ViewerState::Noconn);
         assert_eq!(live[0].viewers[0].error.as_deref(), Some("timeout"));
 
         let mut d = Diagnostics::default();
@@ -1026,6 +1070,7 @@ mod tests {
         tune(&mut d, "phone", "x", T0);
         d.tick(T0 + 10_000);
         assert!(kinds(&d).is_empty());
+        tune(&mut d, "phone", "y", T0 + 15_000);
         d.tick(T0 + PLAYER_WAIT_MS);
         assert_eq!(kinds(&d), [Kind::Player]);
         assert_eq!(d.live(T0 + PLAYER_WAIT_MS)[0].viewers[0].state, ViewerState::Noconn);
@@ -1077,6 +1122,27 @@ mod tests {
         // A failed write is retried.
         d.requeue(after.clone());
         assert_eq!(d.take_dirty(T0 + 3_000), after);
+    }
+
+    #[test]
+    fn a_player_in_standby_checking_in_is_not_watching() {
+        // A TV asleep with the app running refreshes its old playback once
+        // every couple of minutes: not watching, not in the minute counts.
+        let mut d = Diagnostics::default();
+        for i in 0..5 {
+            let at = T0 + i * 150_000;
+            d.record(&fetch("tv", "old", false, 100, media(i)), at);
+            assert!(d.live(at).is_empty(), "check-in {i} listed");
+            assert!(d.channel("ch1", at).unwrap().minutes.iter().all(|m| m.viewers == 0));
+        }
+        assert!(kinds(&d).is_empty());
+        // Woken up: refreshes come every few seconds again.
+        let at = T0 + 4 * 150_000 + 6_000;
+        d.record(&fetch("tv", "old", false, 100, media(5)), at);
+        let live = d.live(at);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].viewers[0].since, T0 + 4 * 150_000);
+        assert_eq!(live[0].minutes.last().unwrap().viewers, 1);
     }
 
     #[test]
