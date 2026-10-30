@@ -294,6 +294,9 @@ struct Viewer {
     /// When its player was found not to play the channel; cleared by a
     /// quality refresh.
     stuck: Option<i64>,
+    /// When the device was last seen on another channel: after its last
+    /// request here, it switched, and is no longer watching this one.
+    moved: Option<i64>,
     /// Watching, as the device list counts it: a viewing starts as a lone
     /// request (a TV in standby checking in on its old playback every couple
     /// of minutes, an app probing a channel) and is only watching once a
@@ -400,13 +403,16 @@ impl ChannelHealth {
         self.minute(now).troubled.insert(device.to_owned());
     }
 
-    fn frozen_since(&self, now: i64) -> Option<i64> {
+    /// How long a playlist stood still, as of the last fetch that saw it:
+    /// the time since then says nothing (nobody may be asking any more).
+    fn frozen_for(&self, now: i64) -> Option<i64> {
         self.positions
             .values()
             .filter(|p| now - p.last_seen <= RECENT_MS)
-            .filter(|p| now - p.since >= frozen_after(p.target_ms))
-            .map(|p| p.since)
-            .min()
+            .map(|p| (p.last_seen - p.since, p.target_ms))
+            .filter(|(still, target_ms)| *still >= frozen_after(*target_ms))
+            .map(|(still, _)| still)
+            .max()
     }
 
     fn recent_latency(&self, from: i64) -> Option<i64> {
@@ -477,9 +483,18 @@ impl Diagnostics {
     /// Record one manifest fetch at `now` (epoch ms).
     pub fn record(&mut self, f: &Fetch<'_>, now: i64) {
         self.tick(now);
-        // A device that moved to another channel was not stuck on this one.
+        // A device that moved to another channel was not stuck on this one,
+        // and is not watching it any more.
         self.pending
             .retain(|_, p| !(p.user_id == f.user_id && p.device == f.device && p.channel_id != f.channel_id));
+        for (id, other) in &mut self.channels {
+            if id != f.channel_id
+                && let Some(v) = other.viewers.get_mut(f.device)
+                && v.user_id == f.user_id
+            {
+                v.moved = Some(now);
+            }
+        }
         let failed = matches!(f.outcome, Outcome::Failed(_));
         let ch = self.channels.entry(f.channel_id.to_owned()).or_default();
         f.channel_name.clone_into(&mut ch.name);
@@ -508,6 +523,7 @@ impl Diagnostics {
             last_error: None,
             last_ok: None,
             stuck: None,
+            moved: None,
             confirmed: false,
         });
         match quiet {
@@ -816,17 +832,17 @@ impl Diagnostics {
 
     fn view_of(channel_id: &str, ch: &ChannelHealth, now: i64, live_ms: i64) -> ChannelView {
         let recent = now - RECENT_MS;
-        let frozen_since = ch.frozen_since(now);
+        let frozen_for = ch.frozen_for(now);
         let mut viewers: Vec<ViewerView> = ch
             .viewers
             .values()
-            .filter(|v| v.confirmed && now - v.last_seen <= live_ms)
+            .filter(|v| v.confirmed && now - v.last_seen <= live_ms && v.moved.is_none_or(|m| m < v.last_seen))
             .map(|v| ViewerView {
                 user_id: v.user_id,
                 player: v.player.clone(),
                 ip: v.ip.clone(),
                 since: v.first_seen,
-                state: v.state(frozen_since.is_some(), now),
+                state: v.state(frozen_for.is_some(), now),
                 late_ms: v
                     .late
                     .iter()
@@ -841,7 +857,7 @@ impl Diagnostics {
         viewers.sort_by_key(|v| (v.state as u8, v.since));
 
         let latency_ms = ch.recent_latency(recent);
-        let state = if frozen_since.is_some() {
+        let state = if frozen_for.is_some() {
             ChannelState::Frozen
         } else if ch.recent_failures(recent) >= FAILURES {
             ChannelState::Errors
@@ -864,7 +880,7 @@ impl Diagnostics {
             requests: ch.samples.iter().filter(|s| s.at >= quarter).count(),
             failures: ch.samples.iter().filter(|s| s.at >= quarter && s.failed).count(),
             error: ch.last_error.clone().filter(|_| ch.recent_failures(recent) > 0),
-            frozen_ms: frozen_since.map_or(0, |since| now - since),
+            frozen_ms: frozen_for.unwrap_or(0),
             target_ms: ch.positions.values().map(|p| p.target_ms).max().unwrap_or(0),
             minutes: minute_views(ch, now),
         }
@@ -1143,6 +1159,42 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].viewers[0].since, T0 + 4 * 150_000);
         assert_eq!(live[0].minutes.last().unwrap().viewers, 1);
+    }
+
+    #[test]
+    fn a_switch_moves_the_viewer_at_once() {
+        let mut d = Diagnostics::default();
+        watch(&mut d, "tv", T0, T0 + 30_000, 100);
+        let on = |channel_id: &'static str, play: &'static str, tune_in: bool, outcome: Outcome| Fetch {
+            channel_id,
+            upstream: channel_id,
+            ..fetch("tv", play, tune_in, 100, outcome)
+        };
+        d.record(&on("ch2", "p2", true, Outcome::Ok { media: None }), T0 + 33_000);
+        d.record(&on("ch2", "p2", false, media(0)), T0 + 33_500);
+        let live = d.live(T0 + 34_000);
+        assert_eq!(live.len(), 1, "only the new channel");
+        assert_eq!(live[0].channel_id, "ch2");
+        assert_eq!(live[0].state, ChannelState::Ok);
+        // And back again (the gateway gives each device its own key, so a
+        // key is one device on one channel at a time).
+        d.record(&fetch("tv", "p3", true, 100, Outcome::Ok { media: None }), T0 + 40_000);
+        d.record(&fetch("tv", "p3", false, 100, media(9)), T0 + 40_500);
+        let live = d.live(T0 + 41_000);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].channel_id, "ch1");
+    }
+
+    #[test]
+    fn a_player_that_stops_asking_is_not_frozen() {
+        let mut d = Diagnostics::default();
+        watch(&mut d, "tv", T0, T0 + 30_000, 100);
+        // Turned off: listed for the idle window, but the playlist was moving.
+        let live = d.live(T0 + 55_000);
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].state, ChannelState::Ok);
+        assert_eq!(live[0].viewers[0].state, ViewerState::Ok);
+        assert!(kinds(&d).is_empty());
     }
 
     #[test]
