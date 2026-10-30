@@ -40,6 +40,7 @@ use crate::data::model::DecoratedUser;
 use crate::encode::liveloop::{LIVE_WINDOW_SEGMENTS, Segment, loop_segments};
 use crate::encode::queue::Priority;
 use crate::playlist::devices::{DeviceInfo, DeviceTracker, ListedDevice, device_key, device_tag};
+use crate::playlist::diagnostics::{Diagnostics, Fetch, MediaInfo, Outcome};
 use crate::playlist::hls::{
     MediaPlaylist, Splice, build_spliced_playlist, is_hls_url, is_master_playlist, parse_media_playlist,
     rewrite_hls_manifest,
@@ -101,14 +102,15 @@ impl Session {
     }
 }
 
-/// In-memory gateway state: device slots, per-player playlist sessions and
-/// the viewing history still being recorded.
+/// In-memory gateway state: device slots, per-player playlist sessions, the
+/// viewing history still being recorded and the channel diagnostics.
 #[derive(Debug)]
 pub struct Gateway {
     devices: Mutex<DeviceTracker>,
     sessions: Mutex<HashMap<String, Session>>,
     watch: Mutex<WatchTracker>,
     agents: Mutex<Agents>,
+    diagnostics: Mutex<Diagnostics>,
 }
 
 /// One device as the admin sees it.
@@ -138,7 +140,13 @@ impl Gateway {
             sessions: Mutex::default(),
             watch: Mutex::default(),
             agents: Mutex::default(),
+            diagnostics: Mutex::default(),
         }
+    }
+
+    /// The channel diagnostics (the Диагностика page and its register).
+    pub fn diagnostics(&self) -> std::sync::MutexGuard<'_, Diagnostics> {
+        self.diagnostics.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn agents(&self) -> std::sync::MutexGuard<'_, Agents> {
@@ -527,6 +535,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         channel: channel_name.clone(),
         play: req.play.to_owned(),
     };
+    let player = info.player.clone();
     let refusal = if !allowed {
         Some(Refusal::Access)
     } else if let Some((_, r)) = existing_splice {
@@ -629,6 +638,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
     if let Ok(v) = HeaderValue::from_str(ua) {
         headers.insert(USER_AGENT, v);
     }
+    let started = std::time::Instant::now();
     let fetched = fetch_bounded(
         &st.http,
         &url,
@@ -637,6 +647,25 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
         st.config.gateway.manifest_max_bytes,
     )
     .await;
+    let latency_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
+    let diagnose = |play: &str, outcome: Outcome| {
+        st.gateway.diagnostics().record(
+            &Fetch {
+                channel_id: req.channel_id,
+                channel_name: &channel_name,
+                user_id: user.id,
+                device: &watch_device,
+                player: &player,
+                ip: &req.ip,
+                play,
+                tune_in: req.variant.is_none(),
+                upstream: &url,
+                latency_ms,
+                outcome,
+            },
+            now_ms(),
+        );
+    };
     match fetched {
         Ok(f) => {
             st.gateway.record_watch(&WatchHit {
@@ -657,12 +686,14 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
             };
             let gate = |abs: &str| variant_gate_url(st, &user, req.tag, &play, req.channel_id, abs);
             if is_master_playlist(&body) {
+                diagnose(&play, Outcome::Ok { media: None });
                 st.gateway
                     .sessions()
                     .insert(session_key, Session::Master { last_seen: now });
                 return manifest(rewrite_hls_manifest(&body, &f.final_url, Some(&gate)));
             }
             if req.variant.is_none() {
+                diagnose(&play, Outcome::Ok { media: None });
                 // Refreshed through a link of this tune-in's own, like a
                 // master's variants. The channel URL, not where it
                 // redirected: that is what every refresh fetched so far.
@@ -672,11 +703,23 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
                 return manifest(single_variant_master(&gate(&url)));
             }
             let rewritten = rewrite_hls_manifest(&body, &f.final_url, None);
+            let snapshot = parse_media_playlist(&rewritten);
+            diagnose(
+                &play,
+                Outcome::Ok {
+                    media: Some(MediaInfo {
+                        sequence: snapshot.media_sequence,
+                        last_uri: snapshot.segments.last().map(|s| s.uri.clone()).unwrap_or_default(),
+                        target_ms: (snapshot.target_duration * 1000.0) as i64,
+                        ended: rewritten.contains("#EXT-X-ENDLIST"),
+                    }),
+                },
+            );
             st.gateway.sessions().insert(
                 session_key,
                 Session::Media {
                     last_seen: now,
-                    snapshot: parse_media_playlist(&rewritten),
+                    snapshot,
                     snapshot_text: rewritten.clone(),
                     splice: None,
                 },
@@ -684,6 +727,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
             manifest(rewritten)
         }
         Err(e) => {
+            diagnose(req.play, Outcome::Failed(e.code()));
             tracing::error!(target: "gateway", user_id = user.id, channel_id = req.channel_id, error = %e, "upstream manifest fetch failed");
             text(StatusCode::BAD_GATEWAY, "Upstream unavailable")
         }

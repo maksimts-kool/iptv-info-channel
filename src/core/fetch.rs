@@ -18,6 +18,19 @@ pub enum FetchError {
     Http(reqwest::Error),
 }
 
+impl FetchError {
+    /// The failure in one word, for the channel diagnostics: the HTTP status
+    /// ("502"), or `timeout`, `connect`, `too_large`.
+    pub fn code(&self) -> String {
+        match self {
+            Self::Status(status) => status.to_string(),
+            Self::TooLarge(_) => "too_large".to_owned(),
+            Self::Http(e) if e.is_timeout() => "timeout".to_owned(),
+            Self::Http(_) => "connect".to_owned(),
+        }
+    }
+}
+
 impl From<reqwest::Error> for FetchError {
     /// Upstream URLs carry provider credentials, so the URL is dropped
     /// before the error reaches a log line or the admin.

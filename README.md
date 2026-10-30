@@ -9,13 +9,14 @@ The backend uses axum and tokio. PostgreSQL stores customers, plans, settings, t
 - Provider playlist imports and scheduled refreshes; administrator edits and missing-channel markers survive refreshes.
 - Per-plan categories and per-customer category/channel overrides.
 - Optional HLS gateway with signed variant URLs, checks on every manifest refresh, mid-view splicing into the information channel, and simultaneous-device limits.
+- Channel diagnostics from the gateway's manifest traffic: live health of every watched channel (provider errors, slow or frozen playlists, players that buffer, restart or never start), an on-demand check at the provider, and a problem register that keeps each channel until it is marked fixed.
 - Personal HLS information channels with account details, expiry status, branding, incidents, provider notices, music and QR codes.
 - One encode queue for the information channels: repeat requests merge, a waiting player goes first, `ENCODE_WORKERS` caps parallel ffmpeg runs, and failures retry once. The admin follows it, and the media channel's builds, live in a job panel with cancel, retry and clear.
 - XMLTV and OTT-play FOSS programme guides.
 - Provider news polling and optional AI summaries through OpenRouter.
 - Email double opt-in, expiry/status notifications, and audience-targeted newsletters through Brevo or Resend.
 - Media articles with formatted text, images, videos, tables, private sections, per-customer variants and a live HLS loop.
-- A Russian-language admin panel for catalog, clients, payments, devices, viewing statistics, plans, information channel, media and notifications.
+- A Russian-language admin panel for catalog, clients, payments, devices, viewing statistics, channel diagnostics, plans, information channel, media and notifications.
 
 Customer URLs contain access tokens. Use HTTPS when exposing the service outside your LAN, and keep playlist URLs private. The notification QR uses a separate token and does not grant stream access.
 

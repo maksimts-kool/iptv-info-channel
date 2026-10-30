@@ -30,6 +30,7 @@ struct Harness {
     csrf: String,
     upstream: String,
     data_dir: std::path::PathBuf,
+    state: crate::http::AppState,
     _tmp: tempfile::TempDir,
 }
 
@@ -148,7 +149,7 @@ async fn harness(db: &TestDb) -> Harness {
     );
     let csrf = crate::http::auth::csrf_token(&config);
     let state = crate::build_state(config, db.pool.clone()).await.unwrap();
-    let base = serve(crate::app(state)).await;
+    let base = serve(crate::app(state.clone())).await;
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -160,6 +161,7 @@ async fn harness(db: &TestDb) -> Harness {
         csrf,
         upstream,
         data_dir,
+        state,
         _tmp: tmp,
     }
 }
@@ -830,5 +832,142 @@ async fn encode_queue_admin_api() {
     assert!(first.contains("\"queue\""));
     drop(feed);
 
+    db.drop().await;
+}
+
+/// Channel diagnostics through the real gateway: a watched channel shows up
+/// live, a channel the provider cannot serve lands in the problem register
+/// (and the menu badge), and marking it fixed clears it, undoably.
+#[tokio::test]
+async fn diagnostics_live_view_register_and_fix() {
+    let db = TestDb::new().await;
+    let h = harness(&db).await;
+    let cat = h
+        .post("/admin/api/catalog/categories", json!({"name": "Спорт"}))
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let add = |name: &'static str, url: String| {
+        let cat = cat.clone();
+        let h = &h;
+        async move {
+            h.post(
+                "/admin/api/catalog/channels",
+                json!({"name": name, "url": url, "category_id": cat}),
+            )
+            .await
+            .json()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let good = add("Рабочий", format!("{}/live/1.m3u8", h.upstream)).await;
+    let dead = add("Мёртвый", "http://127.0.0.1:1/dead.m3u8".to_owned()).await;
+    let plan = h
+        .post(
+            "/admin/api/plans",
+            json!({"name": "Спорт", "price_eur": 5, "category_ids": [cat]}),
+        )
+        .await
+        .json();
+    let user = h
+        .post(
+            "/admin/api/users",
+            json!({"username": "viewer", "plan_id": plan["id"], "expires_at": days_from_now(30)}),
+        )
+        .await
+        .json();
+    let token = user["token"].as_str().unwrap().to_owned();
+    h.patch("/admin/api/gateway", json!({"enabled": true})).await;
+
+    // Tune in and refresh the quality once: watched, healthy.
+    let entry = h.get(&format!("/c/{token}/tv/{good}.m3u8")).await;
+    assert_eq!(entry.status, 200);
+    let variant = entry
+        .text
+        .lines()
+        .find(|l| l.starts_with("https://iptv.example/c/"))
+        .unwrap()
+        .replace("https://iptv.example", "");
+    assert_eq!(h.get(&variant).await.status, 200);
+    let all = h.get("/admin/api/diagnostics").await.json();
+    let live = &all["channels"][0];
+    assert_eq!(live["channel_id"], good.as_str());
+    assert_eq!(live["name"], "Рабочий");
+    assert_eq!(live["group"], "Спорт");
+    assert_eq!(live["state"], "ok");
+    assert_eq!(live["viewers"][0]["username"], "viewer");
+    assert_eq!(live["viewers"][0]["state"], "ok");
+    assert_eq!(live["minutes"].as_array().unwrap().len(), 30);
+    assert!(all["problems"].as_array().unwrap().is_empty());
+
+    // The provider cannot serve the other one: it never opens.
+    assert_eq!(h.get(&format!("/c/{token}/tv/{dead}.m3u8")).await.status, 502);
+    let all = h.get("/admin/api/diagnostics").await.json();
+    let problem = &all["problems"][0];
+    assert_eq!(problem["channel_id"], dead.as_str());
+    assert_eq!(problem["kinds"], json!(["no_open"]));
+    assert_eq!(
+        (problem["count"].as_u64(), problem["clients"].as_u64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(problem["ongoing"], true);
+    assert_eq!(h.get("/admin/api/devices").await.json()["problem_channels"], 1);
+    let detail = h.get(&format!("/admin/api/diagnostics/channels/{dead}")).await.json();
+    assert_eq!(detail["history"][0]["kind"], "no_open");
+    assert_eq!(detail["history"][0]["detail"], "connect");
+    assert_eq!(detail["checkable"], true);
+    let check = h
+        .post(&format!("/admin/api/diagnostics/channels/{dead}/check"), json!({}))
+        .await
+        .json();
+    assert_eq!(check["verdict"], "error");
+    assert_eq!(check["steps"][0]["step"], "playlist");
+    assert_eq!(check["steps"][0]["error"], "connect");
+
+    // Stored by the background flush, then marked fixed: gone, badge too.
+    crate::http::diagnostics::flush_incidents(&h.state).await;
+    let fixed = h
+        .post(&format!("/admin/api/diagnostics/channels/{dead}/resolve"), json!({}))
+        .await
+        .json();
+    assert_eq!(fixed["cleared"], 1);
+    assert!(
+        h.get("/admin/api/diagnostics").await.json()["problems"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(h.get("/admin/api/devices").await.json()["problem_channels"], 0);
+    // Undo brings it back.
+    let undo = h
+        .post(
+            &format!("/admin/api/diagnostics/channels/{dead}/restore"),
+            json!({"cleared_at": fixed["cleared_at"]}),
+        )
+        .await;
+    assert_eq!(undo.json()["restored"], 1);
+    assert_eq!(
+        h.get("/admin/api/diagnostics").await.json()["problems"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Fixed again while it is still broken: the next failure is a new case.
+    h.post(&format!("/admin/api/diagnostics/channels/{dead}/resolve"), json!({}))
+        .await;
+    assert_eq!(h.get(&format!("/c/{token}/tv/{dead}.m3u8")).await.status, 502);
+    let all = h.get("/admin/api/diagnostics").await.json();
+    assert_eq!(all["problems"][0]["count"], 1);
+    assert_eq!(
+        h.post("/admin/api/diagnostics/channels/nope/check", json!({}))
+            .await
+            .status,
+        404
+    );
     db.drop().await;
 }

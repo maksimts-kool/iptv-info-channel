@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import {
   BarChartOutlined, DashboardOutlined, DesktopOutlined, EuroCircleOutlined, LaptopOutlined, LogoutOutlined, MailOutlined,
-  MenuOutlined, PictureOutlined, PlaySquareOutlined, SyncOutlined, TeamOutlined, UnorderedListOutlined, WalletOutlined,
+  MenuOutlined, MonitorOutlined, PictureOutlined, PlaySquareOutlined, SyncOutlined, TeamOutlined, UnorderedListOutlined, WalletOutlined,
   WifiOutlined,
 } from '@ant-design/icons';
 import ClientJump from './components/ClientJump.jsx';
@@ -31,6 +31,7 @@ const InfoChannelPage = lazy(() => import('./pages/InfoChannelPage.jsx'));
 const MediaPage = lazy(() => import('./pages/MediaPage.jsx'));
 const NotifyPage = lazy(() => import('./pages/NotifyPage.jsx'));
 const StatsPage = lazy(() => import('./pages/StatsPage.jsx'));
+const DiagnosticsPage = lazy(() => import('./pages/DiagnosticsPage.jsx'));
 
 const { Header, Content, Sider } = Layout;
 
@@ -39,6 +40,15 @@ function WatchingBadge() {
   const { watching } = useWatching();
   return watching
     ? <Badge count={watching} color="#16a34a" size="small" title={`Смотрят сейчас: ${watching}`} />
+    : null;
+}
+
+// Channels in the problem register on the Диагностика entry, from the same
+// poll: a channel stays there until it is marked fixed.
+function ProblemsBadge() {
+  const { problemChannels } = useWatching();
+  return problemChannels
+    ? <Badge count={problemChannels} color="#dc2626" size="small" title={`Проблемных каналов: ${problemChannels}`} />
     : null;
 }
 
@@ -98,6 +108,9 @@ const SECTIONS = [
   },
   {
     key: 'stats', group: 'Вещание', label: 'Статистика', Icon: BarChartOutlined, title: 'Статистика просмотров', Page: StatsPage,
+  },
+  {
+    key: 'diagnostics', group: 'Вещание', label: 'Диагностика', Icon: MonitorOutlined, title: 'Диагностика каналов', Page: DiagnosticsPage,
   },
   {
     key: 'info', group: 'Свои каналы', label: 'Инфоканал', Icon: DesktopOutlined, title: 'Информационный канал', Page: InfoChannelPage,
@@ -238,6 +251,7 @@ export default function App() {
   const badges = {
     payments: due ? <Badge count={due} color="#d97706" size="small" title={`Ждут продления: ${due}`} /> : null,
     devices: <WatchingBadge />,
+    diagnostics: <ProblemsBadge />,
   };
 
   const item = (s) => ({

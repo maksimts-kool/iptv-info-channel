@@ -5,6 +5,7 @@ pub mod admin;
 pub mod api;
 pub mod auth;
 pub mod catalog;
+pub mod diagnostics;
 pub mod gateway;
 pub mod jobs;
 pub mod media;

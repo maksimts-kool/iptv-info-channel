@@ -162,6 +162,8 @@ pub(crate) async fn build_state(config: Arc<Config>, pool: sqlx::PgPool) -> anyh
     ));
     let gateway = Arc::new(http::gateway::Gateway::new(config.gateway.device_idle_seconds));
     gateway.load_player_agents(data::watch::load_player_agents(store.pool()).await?);
+    let problem_channels = data::incidents::problem_channels(store.pool()).await?;
+    gateway.diagnostics().load_problem_channels(problem_channels);
     Ok(AppState {
         config,
         store,
@@ -262,7 +264,8 @@ fn start_background(st: &AppState) {
     });
 }
 
-/// Write the viewing history every 30 seconds; prune it once an hour.
+/// Write the viewing history and the channel incidents every 30 seconds;
+/// prune them once an hour.
 fn start_watch_history(st: &AppState) {
     let st = st.clone();
     tokio::spawn(async move {
@@ -271,8 +274,10 @@ fn start_watch_history(st: &AppState) {
         loop {
             tick.tick().await;
             http::stats::flush_history(&st).await;
+            http::diagnostics::flush_incidents(&st).await;
             if ticks.is_multiple_of(120) {
                 http::stats::prune_history(&st).await;
+                http::diagnostics::prune_incidents(&st).await;
             }
             ticks += 1;
         }
@@ -333,6 +338,7 @@ async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
     tracing::info!(target: "shutdown", "HTTP server closed");
     // Watches still open are written up to their last request.
     http::stats::flush_history(&history).await;
+    http::diagnostics::flush_incidents(&history).await;
     Ok(())
 }
 

@@ -409,6 +409,7 @@ pub fn router(st: &AppState) -> Router<AppState> {
         .merge(super::catalog::router())
         .merge(super::media::router(st))
         .merge(super::stats::router())
+        .merge(super::diagnostics::router())
         .merge(super::jobs::router())
         .layer(axum::middleware::from_fn_with_state(st.clone(), require_admin));
 
@@ -795,9 +796,13 @@ async fn all_devices(State(st): State<AppState>) -> ApiResult {
             (!devices.is_empty()).then(|| json!({ "user_id": u.id, "username": u.username, "plan_name": u.plan_name, "limit": u.device_limit, "devices": devices }))
         })
         .collect();
-    ok(
-        json!({ "gateway_enabled": st.config.gateway_enabled(), "idle_seconds": st.config.gateway.device_idle_seconds, "clients": clients }),
-    )
+    ok(json!({
+        "gateway_enabled": st.config.gateway_enabled(),
+        "idle_seconds": st.config.gateway.device_idle_seconds,
+        "clients": clients,
+        // Rides this poll so every screen's menu badge has it.
+        "problem_channels": st.gateway.diagnostics().problem_count(),
+    }))
 }
 
 fn validate_plan_name(name: &str, plans: &[Plan], except: Option<&str>) -> Result<String, ApiError> {

@@ -3,7 +3,8 @@ import {
 } from 'react';
 import { AuthError } from './api.js';
 
-// Who is watching right now, for every screen at once: one poll of
+// Who is watching right now, for every screen at once (plus the count of
+// problem channels for the Диагностика badge): one poll of
 // /admin/api/devices (the stream gateway's device list, the built-in loops
 // included), shared through context. The menu badge, Обзор, Клиенты,
 // Устройства and Статистика all read this, so they show the same devices at
@@ -40,6 +41,8 @@ export function summarizeWatching(data) {
     watching,
     over: devices.length - watching,
     online: clients.filter((c) => c.devices.some((d) => d.allowed)).length,
+    // Channels in the Диагностика problem register (rides this poll).
+    problemChannels: data?.problem_channels ?? 0,
     of,
   };
 }
