@@ -6,14 +6,20 @@
 //! - the provider: how long each manifest fetch took, which ones failed, and
 //!   whether a live media playlist still moves (its last segment changes);
 //! - the players: a refresh that comes much later than the target duration
-//!   (a player that stalls or loses its connection), repeated tune-ins of the
-//!   same channel (a player that keeps restarting it), and a tune-in whose
-//!   player never asks for a quality afterwards (it could not play it).
+//!   (a player that loses its connection), repeated tune-ins of one channel
+//!   or its other versions (a player restarting it, or its viewer trying
+//!   again), and a tune-in whose player never asks for a quality afterwards
+//!   (it could not play it).
+//!
+//! A player starved of segments keeps refreshing the playlist on time, so a
+//! stream that stalls mid-view shows only in what its viewer does next:
+//! tuning in again, or switching between the HD, SD and reserve versions of
+//! the channel.
 //!
 //! The tracker keeps the last [`MINUTES`] minutes per channel for the live
 //! view, and turns every problem into an INCIDENT: one run of one kind of
-//! problem on one channel, closed after [`CLOSE_AFTER_MS`] without a new
-//! sighting. Incidents are the persistent problem register; like the viewing
+//! problem on one channel, closed after [`Kind::close_after_ms`] without a
+//! new sighting. Incidents are the persistent problem register; like the viewing
 //! history, [`Diagnostics::take_dirty`] hands out the changed ones for an
 //! idempotent upsert. Clearing a channel (the admin fixed it) drops its open
 //! incidents, so a problem that is still there opens a new one.
@@ -28,7 +34,8 @@ use crate::core::util::make_token;
 /// Minutes of per-channel history the live view shows.
 pub const MINUTES: usize = 30;
 
-/// An incident ends after this long without a new sighting.
+/// An incident ends after this long without a new sighting (one of restarts
+/// after [`RETUNE_WINDOW_MS`]).
 pub const CLOSE_AFTER_MS: i64 = 120_000;
 
 /// A provider answering slower than this (median of the last minutes) is slow.
@@ -55,10 +62,16 @@ const LATE_MIN_MS: i64 = 15_000;
 /// Late refreshes within [`RECENT_MS`] that make a viewer "buffering".
 const LATE_COUNT: usize = 2;
 
-/// Tune-ins of one channel by one device within [`RETUNE_WINDOW_MS`] that
-/// read as a player restarting it.
+/// Tune-ins by one device within [`RETUNE_WINDOW_MS`], one after another, of
+/// one channel or its other versions (see [`channel_family`]), that read as
+/// the channel not playing: a player restarting it, or its viewer trying
+/// again or trying another version. Anything else tuned in between is
+/// zapping, and starts the count over.
 const RETUNES: usize = 3;
-const RETUNE_WINDOW_MS: i64 = 300_000;
+pub const RETUNE_WINDOW_MS: i64 = 600_000;
+
+/// Words a provider tells the versions of one channel apart by.
+const VERSION_MARKS: [&str; 10] = ["hd", "fhd", "uhd", "sd", "4k", "hevc", "h265", "orig", "50", "50fps"];
 
 /// A tune-in whose player has not asked for a quality after this long could
 /// not play the channel.
@@ -105,6 +118,16 @@ impl Kind {
         }
     }
 
+    /// How long an incident of this kind stays open without a new sighting.
+    /// Restarts are only seen at tune-ins, minutes apart: theirs stays open
+    /// for the window that counts them.
+    pub fn close_after_ms(self) -> i64 {
+        match self {
+            Self::Retunes => RETUNE_WINDOW_MS,
+            _ => CLOSE_AFTER_MS,
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "errors" => Self::Errors,
@@ -126,8 +149,9 @@ pub struct IncidentRow {
     pub channel_id: String,
     pub channel_name: String,
     pub kind: Kind,
-    /// The last failure ("502", "timeout"), or the frozen playlist's segment
-    /// length; empty when the kind says it all.
+    /// The last failure ("502", "timeout"), the other version of the channel
+    /// restarts went to, or the frozen playlist's segment length; empty when
+    /// the kind says it all.
     pub detail: String,
     /// The worst value seen: slowest answer (ms), longest freeze or latest
     /// refresh (ms), most failures or restarts.
@@ -143,7 +167,10 @@ pub struct IncidentRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaInfo {
     pub sequence: i64,
-    pub last_uri: String,
+    /// The newest segment, as [`MediaPlaylist::last_segment_id`] names it.
+    ///
+    /// [`MediaPlaylist::last_segment_id`]: super::hls::MediaPlaylist::last_segment_id
+    pub last_segment: String,
     pub target_ms: i64,
     /// `#EXT-X-ENDLIST`: a finished playlist does not move, and is not frozen.
     pub ended: bool,
@@ -307,7 +334,7 @@ struct Viewer {
 #[derive(Debug)]
 struct Position {
     sequence: i64,
-    last_uri: String,
+    last_segment: String,
     /// When this position was first seen.
     since: i64,
     last_seen: i64,
@@ -340,6 +367,16 @@ struct Pending {
     at: i64,
 }
 
+/// A device's latest tune-ins of one channel or its versions, one after
+/// another: kept across channels and after it leaves one, so a viewer who
+/// goes to the SD version and comes back is still restarting the channel.
+#[derive(Debug)]
+struct Run {
+    family: String,
+    /// `(when, channel id, channel name)`, oldest first.
+    tune_ins: VecDeque<(i64, String, String)>,
+}
+
 #[derive(Debug)]
 pub struct Diagnostics {
     /// The device list's idle window.
@@ -347,6 +384,8 @@ pub struct Diagnostics {
     channels: HashMap<String, ChannelHealth>,
     /// Tune-ins waiting for their player's first quality request, by play id.
     pending: HashMap<String, Pending>,
+    /// Each device's current run of tune-ins, by (customer, device).
+    runs: HashMap<(i64, String), Run>,
     /// Open incidents by (channel, kind).
     open: HashMap<(String, Kind), Open>,
     /// Ended incidents not handed out yet.
@@ -380,6 +419,34 @@ fn count_since(times: &VecDeque<i64>, from: i64) -> usize {
 fn trim_before(times: &mut VecDeque<i64>, from: i64) {
     while times.front().is_some_and(|t| *t < from) {
         times.pop_front();
+    }
+}
+
+/// The channel a name is a version of: the name without its quality marks
+/// and bracketed notes, so "Setanta Sports 1 HD" goes with "Setanta Sports
+/// 1" and "Матч! Футбол 1 HD [резерв 1]" with "Матч! Футбол 1 SD".
+/// Time-shifted feeds ("+2") stay apart: they show something else.
+fn channel_family(name: &str) -> String {
+    let lower = name.to_lowercase();
+    let mut plain = String::with_capacity(lower.len());
+    let mut depth = 0_usize;
+    for c in lower.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let family = plain
+        .split_whitespace()
+        .filter(|w| !VERSION_MARKS.contains(w))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if family.is_empty() {
+        lower.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        family
     }
 }
 
@@ -464,6 +531,7 @@ impl Diagnostics {
             live_ms,
             channels: HashMap::new(),
             pending: HashMap::new(),
+            runs: HashMap::new(),
             open: HashMap::new(),
             closed: Vec::new(),
             problem_channels: HashSet::new(),
@@ -568,12 +636,41 @@ impl Diagnostics {
                 viewer.last_error = None;
                 viewer.last_ok = Some(now);
                 if f.tune_in {
-                    viewer.tune_ins.push_back(now);
+                    let family = channel_family(f.channel_name);
+                    let run = self
+                        .runs
+                        .entry((f.user_id, f.device.to_owned()))
+                        .or_insert_with(|| Run {
+                            family: family.clone(),
+                            tune_ins: VecDeque::new(),
+                        });
+                    if run.family != family {
+                        run.family = family;
+                        run.tune_ins.clear();
+                    }
+                    while run
+                        .tune_ins
+                        .front()
+                        .is_some_and(|(t, _, _)| *t < now - RETUNE_WINDOW_MS)
+                    {
+                        run.tune_ins.pop_front();
+                    }
+                    run.tune_ins
+                        .push_back((now, f.channel_id.to_owned(), f.channel_name.to_owned()));
+                    viewer.tune_ins = run.tune_ins.iter().map(|(t, _, _)| *t).collect();
                     viewer.last_refresh = None;
                     let restarts = viewer.tune_ins.len();
                     if restarts >= RETUNES {
                         troubled = true;
-                        sightings.push((Kind::Retunes, String::new(), restarts as i64));
+                        // The other version it went to, if it did.
+                        let other = run
+                            .tune_ins
+                            .iter()
+                            .rev()
+                            .find(|(_, id, _)| id != f.channel_id)
+                            .map(|(_, _, name)| name.clone())
+                            .unwrap_or_default();
+                        sightings.push((Kind::Retunes, other, restarts as i64));
                     }
                     self.pending.insert(
                         f.play.to_owned(),
@@ -605,14 +702,14 @@ impl Diagnostics {
                     if !media.ended {
                         let pos = ch.positions.entry(f.upstream.to_owned()).or_insert_with(|| Position {
                             sequence: media.sequence,
-                            last_uri: media.last_uri.clone(),
+                            last_segment: media.last_segment.clone(),
                             since: now,
                             last_seen: now,
                             target_ms: media.target_ms,
                         });
-                        if pos.sequence != media.sequence || pos.last_uri != media.last_uri {
+                        if pos.sequence != media.sequence || pos.last_segment != media.last_segment {
                             pos.sequence = media.sequence;
-                            pos.last_uri.clone_from(&media.last_uri);
+                            pos.last_segment.clone_from(&media.last_segment);
                             pos.since = now;
                         }
                         pos.last_seen = now;
@@ -657,7 +754,7 @@ impl Diagnostics {
     fn sight(&mut self, channel_id: &str, name: &str, kind: Kind, user_id: i64, detail: &str, peak: i64, now: i64) {
         let key = (channel_id.to_owned(), kind);
         if let Some(open) = self.open.get_mut(&key) {
-            if now - open.row.ended <= CLOSE_AFTER_MS {
+            if now - open.row.ended <= kind.close_after_ms() {
                 open.row.ended = now;
                 open.row.peak = open.row.peak.max(peak);
                 if !detail.is_empty() {
@@ -733,7 +830,7 @@ impl Diagnostics {
         let quiet: Vec<(String, Kind)> = self
             .open
             .iter()
-            .filter(|(_, o)| now - o.row.ended > CLOSE_AFTER_MS)
+            .filter(|((_, kind), o)| now - o.row.ended > kind.close_after_ms())
             .map(|(k, _)| k.clone())
             .collect();
         for key in quiet {
@@ -747,6 +844,8 @@ impl Diagnostics {
             ch.viewers.retain(|_, v| now - v.last_seen <= self.live_ms);
         }
         self.channels.retain(|_, ch| ch.last_activity >= horizon);
+        self.runs
+            .retain(|_, run| run.tune_ins.back().is_some_and(|(t, _, _)| now - t <= RETUNE_WINDOW_MS));
     }
 
     /// Incidents changed since the last call: the open ones that grew and
@@ -936,7 +1035,7 @@ mod tests {
         Outcome::Ok {
             media: Some(MediaInfo {
                 sequence: seq,
-                last_uri: format!("seg_{seq}.ts"),
+                last_segment: format!("seg_{seq}.ts"),
                 target_ms: 6_000,
                 ended: false,
             }),
@@ -1099,6 +1198,93 @@ mod tests {
         assert!(kinds(&d).is_empty());
     }
 
+    /// One viewing by "tv": tune in to a channel, then refresh every 6 s until `to`.
+    fn view(d: &mut Diagnostics, channel_id: &str, channel_name: &str, play: &str, from: i64, to: i64) {
+        let on = |tune_in: bool, outcome: Outcome| Fetch {
+            channel_id,
+            channel_name,
+            upstream: channel_id,
+            ..fetch("tv", play, tune_in, 100, outcome)
+        };
+        d.record(&on(true, Outcome::Ok { media: None }), from);
+        let mut at = from + 1_000;
+        let mut seq = 0;
+        while at <= to {
+            d.record(&on(false, media(seq)), at);
+            seq += 1;
+            at += 6_000;
+        }
+    }
+
+    #[test]
+    fn channel_versions_share_a_family() {
+        assert_eq!(
+            channel_family("Setanta Sports 1 HD"),
+            channel_family("Setanta Sports 1")
+        );
+        assert_eq!(channel_family("Setanta Sports 1 HD orig"), "setanta sports 1");
+        assert_eq!(channel_family("Матч! Футбол 1 HD [резерв 1]"), "матч! футбол 1");
+        assert_eq!(channel_family("Матч ТВ HD 50"), channel_family("Матч ТВ FHD"));
+        assert_ne!(channel_family("Матч ТВ +2"), channel_family("Матч ТВ"));
+        assert_ne!(
+            channel_family("Setanta Sports 2 HD"),
+            channel_family("Setanta Sports 1 HD")
+        );
+        assert_eq!(channel_family("HD"), "hd", "a name that is all marks stays itself");
+    }
+
+    #[test]
+    fn flipping_between_versions_is_restarting_the_channel() {
+        // The player keeps refreshing on time while the stream stalls; its
+        // viewer switches HD <-> SD every 90 s, longer than the idle window.
+        let mut d = Diagnostics::default();
+        let mut at = T0;
+        for i in 0..8 {
+            let (id, name) = if i % 2 == 0 {
+                ("hd", "Setanta Sports 1 HD")
+            } else {
+                ("sd", "Setanta Sports 1")
+            };
+            view(&mut d, id, name, &format!("p{i}"), at, at + 85_000);
+            if i == 2 {
+                let live = d.live(at + 85_000);
+                assert_eq!(live[0].channel_id, "hd");
+                assert_eq!(live[0].state, ChannelState::Flaky);
+                assert_eq!(live[0].viewers[0].state, ViewerState::Retune);
+                assert_eq!(live[0].viewers[0].retunes, 3);
+            }
+            at += 90_000;
+        }
+        let mut rows = d.unsaved();
+        rows.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+        assert_eq!(rows.len(), 2, "one incident per channel, not one per restart: {rows:?}");
+        assert_eq!((rows[0].channel_id.as_str(), rows[0].kind), ("hd", Kind::Retunes));
+        assert_eq!(rows[0].detail, "Setanta Sports 1");
+        assert_eq!(rows[1].detail, "Setanta Sports 1 HD");
+        assert_eq!(rows[0].peak, 7, "every tune-in within the window");
+        // They end once a window passes without a restart.
+        assert_eq!(d.take_dirty(at + RETUNE_WINDOW_MS).len(), 2);
+        assert!(d.unsaved().is_empty());
+    }
+
+    #[test]
+    fn zapping_in_between_starts_the_count_over() {
+        // Two matches, back and forth: each tune-in is of another channel.
+        let mut d = Diagnostics::default();
+        let mut at = T0;
+        for i in 0..6 {
+            let (id, name) = if i % 2 == 0 {
+                ("s1", "Setanta Sports 1")
+            } else {
+                ("s2", "Setanta Sports 2")
+            };
+            view(&mut d, id, name, &format!("p{i}"), at, at + 85_000);
+            at += 90_000;
+        }
+        assert!(kinds(&d).is_empty());
+        assert_eq!(d.live(at)[0].viewers[0].state, ViewerState::Ok);
+    }
+
     #[test]
     fn incidents_close_when_quiet_and_reopen_as_new_ones() {
         let mut d = Diagnostics::default();
@@ -1167,6 +1353,7 @@ mod tests {
         watch(&mut d, "tv", T0, T0 + 30_000, 100);
         let on = |channel_id: &'static str, play: &'static str, tune_in: bool, outcome: Outcome| Fetch {
             channel_id,
+            channel_name: "Другой канал",
             upstream: channel_id,
             ..fetch("tv", play, tune_in, 100, outcome)
         };

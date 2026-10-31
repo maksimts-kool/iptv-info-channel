@@ -106,6 +106,35 @@ pub struct MediaPlaylist {
     pub segments: Vec<MediaSegment>,
 }
 
+impl MediaPlaylist {
+    /// The newest segment, named the same on every refresh. Some providers
+    /// hand each segment out from a pool of edge servers with a signature
+    /// that changes from one fetch to the next
+    /// (`http://<edge>/iptv/…/1793465862000.ts?md5=…`), so a segment goes by
+    /// its path; by its whole URI only where the paths alone do not tell the
+    /// segments apart (`chunk.ts?n=41`).
+    pub fn last_segment_id(&self) -> String {
+        let Some(last) = self.segments.last() else {
+            return String::new();
+        };
+        let paths: std::collections::HashSet<&str> = self.segments.iter().map(|s| uri_path(&s.uri)).collect();
+        if paths.len() == self.segments.len() {
+            uri_path(&last.uri).to_owned()
+        } else {
+            last.uri.clone()
+        }
+    }
+}
+
+/// A URI without its scheme, host, query and fragment.
+fn uri_path(uri: &str) -> &str {
+    let rest = uri.split(['?', '#']).next().unwrap_or(uri);
+    match rest.find("://") {
+        Some(i) => rest[i + 3..].find('/').map_or("/", |j| &rest[i + 3 + j..]),
+        None => rest,
+    }
+}
+
 fn is_header_tag(line: &str) -> bool {
     regex!(r"^#(EXTM3U|EXT-X-(VERSION|TARGETDURATION|MEDIA-SEQUENCE|DISCONTINUITY-SEQUENCE|PLAYLIST-TYPE|INDEPENDENT-SEGMENTS|START|ENDLIST|SERVER-CONTROL|PART-INF|ALLOW-CACHE))\b").is_match(line)
         || regex!(r"^#EXT-X-(PART|PRELOAD-HINT|RENDITION-REPORT|SKIP)\b").is_match(line)
@@ -499,6 +528,26 @@ mod tests {
                     .as_millisecond()
             )
         );
+    }
+
+    #[test]
+    fn segments_keep_their_id_across_edges_and_signatures() {
+        let fetch = |edge: &str, md5: &str| {
+            parse_media_playlist(&format!(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:11\n#EXT-X-MEDIA-SEQUENCE:7\n\
+                 #EXTINF:10,\nhttp://10.0.0.1/iptv/K/271/100.ts?md5=x\n\
+                 #EXTINF:10,\nhttp://{edge}/iptv/K/271/110.ts?md5={md5}\n"
+            ))
+        };
+        let a = fetch("10.0.0.2", "a");
+        assert_eq!(a.last_segment_id(), "/iptv/K/271/110.ts");
+        assert_eq!(a.last_segment_id(), fetch("10.0.0.3", "b").last_segment_id());
+        // Paths that do not tell the segments apart: the whole URI.
+        let p = parse_media_playlist(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nhttp://p/chunk.ts?n=1\n#EXTINF:6,\nhttp://p/chunk.ts?n=2\n",
+        );
+        assert_eq!(p.last_segment_id(), "http://p/chunk.ts?n=2");
+        assert_eq!(parse_media_playlist("#EXTM3U\n").last_segment_id(), "");
     }
 
     #[test]

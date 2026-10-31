@@ -117,6 +117,11 @@ export function plural(n, one, few, many) {
 export const clients = (n) => plural(n, 'клиент', 'клиента', 'клиентов');
 export const viewersText = (n) => plural(n, 'зритель', 'зрителя', 'зрителей');
 export const cases = (n) => plural(n, 'случай', 'случая', 'случаев');
+const times = (n) => plural(n, 'раз', 'раза', 'раз');
+
+// How far back tune-ins of a channel count as restarts (server:
+// playlist::diagnostics::RETUNE_WINDOW_MS).
+const RETUNE_WINDOW = '10 мин';
 
 export function ChannelStateTag({ state }) {
   const s = CHANNEL_STATES[state] || CHANNEL_STATES.ok;
@@ -230,7 +235,7 @@ export function channelDiagnosis(ch) {
 export function viewerNote(v) {
   switch (v.state) {
     case 'buffer': return `обновления опаздывают до ${span(v.late_ms)}`;
-    case 'retune': return `${v.retunes} переподключений за 5 мин`;
+    case 'retune': return `включал канал ${times(v.retunes)} за ${RETUNE_WINDOW}`;
     case 'noconn': return v.error ? `не открылся: ${failureText(v.error)}` : 'получил список качеств, но не открыл ни одно';
     case 'error': return `провайдер: ${failureText(v.error)}`;
     default: return '';
@@ -267,7 +272,7 @@ export function incidentText(inc) {
     case 'frozen': return `Видео не менялось ${span(inc.peak)}`;
     case 'slow': return `Ответ провайдера до ${ms(inc.peak)}`;
     case 'buffering': return `Обновления у зрителей опаздывали до ${span(inc.peak)}`;
-    case 'retunes': return `Плеер переподключался ${inc.peak} раз за 5 мин`;
+    case 'retunes': return `Канал включали ${times(inc.peak)} за ${RETUNE_WINDOW}${inc.detail ? ` вперемешку с «${inc.detail}»` : ''}`;
     case 'player': return 'Плеер получил канал, но не открыл ни одно качество';
     default: return '';
   }

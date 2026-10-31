@@ -710,7 +710,7 @@ pub async fn gate(st: &AppState, req: GateRequest<'_>) -> Response {
                 Outcome::Ok {
                     media: Some(MediaInfo {
                         sequence: snapshot.media_sequence,
-                        last_uri: snapshot.segments.last().map(|s| s.uri.clone()).unwrap_or_default(),
+                        last_segment: snapshot.last_segment_id(),
                         target_ms: (snapshot.target_duration * 1000.0) as i64,
                         ended: rewritten.contains("#EXT-X-ENDLIST"),
                     }),

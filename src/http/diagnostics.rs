@@ -22,7 +22,7 @@ use super::api::{ApiError, ApiResult, body, num_of, ok};
 use crate::core::fetch::fetch_bounded;
 use crate::core::util::{iso, now_ms};
 use crate::data::incidents::{clear, load_open, prune, restore, save};
-use crate::playlist::diagnostics::{CLOSE_AFTER_MS, ChannelView, IncidentRow, Kind, SLOW_MS};
+use crate::playlist::diagnostics::{ChannelView, IncidentRow, Kind, SLOW_MS};
 use crate::playlist::hls::{is_hls_url, is_master_playlist, parse_media_playlist, rewrite_hls_manifest};
 
 /// Incidents a channel's history lists (the count covers them all).
@@ -197,7 +197,7 @@ fn problems(st: &AppState, rows: Vec<IncidentRow>, now: i64) -> Vec<Problem> {
                 clients: clients.len(),
                 first: iso_ms(first),
                 last: iso_ms(last),
-                ongoing: now - last <= CLOSE_AFTER_MS,
+                ongoing: rows.iter().any(|r| now - r.ended <= r.kind.close_after_ms()),
                 last_ms: last,
             }
         })
@@ -249,7 +249,7 @@ async fn channel(State(st): State<AppState>, Path(id): Path<String>) -> ApiResul
                 "clients": r.users.len(),
                 "started": iso_ms(r.started),
                 "ended": iso_ms(r.ended),
-                "ongoing": now - r.ended <= CLOSE_AFTER_MS,
+                "ongoing": now - r.ended <= r.kind.close_after_ms(),
             })
         })
         .collect();
@@ -441,7 +441,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
             Ok(f) => {
                 let next = parse_media_playlist(&rewrite_hls_manifest(&f.text(), &f.final_url, None));
                 let moved = next.media_sequence != playlist.media_sequence
-                    || next.segments.last().map(|s| &s.uri) != Some(&last.uri);
+                    || next.last_segment_id() != playlist.last_segment_id();
                 steps.push(Step {
                     name: "advance",
                     ok: moved,
