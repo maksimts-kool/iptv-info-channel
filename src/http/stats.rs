@@ -5,6 +5,10 @@
 //! progress, so the page is current to the second rather than to the last
 //! flush. Who is watching right now comes from the device list, which every
 //! screen shares; this only flags the running watches.
+//!
+//! A channel is one line however many ids it had: history of an id the
+//! catalog no longer has counts under the current channel of that name
+//! ([`merge_renumbered`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,6 +22,7 @@ use super::AppState;
 use super::api::{ApiError, ApiResult, ok};
 use crate::core::util::{iso, local_date, local_time_to_timestamp, now_ms};
 use crate::data::watch::{Window, load, prune, save, summarize};
+use crate::playlist::model::normalize_name;
 use crate::playlist::watch::{MIN_WATCH_MS, WatchRow};
 
 pub fn router() -> Router<AppState> {
@@ -92,7 +97,15 @@ async fn stats(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
     {
         rows.insert(r.id.clone(), r);
     }
-    let rows: Vec<WatchRow> = rows.into_values().collect();
+    let mut rows: Vec<WatchRow> = rows.into_values().collect();
+    let catalog = st.catalog.read();
+    let current: Vec<(&str, &str)> = catalog
+        .channels
+        .iter()
+        .filter(|c| !c.missing)
+        .map(|c| (c.id.as_str(), c.name.as_str()))
+        .collect();
+    merge_renumbered(&mut rows, &current);
 
     let usernames: HashMap<i64, String> = st
         .store
@@ -141,9 +154,71 @@ async fn stats(State(st): State<AppState>, Query(q): Query<HashMap<String, Strin
     ok(out)
 }
 
+/// Watches of a channel the catalog no longer has (deleted, or marked
+/// missing) count under the current channel of the same name: a provider
+/// source added again gives every channel a new id, and the history under
+/// the old one is still that channel's. A name two current channels share
+/// says nothing, so those watches stay as they are. `current`: the catalog's
+/// channels that are not missing, as (id, name).
+fn merge_renumbered(rows: &mut [WatchRow], current: &[(&str, &str)]) {
+    let ids: HashSet<&str> = current.iter().map(|(id, _)| *id).collect();
+    let mut by_name: HashMap<String, Option<&str>> = HashMap::new();
+    for (id, name) in current {
+        by_name
+            .entry(normalize_name(name).to_lowercase())
+            .and_modify(|only| *only = None)
+            .or_insert(Some(id));
+    }
+    for r in rows.iter_mut().filter(|r| !ids.contains(r.channel_id.as_str())) {
+        if let Some(Some(id)) = by_name.get(&normalize_name(&r.channel_name).to_lowercase()) {
+            (*id).clone_into(&mut r.channel_id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn watch(id: &str, channel_id: &str, channel_name: &str) -> WatchRow {
+        WatchRow {
+            id: id.into(),
+            user_id: 1,
+            channel_id: channel_id.into(),
+            channel_name: channel_name.into(),
+            player: String::new(),
+            user_agent: String::new(),
+            ip: String::new(),
+            started: 0,
+            ended: 60_000,
+        }
+    }
+
+    #[test]
+    fn history_of_an_old_id_merges_into_the_current_channel() {
+        let mut rows = vec![
+            // The source was added again: Россия 1 HD had another id before.
+            watch("a", "old-r1hd", "Россия 1 HD"),
+            watch("b", "new-r1hd", "Россия 1 HD"),
+            // Spacing and case differences are the same name.
+            watch("c", "older-r1hd", "россия  1 HD"),
+            // Gone for good: nothing current is called that.
+            watch("d", "old-gone", "Старый канал"),
+            // Two current channels carry the name: no telling which.
+            watch("e", "old-ntv", "НТВ"),
+            // A current channel keeps its own history, whatever it was called.
+            watch("f", "sts", "Россия 1 HD"),
+        ];
+        let current = [
+            ("new-r1hd", "Россия 1 HD"),
+            ("ntv-1", "НТВ"),
+            ("ntv-2", "НТВ"),
+            ("sts", "СТС"),
+        ];
+        merge_renumbered(&mut rows, &current);
+        let ids: Vec<&str> = rows.iter().map(|r| r.channel_id.as_str()).collect();
+        assert_eq!(ids, ["new-r1hd", "new-r1hd", "new-r1hd", "old-gone", "old-ntv", "sts"]);
+    }
 
     fn q(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
