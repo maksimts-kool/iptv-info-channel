@@ -837,9 +837,10 @@ async fn encode_queue_admin_api() {
 
 /// Channel diagnostics through the real gateway: a watched channel shows up
 /// live, a channel the provider cannot serve lands in the problem register
-/// (and the menu badge), and marking it fixed clears it, undoably.
+/// (and the menu badge) with its way out under way, a failed check holds it
+/// there, and it leaves on its own (here: deleted from the catalog).
 #[tokio::test]
-async fn diagnostics_live_view_register_and_fix() {
+async fn diagnostics_live_view_register_and_way_out() {
     let db = TestDb::new().await;
     let h = harness(&db).await;
     let cat = h
@@ -904,8 +905,16 @@ async fn diagnostics_live_view_register_and_fix() {
     assert_eq!(live["minutes"].as_array().unwrap().len(), 30);
     assert!(all["problems"].as_array().unwrap().is_empty());
 
-    // The provider cannot serve the other one: it never opens.
+    // The provider cannot serve the other one: it never opens, once the
+    // player's retry has had its chance.
     assert_eq!(h.get(&format!("/c/{token}/tv/{dead}.m3u8")).await.status, 502);
+    assert!(
+        h.get("/admin/api/diagnostics").await.json()["problems"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    h.state.gateway.diagnostics().tick(crate::core::util::now_ms() + 30_000);
     let all = h.get("/admin/api/diagnostics").await.json();
     let problem = &all["problems"][0];
     assert_eq!(problem["channel_id"], dead.as_str());
@@ -915,6 +924,9 @@ async fn diagnostics_live_view_register_and_fix() {
         (Some(1), Some(1))
     );
     assert_eq!(problem["ongoing"], true);
+    assert_eq!(problem["verification"]["checkable"], true);
+    assert_eq!(problem["verification"]["probes_ok"], 0);
+    assert_eq!(all["verify"]["probes"], 3);
     assert_eq!(h.get("/admin/api/devices").await.json()["problem_channels"], 1);
     let detail = h.get(&format!("/admin/api/diagnostics/channels/{dead}")).await.json();
     assert_eq!(detail["history"][0]["kind"], "no_open");
@@ -927,29 +939,23 @@ async fn diagnostics_live_view_register_and_fix() {
     assert_eq!(check["verdict"], "error");
     assert_eq!(check["steps"][0]["step"], "playlist");
     assert_eq!(check["steps"][0]["error"], "connect");
-
-    // Stored by the background flush, then marked fixed: gone, badge too.
-    crate::http::diagnostics::flush_incidents(&h.state).await;
-    let fixed = h
-        .post(&format!("/admin/api/diagnostics/channels/{dead}/resolve"), json!({}))
-        .await
-        .json();
-    assert_eq!(fixed["cleared"], 1);
-    assert!(
-        h.get("/admin/api/diagnostics").await.json()["problems"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+    // The failed check counts against its way out.
+    let detail = h.get(&format!("/admin/api/diagnostics/channels/{dead}")).await.json();
+    assert_eq!(detail["verification"]["last_probe"]["passed"], false);
+    assert_eq!(detail["verification"]["last_probe"]["error"], "connect");
+    assert!(detail["last_resolved"].is_null());
+    // No manual way out any more.
+    assert_eq!(
+        h.post(&format!("/admin/api/diagnostics/channels/{dead}/resolve"), json!({}))
+            .await
+            .status,
+        404
     );
-    assert_eq!(h.get("/admin/api/devices").await.json()["problem_channels"], 0);
-    // Undo brings it back.
-    let undo = h
-        .post(
-            &format!("/admin/api/diagnostics/channels/{dead}/restore"),
-            json!({"cleared_at": fixed["cleared_at"]}),
-        )
-        .await;
-    assert_eq!(undo.json()["restored"], 1);
+
+    // Stored by the background flush; the job keeps it while it is not
+    // shown to work.
+    crate::http::diagnostics::flush_incidents(&h.state).await;
+    crate::http::diagnostics::verify_register(&h.state).await;
     assert_eq!(
         h.get("/admin/api/diagnostics").await.json()["problems"]
             .as_array()
@@ -957,12 +963,28 @@ async fn diagnostics_live_view_register_and_fix() {
             .len(),
         1
     );
-    // Fixed again while it is still broken: the next failure is a new case.
-    h.post(&format!("/admin/api/diagnostics/channels/{dead}/resolve"), json!({}))
-        .await;
-    assert_eq!(h.get(&format!("/c/{token}/tv/{dead}.m3u8")).await.status, 502);
+    // Deleted from the catalog: it leaves, recorded; badge too.
+    assert_eq!(
+        h.delete(&format!("/admin/api/catalog/channels/{dead}")).await.status,
+        200
+    );
+    crate::http::diagnostics::verify_register(&h.state).await;
     let all = h.get("/admin/api/diagnostics").await.json();
-    assert_eq!(all["problems"][0]["count"], 1);
+    assert!(all["problems"].as_array().unwrap().is_empty());
+    let resolved = &all["resolved"][0];
+    assert_eq!(resolved["channel_id"], dead.as_str());
+    assert_eq!(resolved["name"], "Мёртвый");
+    assert_eq!(resolved["how"], "removed");
+    assert_eq!(resolved["kinds"], json!(["no_open"]));
+    assert_eq!(
+        (resolved["count"].as_i64(), resolved["clients"].as_i64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(h.get("/admin/api/devices").await.json()["problem_channels"], 0);
+    let detail = h.get(&format!("/admin/api/diagnostics/channels/{dead}")).await.json();
+    assert_eq!(detail["count"], 0);
+    assert!(detail["verification"].is_null());
+    assert_eq!(detail["last_resolved"]["how"], "removed");
     assert_eq!(
         h.post("/admin/api/diagnostics/channels/nope/check", json!({}))
             .await

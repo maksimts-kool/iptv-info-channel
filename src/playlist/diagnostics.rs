@@ -18,11 +18,21 @@
 //!
 //! The tracker keeps the last [`MINUTES`] minutes per channel for the live
 //! view, and turns every problem into an INCIDENT: one run of one kind of
-//! problem on one channel, closed after [`Kind::close_after_ms`] without a
-//! new sighting. Incidents are the persistent problem register; like the viewing
+//! problem on one channel, closed after [`CLOSE_AFTER_MS`] without a new
+//! sighting. Incidents are the persistent problem register; like the viewing
 //! history, [`Diagnostics::take_dirty`] hands out the changed ones for an
-//! idempotent upsert. Clearing a channel (the admin fixed it) drops its open
-//! incidents, so a problem that is still there opens a new one.
+//! idempotent upsert.
+//!
+//! Not everything odd is a problem of the channel. Restarting a channel is
+//! what viewers do, and is only shown; what one customer's player or network
+//! does ([`Kind::min_clients`]) is the channel's only once several customers
+//! have it; a failed tune-in the player's retry gets past, or a lone failed
+//! refresh it rides out on its buffer, is nothing.
+//!
+//! A channel leaves the register on its own once it is shown to work
+//! ([`Verification`]): quiet for [`VERIFY_QUIET_MS`] since its last trouble,
+//! the provider passing the server's checks, and customers watching it
+//! without trouble. Any new trouble starts that over.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -34,9 +44,26 @@ use crate::core::util::make_token;
 /// Minutes of per-channel history the live view shows.
 pub const MINUTES: usize = 30;
 
-/// An incident ends after this long without a new sighting (one of restarts
-/// after [`RETUNE_WINDOW_MS`]).
+/// An incident ends after this long without a new sighting.
 pub const CLOSE_AFTER_MS: i64 = 120_000;
+
+/// How long a register channel must go without trouble before it can leave.
+pub const VERIFY_QUIET_MS: i64 = 30 * 60_000;
+
+/// The server checks the provider this long after the last trouble, and
+/// again every as long.
+pub const PROBE_EVERY_MS: i64 = 5 * 60_000;
+
+/// Passed checks a channel needs, each at least [`PROBE_GAP_MS`] after the
+/// one counted before it (checking again right away proves nothing new).
+pub const VERIFY_PROBES: u32 = 3;
+const PROBE_GAP_MS: i64 = 2 * 60_000;
+
+/// Viewing without trouble a channel needs, summed over its customers.
+pub const VERIFY_VIEWING_MS: i64 = 10 * 60_000;
+
+/// With nobody watching, the server's checks alone take it out after this.
+pub const UNWATCHED_MS: i64 = 3 * 3_600_000;
 
 /// A provider answering slower than this (median of the last minutes) is slow.
 pub const SLOW_MS: i64 = 1_500;
@@ -63,11 +90,11 @@ const LATE_MIN_MS: i64 = 15_000;
 const LATE_COUNT: usize = 2;
 
 /// Tune-ins by one device within [`RETUNE_WINDOW_MS`], one after another, of
-/// one channel or its other versions (see [`channel_family`]), that read as
-/// the channel not playing: a player restarting it, or its viewer trying
-/// again or trying another version. Anything else tuned in between is
-/// zapping, and starts the count over.
-const RETUNES: usize = 3;
+/// one channel or its other versions (see [`channel_family`]): a player
+/// restarting it, or its viewer trying again or trying another version.
+/// Anything else tuned in between is zapping, and starts the count over.
+/// Shown with the viewer, never a problem: viewers restart channels for
+/// reasons of their own.
 pub const RETUNE_WINDOW_MS: i64 = 600_000;
 
 /// Words a provider tells the versions of one channel apart by.
@@ -77,8 +104,14 @@ const VERSION_MARKS: [&str; 10] = ["hd", "fhd", "uhd", "sd", "4k", "hevc", "h265
 /// not play the channel.
 const PLAYER_WAIT_MS: i64 = 20_000;
 
-/// Failed fetches within [`RECENT_MS`] that make a channel failing.
+/// Failed fetches that make a channel failing: this many in a row for one
+/// viewer (a player rides out a lone one on its buffer), or this many within
+/// [`RECENT_MS`] that are at least one in [`FAILING_SHARE`] of its fetches;
+/// either way failing for [`FAILING_MIN_MS`] at least. A player retrying
+/// fast through a provider's blip of a second or two never notices it.
 const FAILURES: usize = 2;
+const FAILING_SHARE: usize = 4;
+const FAILING_MIN_MS: i64 = 10_000;
 
 /// A live playlist whose last segment stays the same this many target
 /// durations (and at least [`FROZEN_MIN_MS`]) has frozen.
@@ -99,8 +132,6 @@ pub enum Kind {
     Slow,
     /// Players refresh late.
     Buffering,
-    /// Players keep restarting the channel.
-    Retunes,
     /// A player got the channel but never asked for a quality.
     Player,
 }
@@ -113,18 +144,17 @@ impl Kind {
             Self::Frozen => "frozen",
             Self::Slow => "slow",
             Self::Buffering => "buffering",
-            Self::Retunes => "retunes",
             Self::Player => "player",
         }
     }
 
-    /// How long an incident of this kind stays open without a new sighting.
-    /// Restarts are only seen at tune-ins, minutes apart: theirs stays open
-    /// for the window that counts them.
-    pub fn close_after_ms(self) -> i64 {
+    /// Customers an incident needs before it is the channel's problem. What
+    /// players report about themselves is one customer's player or network
+    /// until another customer has it too.
+    pub fn min_clients(self) -> usize {
         match self {
-            Self::Retunes => RETUNE_WINDOW_MS,
-            _ => CLOSE_AFTER_MS,
+            Self::Buffering | Self::Player => 2,
+            _ => 1,
         }
     }
 
@@ -135,11 +165,74 @@ impl Kind {
             "frozen" => Self::Frozen,
             "slow" => Self::Slow,
             "buffering" => Self::Buffering,
-            "retunes" => Self::Retunes,
             "player" => Self::Player,
             _ => return None,
         })
     }
+}
+
+/// How a channel left the register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolved {
+    /// The server's checks passed and customers watched it without trouble.
+    Verified,
+    /// The server's checks passed for [`UNWATCHED_MS`]; hardly anybody watched.
+    ServerOnly,
+    /// The channel is gone from the catalog.
+    Removed,
+}
+
+impl Resolved {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::ServerOnly => "server_only",
+            Self::Removed => "removed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "verified" => Self::Verified,
+            "server_only" => Self::ServerOnly,
+            "removed" => Self::Removed,
+            _ => return None,
+        })
+    }
+}
+
+/// One check of a channel at the provider by the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Probe {
+    /// Epoch ms it finished.
+    pub at: i64,
+    pub passed: bool,
+    /// The check's verdict: `ok`, `slow`, `frozen`, `error`, `empty`.
+    pub verdict: String,
+    pub error: Option<String>,
+}
+
+/// A register channel's way out so far, since its last trouble.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct VerificationView {
+    /// Epoch ms of the last trouble.
+    pub since: i64,
+    pub probes_ok: u32,
+    pub viewing_ms: i64,
+    /// Customers who watched without trouble.
+    pub viewers: usize,
+    pub last_probe: Option<Probe>,
+}
+
+/// A channel shown to work, to be taken out of the register.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    pub channel_id: String,
+    pub how: Resolved,
+    pub probes: u32,
+    pub viewing_ms: i64,
+    pub viewers: usize,
 }
 
 /// One incident as stored.
@@ -213,7 +306,6 @@ pub enum ViewerState {
     Noconn,
     Error,
     Frozen,
-    Retune,
     Buffer,
     Ok,
 }
@@ -315,6 +407,10 @@ struct Viewer {
     late: VecDeque<(i64, i64)>,
     tune_ins: VecDeque<i64>,
     failures: VecDeque<i64>,
+    /// Failed fetches since the last one that worked, and when the first of
+    /// them was.
+    streak: usize,
+    streak_since: i64,
     last_error: Option<String>,
     /// The last fetch that worked; none in this viewing = never got in.
     last_ok: Option<i64>,
@@ -346,6 +442,72 @@ struct Open {
     row: IncidentRow,
     users: BTreeSet<i64>,
     dirty: bool,
+}
+
+impl Open {
+    /// Enough customers had it for it to be the channel's problem; until
+    /// then it is neither stored nor listed, and ends without a trace.
+    fn confirmed(&self) -> bool {
+        self.users.len() >= self.row.kind.min_clients()
+    }
+}
+
+/// A register channel's way out: since its last trouble, the provider passes
+/// the server's checks and customers watch without trouble.
+#[derive(Debug, Clone)]
+struct Verification {
+    since: i64,
+    probes_ok: u32,
+    /// When the last counted check finished.
+    counted: Option<i64>,
+    last_probe: Option<Probe>,
+    viewing_ms: i64,
+    viewers: BTreeSet<i64>,
+}
+
+impl Verification {
+    fn new(now: i64) -> Self {
+        Self {
+            since: now,
+            probes_ok: 0,
+            counted: None,
+            last_probe: None,
+            viewing_ms: 0,
+            viewers: BTreeSet::new(),
+        }
+    }
+
+    /// Trouble again: everything so far no longer counts.
+    fn restart(&mut self, now: i64) {
+        self.since = self.since.max(now);
+        self.probes_ok = 0;
+        self.counted = None;
+        self.viewing_ms = 0;
+        self.viewers.clear();
+    }
+
+    /// Whether it has been shown to work. `checkable`: the server can check
+    /// the channel at the provider; without that, the viewers alone decide.
+    fn outcome(&self, now: i64, checkable: bool) -> Option<Resolved> {
+        let quiet = now - self.since;
+        if quiet < VERIFY_QUIET_MS || (checkable && self.probes_ok < VERIFY_PROBES) {
+            return None;
+        }
+        if self.viewing_ms >= VERIFY_VIEWING_MS {
+            Some(Resolved::Verified)
+        } else if quiet >= UNWATCHED_MS {
+            Some(Resolved::ServerOnly)
+        } else {
+            None
+        }
+    }
+}
+
+/// A tune-in the provider failed, waiting to see if the player's retry gets in.
+#[derive(Debug, Clone)]
+struct FailedOpen {
+    at: i64,
+    code: String,
 }
 
 #[derive(Debug, Default)]
@@ -392,6 +554,10 @@ pub struct Diagnostics {
     closed: Vec<IncidentRow>,
     /// Channels in the problem register (stored or open), for the menu badge.
     problem_channels: HashSet<String>,
+    /// Failed tune-ins by (customer, device, channel).
+    failed_opens: HashMap<(i64, String, String), FailedOpen>,
+    /// Register channels on their way out, by channel.
+    verify: HashMap<String, Verification>,
 }
 
 impl Default for Diagnostics {
@@ -498,6 +664,29 @@ impl ChannelHealth {
     fn recent_failures(&self, from: i64) -> usize {
         self.samples.iter().filter(|s| s.at >= from && s.failed).count()
     }
+
+    /// The provider is failing it, and has been for [`FAILING_MIN_MS`]: a
+    /// viewer's refreshes fail one after another, or a fair share of all
+    /// fetches lately did.
+    fn failing(&self, now: i64) -> bool {
+        if self
+            .viewers
+            .values()
+            .any(|v| v.streak >= FAILURES && now - v.streak_since >= FAILING_MIN_MS)
+        {
+            return true;
+        }
+        let from = now - RECENT_MS;
+        let failed: Vec<i64> = self
+            .samples
+            .iter()
+            .filter(|s| s.at >= from && s.failed)
+            .map(|s| s.at)
+            .collect();
+        let fetches = self.samples.iter().filter(|s| s.at >= from).count();
+        let lasted = failed.last().zip(failed.first()).map_or(0, |(l, f)| l - f);
+        failed.len() >= FAILURES && failed.len() * FAILING_SHARE >= fetches && lasted >= FAILING_MIN_MS
+    }
 }
 
 fn frozen_after(target_ms: i64) -> i64 {
@@ -509,12 +698,10 @@ impl Viewer {
         let recent = now - RECENT_MS;
         if self.stuck.is_some_and(|t| t >= recent) || self.last_ok.is_none_or(|t| t < self.first_seen) {
             ViewerState::Noconn
-        } else if count_since(&self.failures, recent) >= FAILURES {
+        } else if self.streak >= FAILURES {
             ViewerState::Error
         } else if channel_frozen {
             ViewerState::Frozen
-        } else if count_since(&self.tune_ins, now - RETUNE_WINDOW_MS) >= RETUNES {
-            ViewerState::Retune
         } else if self.late.iter().filter(|(t, _)| *t >= recent).count() >= LATE_COUNT {
             ViewerState::Buffer
         } else {
@@ -535,12 +722,100 @@ impl Diagnostics {
             open: HashMap::new(),
             closed: Vec::new(),
             problem_channels: HashSet::new(),
+            failed_opens: HashMap::new(),
+            verify: HashMap::new(),
         }
     }
 
     /// Channels in the problem register at startup.
     pub fn load_problem_channels(&mut self, channel_ids: impl IntoIterator<Item = String>) {
         self.problem_channels.extend(channel_ids);
+    }
+
+    /// The channels the register lists now (stored and unsaved): each is on
+    /// its way out, from `now` if it was not yet; others are no longer.
+    pub fn track(&mut self, channel_ids: &BTreeSet<String>, now: i64) {
+        self.verify.retain(|id, _| channel_ids.contains(id));
+        for id in channel_ids {
+            self.verify.entry(id.clone()).or_insert_with(|| Verification::new(now));
+        }
+    }
+
+    /// Register channels the server should check at the provider now: quiet
+    /// for [`PROBE_EVERY_MS`], and not checked for as long.
+    pub fn probe_due(&self, now: i64) -> Vec<String> {
+        let mut due: Vec<String> = self
+            .verify
+            .iter()
+            .filter(|(_, v)| {
+                now - v.since >= PROBE_EVERY_MS && v.last_probe.as_ref().is_none_or(|p| now - p.at >= PROBE_EVERY_MS)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        due.sort();
+        due
+    }
+
+    /// A check of a channel, started at `started` (epoch ms), is done. A
+    /// failed one is trouble; a passed one counts unless trouble came while
+    /// it ran, or it came right after the last one counted.
+    pub fn probed(&mut self, channel_id: &str, started: i64, probe: Probe) {
+        let Some(v) = self.verify.get_mut(channel_id) else {
+            return;
+        };
+        if !probe.passed {
+            v.restart(probe.at);
+        } else if started >= v.since && v.counted.is_none_or(|t| probe.at - t >= PROBE_GAP_MS) {
+            v.probes_ok += 1;
+            v.counted = Some(probe.at);
+        }
+        v.last_probe = Some(probe);
+    }
+
+    /// A register channel's way out so far.
+    pub fn verification(&self, channel_id: &str) -> Option<VerificationView> {
+        self.verify.get(channel_id).map(|v| VerificationView {
+            since: v.since,
+            probes_ok: v.probes_ok,
+            viewing_ms: v.viewing_ms,
+            viewers: v.viewers.len(),
+            last_probe: v.last_probe.clone(),
+        })
+    }
+
+    /// Register channels shown to work by `now`. `checkable`: whether the
+    /// server can check a channel at the provider.
+    pub fn ready(&self, now: i64, checkable: impl Fn(&str) -> bool) -> Vec<Verdict> {
+        let mut out: Vec<Verdict> = self
+            .verify
+            .iter()
+            .filter(|(id, _)| !self.open.iter().any(|((ch, _), o)| ch == *id && o.confirmed()))
+            .filter_map(|(id, v)| {
+                v.outcome(now, checkable(id)).map(|how| Verdict {
+                    channel_id: id.clone(),
+                    how,
+                    probes: v.probes_ok,
+                    viewing_ms: v.viewing_ms,
+                    viewers: v.viewers.len(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+        out
+    }
+
+    /// A channel left the register at `at` (stored first): incidents that
+    /// started by then are gone, so trouble after it opens a new one.
+    pub fn resolved(&mut self, channel_id: &str, at: i64) {
+        self.open
+            .retain(|(id, _), o| !(id == channel_id && o.row.started <= at));
+        self.closed.retain(|r| !(r.channel_id == channel_id && r.started <= at));
+        let left = self.open.iter().any(|((id, _), o)| id == channel_id && o.confirmed())
+            || self.closed.iter().any(|r| r.channel_id == channel_id);
+        if !left {
+            self.problem_channels.remove(channel_id);
+            self.verify.remove(channel_id);
+        }
     }
 
     /// How many channels the problem register lists.
@@ -588,6 +863,8 @@ impl Diagnostics {
             late: VecDeque::new(),
             tune_ins: VecDeque::new(),
             failures: VecDeque::new(),
+            streak: 0,
+            streak_since: now,
             last_error: None,
             last_ok: None,
             stuck: None,
@@ -604,8 +881,11 @@ impl Diagnostics {
             _ => {}
         }
         let confirmed = viewer.confirmed;
-        // Watching before this request (a failure at tune-in then is not "never opened").
-        let was_watching = quiet.is_some_and(|gap| gap <= live_ms) && viewer.first_seen < now;
+        // Watching before this request (a failure at tune-in then is not
+        // "never opened"); retrying a tune-in that never worked is not.
+        let was_watching = quiet.is_some_and(|gap| gap <= live_ms)
+            && viewer.first_seen < now
+            && viewer.last_ok.is_some_and(|t| t >= viewer.first_seen);
         viewer.last_seen = now;
         f.player.clone_into(&mut viewer.player);
         f.ip.clone_into(&mut viewer.ip);
@@ -617,22 +897,32 @@ impl Diagnostics {
 
         let mut sightings: Vec<(Kind, String, i64)> = Vec::new();
         let mut troubled = false;
+        let open_key = (f.user_id, f.device.to_owned(), f.channel_id.to_owned());
         match &f.outcome {
             Outcome::Failed(code) => {
                 viewer.failures.push_back(now);
+                if viewer.streak == 0 {
+                    viewer.streak_since = now;
+                }
+                viewer.streak += 1;
                 viewer.last_error = Some(code.clone());
                 ch.last_error = Some(code.clone());
                 troubled = true;
                 if f.tune_in && !was_watching {
-                    sightings.push((Kind::NoOpen, code.clone(), 1));
-                } else {
+                    // Never opened, unless the player's retry gets in (see tick).
+                    let pending = self.failed_opens.entry(open_key).or_insert_with(|| FailedOpen {
+                        at: now,
+                        code: code.clone(),
+                    });
+                    code.clone_into(&mut pending.code);
+                } else if ch.failing(now) {
                     let failures = ch.recent_failures(now - RECENT_MS);
-                    if failures >= FAILURES {
-                        sightings.push((Kind::Errors, code.clone(), failures as i64));
-                    }
+                    sightings.push((Kind::Errors, code.clone(), failures as i64));
                 }
             }
             Outcome::Ok { media } => {
+                self.failed_opens.remove(&open_key);
+                viewer.streak = 0;
                 viewer.last_error = None;
                 viewer.last_ok = Some(now);
                 if f.tune_in {
@@ -659,19 +949,6 @@ impl Diagnostics {
                         .push_back((now, f.channel_id.to_owned(), f.channel_name.to_owned()));
                     viewer.tune_ins = run.tune_ins.iter().map(|(t, _, _)| *t).collect();
                     viewer.last_refresh = None;
-                    let restarts = viewer.tune_ins.len();
-                    if restarts >= RETUNES {
-                        troubled = true;
-                        // The other version it went to, if it did.
-                        let other = run
-                            .tune_ins
-                            .iter()
-                            .rev()
-                            .find(|(_, id, _)| id != f.channel_id)
-                            .map(|(_, _, name)| name.clone())
-                            .unwrap_or_default();
-                        sightings.push((Kind::Retunes, other, restarts as i64));
-                    }
                     self.pending.insert(
                         f.play.to_owned(),
                         Pending {
@@ -742,6 +1019,19 @@ impl Diagnostics {
                 minute.troubled.insert(f.device.to_owned());
             }
         }
+        // A register channel watched without trouble: the time since this
+        // viewer's last refresh counts towards its way out.
+        if let Some(v) = self.verify.get_mut(f.channel_id)
+            && let Some(gap) = quiet
+            && confirmed
+            && !troubled
+            && !f.tune_in
+            && gap <= live_ms
+            && matches!(f.outcome, Outcome::Ok { media: Some(_) })
+        {
+            v.viewing_ms += gap;
+            v.viewers.insert(f.user_id);
+        }
         ch.positions.retain(|_, p| now - p.last_seen <= RECENT_MS);
         let name = ch.name.clone();
         for (kind, detail, peak) in sightings {
@@ -754,7 +1044,7 @@ impl Diagnostics {
     fn sight(&mut self, channel_id: &str, name: &str, kind: Kind, user_id: i64, detail: &str, peak: i64, now: i64) {
         let key = (channel_id.to_owned(), kind);
         if let Some(open) = self.open.get_mut(&key) {
-            if now - open.row.ended <= kind.close_after_ms() {
+            if now - open.row.ended <= CLOSE_AFTER_MS {
                 open.row.ended = now;
                 open.row.peak = open.row.peak.max(peak);
                 if !detail.is_empty() {
@@ -764,36 +1054,78 @@ impl Diagnostics {
                 open.users.insert(user_id);
                 open.row.users = open.users.iter().copied().collect();
                 open.dirty = true;
+                if open.confirmed() {
+                    self.trouble(channel_id, now);
+                }
                 return;
             }
             if let Some(old) = self.open.remove(&key) {
-                self.closed.push(old.row);
+                self.close(old);
             }
         }
-        self.problem_channels.insert(channel_id.to_owned());
-        self.open.insert(
-            key,
-            Open {
-                row: IncidentRow {
-                    id: make_token(16),
-                    channel_id: channel_id.to_owned(),
-                    channel_name: name.to_owned(),
-                    kind,
-                    detail: detail.to_owned(),
-                    peak,
-                    users: vec![user_id],
-                    started: now,
-                    ended: now,
-                },
-                users: BTreeSet::from([user_id]),
-                dirty: true,
+        let open = Open {
+            row: IncidentRow {
+                id: make_token(16),
+                channel_id: channel_id.to_owned(),
+                channel_name: name.to_owned(),
+                kind,
+                detail: detail.to_owned(),
+                peak,
+                users: vec![user_id],
+                started: now,
+                ended: now,
             },
-        );
+            users: BTreeSet::from([user_id]),
+            dirty: true,
+        };
+        if open.confirmed() {
+            self.trouble(channel_id, now);
+        }
+        self.open.insert(key, open);
     }
 
-    /// Time-driven checks: tune-ins whose player never came back, incidents
-    /// gone quiet, channels nobody watches any more.
+    /// The channel has a problem now: it is in the register, and its way out
+    /// starts over.
+    fn trouble(&mut self, channel_id: &str, now: i64) {
+        self.problem_channels.insert(channel_id.to_owned());
+        self.verify
+            .entry(channel_id.to_owned())
+            .or_insert_with(|| Verification::new(now))
+            .restart(now);
+    }
+
+    /// An incident ended: stored if it was the channel's problem, forgotten
+    /// if not.
+    fn close(&mut self, open: Open) {
+        if open.confirmed() {
+            self.closed.push(open.row);
+        }
+    }
+
+    /// Time-driven checks: failed tune-ins nobody got past, tune-ins whose
+    /// player never came back, incidents gone quiet, channels nobody watches
+    /// any more.
     pub fn tick(&mut self, now: i64) {
+        let never_opened: Vec<(i64, String, String)> = self
+            .failed_opens
+            .iter()
+            .filter(|(_, p)| now - p.at >= PLAYER_WAIT_MS)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in never_opened {
+            let Some(p) = self.failed_opens.remove(&key) else {
+                continue;
+            };
+            let (user_id, _, channel_id) = key;
+            let name = self
+                .channels
+                .get(&channel_id)
+                .map(|ch| ch.name.clone())
+                .unwrap_or_default();
+            // It happened when the tune-in failed; only now is it certain.
+            self.sight(&channel_id, &name, Kind::NoOpen, user_id, &p.code, 1, p.at);
+        }
+
         let expired: Vec<String> = self
             .pending
             .iter()
@@ -830,12 +1162,12 @@ impl Diagnostics {
         let quiet: Vec<(String, Kind)> = self
             .open
             .iter()
-            .filter(|((_, kind), o)| now - o.row.ended > kind.close_after_ms())
+            .filter(|(_, o)| now - o.row.ended > CLOSE_AFTER_MS)
             .map(|(k, _)| k.clone())
             .collect();
         for key in quiet {
             if let Some(open) = self.open.remove(&key) {
-                self.closed.push(open.row);
+                self.close(open);
             }
         }
 
@@ -849,12 +1181,12 @@ impl Diagnostics {
     }
 
     /// Incidents changed since the last call: the open ones that grew and
-    /// every one that ended.
+    /// every one that ended (only the channel's problems: see [`Open::confirmed`]).
     pub fn take_dirty(&mut self, now: i64) -> Vec<IncidentRow> {
         self.tick(now);
         let mut rows = std::mem::take(&mut self.closed);
         for open in self.open.values_mut() {
-            if open.dirty {
+            if open.dirty && open.confirmed() {
                 open.dirty = false;
                 rows.push(open.row.clone());
             }
@@ -878,28 +1210,10 @@ impl Diagnostics {
     pub fn unsaved(&self) -> Vec<IncidentRow> {
         self.open
             .values()
+            .filter(|o| o.confirmed())
             .map(|o| o.row.clone())
             .chain(self.closed.iter().cloned())
             .collect()
-    }
-
-    /// The admin marked a channel fixed at `cleared` (epoch ms): incidents
-    /// that started by then are gone, so a problem still there opens a new
-    /// one.
-    pub fn clear_channel(&mut self, channel_id: &str, cleared: i64) {
-        self.open
-            .retain(|(id, _), o| !(id == channel_id && o.row.started <= cleared));
-        self.closed
-            .retain(|r| !(r.channel_id == channel_id && r.started <= cleared));
-        if !self.open.keys().any(|(id, _)| id == channel_id) && !self.closed.iter().any(|r| r.channel_id == channel_id)
-        {
-            self.problem_channels.remove(channel_id);
-        }
-    }
-
-    /// A clearing was undone.
-    pub fn restore_channel(&mut self, channel_id: &str) {
-        self.problem_channels.insert(channel_id.to_owned());
     }
 
     /// Every channel somebody is watching, worst first.
@@ -958,7 +1272,7 @@ impl Diagnostics {
         let latency_ms = ch.recent_latency(recent);
         let state = if frozen_for.is_some() {
             ChannelState::Frozen
-        } else if ch.recent_failures(recent) >= FAILURES {
+        } else if ch.failing(now) {
             ChannelState::Errors
         } else if latency_ms.is_some_and(|l| l > SLOW_MS) {
             ChannelState::Slow
@@ -1105,20 +1419,49 @@ mod tests {
         assert_eq!(d.problem_count(), 1);
     }
 
-    #[test]
-    fn late_refreshes_are_buffering() {
-        let mut d = Diagnostics::default();
-        tune(&mut d, "tv", "p1", T0);
-        let mut at = T0 + 1_000;
+    /// `user`'s `device` tunes in at `from` and refreshes late every other time.
+    fn buffer(d: &mut Diagnostics, user: i64, device: &str, from: i64) -> i64 {
+        let on = |tune_in: bool, outcome: Outcome| Fetch {
+            user_id: user,
+            ..fetch(device, "p1", tune_in, 100, outcome)
+        };
+        d.record(&on(true, Outcome::Ok { media: None }), from);
+        let mut at = from + 1_000;
         for seq in 0..6 {
-            d.record(&fetch("tv", "p1", false, 100, media(seq)), at);
+            d.record(&on(false, media(seq)), at);
             at += if seq % 2 == 0 { 20_000 } else { 6_000 };
         }
-        assert_eq!(kinds(&d), [Kind::Buffering]);
+        at
+    }
+
+    #[test]
+    fn one_customers_buffering_is_theirs_until_another_has_it() {
+        let mut d = Diagnostics::default();
+        d.track(&BTreeSet::from(["ch1".to_owned()]), T0 - 1);
+        let at = buffer(&mut d, 7, "tv", T0);
+        assert!(kinds(&d).is_empty(), "their player or network");
         let live = d.live(at);
         assert_eq!(live[0].viewers[0].state, ViewerState::Buffer);
         assert_eq!(live[0].state, ChannelState::Flaky);
         assert_eq!(live[0].viewers[0].late_ms, 20_000);
+        assert_eq!(d.problem_count(), 0);
+        assert_eq!(
+            d.verification("ch1").unwrap().since,
+            T0 - 1,
+            "no trouble of the channel's"
+        );
+        // Another customer has it too: the channel's problem, from the first.
+        buffer(&mut d, 8, "phone", T0 + 100_000);
+        assert_eq!(kinds(&d), [Kind::Buffering]);
+        let row = &d.unsaved()[0];
+        assert_eq!(row.users, [7, 8]);
+        assert_eq!(row.started, T0 + 47_000);
+        assert_eq!(d.problem_count(), 1);
+        assert_eq!(
+            d.verification("ch1").unwrap().since,
+            T0 + 173_000,
+            "from its last sighting"
+        );
     }
 
     #[test]
@@ -1140,7 +1483,7 @@ mod tests {
     fn failures_split_into_never_opened_and_errors() {
         let mut d = Diagnostics::default();
         d.record(&fetch("phone", "", true, 8_000, Outcome::Failed("timeout".into())), T0);
-        assert_eq!(kinds(&d), [Kind::NoOpen]);
+        assert!(kinds(&d).is_empty(), "the player may yet get in");
         assert!(d.live(T0).is_empty(), "one attempt is not somebody watching");
         // The player tries again: it is there, and never got in.
         d.record(
@@ -1150,45 +1493,107 @@ mod tests {
         let live = d.live(T0 + 10_000);
         assert_eq!(live[0].viewers[0].state, ViewerState::Noconn);
         assert_eq!(live[0].viewers[0].error.as_deref(), Some("timeout"));
+        d.tick(T0 + PLAYER_WAIT_MS);
+        assert_eq!(kinds(&d), [Kind::NoOpen]);
+        assert_eq!(d.unsaved()[0].detail, "timeout");
+
+        // A retry that gets in: nothing happened.
+        let mut d = Diagnostics::default();
+        d.record(&fetch("phone", "", true, 8_000, Outcome::Failed("503".into())), T0);
+        tune(&mut d, "phone", "p1", T0 + 3_000);
+        d.record(&fetch("phone", "p1", false, 100, media(0)), T0 + 4_000);
+        d.tick(T0 + 60_000);
+        assert!(kinds(&d).is_empty());
 
         let mut d = Diagnostics::default();
         watch(&mut d, "tv", T0, T0 + 30_000, 100);
-        d.record(
-            &fetch("tv", "p1", false, 100, Outcome::Failed("502".into())),
-            T0 + 37_000,
-        );
+        let fail = |d: &mut Diagnostics, at: i64| {
+            d.record(&fetch("tv", "p1", false, 100, Outcome::Failed("502".into())), at);
+        };
+        fail(&mut d, T0 + 37_000);
         assert!(kinds(&d).is_empty(), "one failure is noise");
-        d.record(
-            &fetch("tv", "p1", false, 100, Outcome::Failed("502".into())),
-            T0 + 43_000,
-        );
+        fail(&mut d, T0 + 43_000);
+        assert!(kinds(&d).is_empty(), "a blip the player rides out");
+        assert_eq!(d.live(T0 + 43_000)[0].viewers[0].state, ViewerState::Error);
+        fail(&mut d, T0 + 49_000);
         assert_eq!(kinds(&d), [Kind::Errors]);
-        let live = d.live(T0 + 43_000);
+        let live = d.live(T0 + 49_000);
         assert_eq!(live[0].state, ChannelState::Errors);
         assert_eq!(live[0].viewers[0].error.as_deref(), Some("502"));
         assert_eq!(d.unsaved()[0].detail, "502");
     }
 
     #[test]
-    fn restarts_and_unplayed_tune_ins_are_the_players() {
+    fn a_failed_refresh_now_and_then_is_not_errors() {
         let mut d = Diagnostics::default();
-        for (i, play) in ["a", "b", "c"].iter().enumerate() {
+        tune(&mut d, "tv", "p1", T0);
+        let mut at = T0 + 1_000;
+        for seq in 0..30 {
+            let outcome = if seq % 6 == 3 {
+                Outcome::Failed("503".into())
+            } else {
+                media(seq)
+            };
+            d.record(&fetch("tv", "p1", false, 100, outcome), at);
+            at += 6_000;
+        }
+        assert!(kinds(&d).is_empty());
+        let live = d.live(at);
+        assert_eq!(live[0].state, ChannelState::Ok);
+        assert_eq!(live[0].viewers[0].state, ViewerState::Ok);
+
+        // A burst of fast retries through a blip: nothing either.
+        let mut d = Diagnostics::default();
+        watch(&mut d, "tv", T0, T0 + 30_000, 100);
+        for i in 0..5 {
+            d.record(
+                &fetch("tv", "p1", false, 100, Outcome::Failed("503".into())),
+                T0 + 31_000 + i * 500,
+            );
+        }
+        d.record(&fetch("tv", "p1", false, 100, media(9)), T0 + 34_000);
+        assert!(kinds(&d).is_empty());
+    }
+
+    #[test]
+    fn restarts_are_shown_and_never_a_problem() {
+        let mut d = Diagnostics::default();
+        for (i, play) in ["a", "b", "c", "d"].iter().enumerate() {
             tune(&mut d, "tv", play, T0 + i as i64 * 30_000);
             d.record(
                 &fetch("tv", play, false, 100, media(i as i64)),
                 T0 + i as i64 * 30_000 + 500,
             );
         }
-        assert_eq!(kinds(&d), [Kind::Retunes]);
+        assert!(kinds(&d).is_empty());
+        let live = d.live(T0 + 91_000);
+        assert_eq!(live[0].state, ChannelState::Ok);
+        assert_eq!(live[0].viewers[0].state, ViewerState::Ok);
+        assert_eq!(live[0].viewers[0].retunes, 4);
+        assert_eq!(d.problem_count(), 0);
+    }
 
+    #[test]
+    fn unplayed_tune_ins_are_the_players_until_another_customer_has_them() {
         let mut d = Diagnostics::default();
         tune(&mut d, "phone", "x", T0);
         d.tick(T0 + 10_000);
         assert!(kinds(&d).is_empty());
         tune(&mut d, "phone", "y", T0 + 15_000);
         d.tick(T0 + PLAYER_WAIT_MS);
-        assert_eq!(kinds(&d), [Kind::Player]);
+        assert!(kinds(&d).is_empty(), "one customer's player");
         assert_eq!(d.live(T0 + PLAYER_WAIT_MS)[0].viewers[0].state, ViewerState::Noconn);
+        // Another customer's player cannot play it either.
+        d.record(
+            &Fetch {
+                user_id: 8,
+                ..fetch("box", "z", true, 100, Outcome::Ok { media: None })
+            },
+            T0 + 40_000,
+        );
+        d.tick(T0 + 40_000 + PLAYER_WAIT_MS);
+        assert_eq!(kinds(&d), [Kind::Player]);
+        assert_eq!(d.unsaved()[0].users, [7, 8]);
 
         // A player that does come back is fine.
         let mut d = Diagnostics::default();
@@ -1234,9 +1639,9 @@ mod tests {
     }
 
     #[test]
-    fn flipping_between_versions_is_restarting_the_channel() {
-        // The player keeps refreshing on time while the stream stalls; its
-        // viewer switches HD <-> SD every 90 s, longer than the idle window.
+    fn flipping_between_versions_counts_restarts_of_the_channel() {
+        // The viewer switches HD <-> SD every 90 s, longer than the idle
+        // window: the count follows the channel, not its version.
         let mut d = Diagnostics::default();
         let mut at = T0;
         for i in 0..8 {
@@ -1249,22 +1654,14 @@ mod tests {
             if i == 2 {
                 let live = d.live(at + 85_000);
                 assert_eq!(live[0].channel_id, "hd");
-                assert_eq!(live[0].state, ChannelState::Flaky);
-                assert_eq!(live[0].viewers[0].state, ViewerState::Retune);
+                assert_eq!(live[0].state, ChannelState::Ok);
+                assert_eq!(live[0].viewers[0].state, ViewerState::Ok);
                 assert_eq!(live[0].viewers[0].retunes, 3);
             }
             at += 90_000;
         }
-        let mut rows = d.unsaved();
-        rows.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
-        assert_eq!(rows.len(), 2, "one incident per channel, not one per restart: {rows:?}");
-        assert_eq!((rows[0].channel_id.as_str(), rows[0].kind), ("hd", Kind::Retunes));
-        assert_eq!(rows[0].detail, "Setanta Sports 1");
-        assert_eq!(rows[1].detail, "Setanta Sports 1 HD");
-        assert_eq!(rows[0].peak, 7, "every tune-in within the window");
-        // They end once a window passes without a restart.
-        assert_eq!(d.take_dirty(at + RETUNE_WINDOW_MS).len(), 2);
-        assert!(d.unsaved().is_empty());
+        assert!(d.unsaved().is_empty(), "restarting is not a problem");
+        assert_eq!(d.problem_count(), 0);
     }
 
     #[test]
@@ -1285,45 +1682,167 @@ mod tests {
         assert_eq!(d.live(at)[0].viewers[0].state, ViewerState::Ok);
     }
 
+    /// `device` cannot open the channel at `at`; nothing gets it in.
+    fn never_opens(d: &mut Diagnostics, device: &str, at: i64) {
+        d.record(&fetch(device, "", true, 100, Outcome::Failed("404".into())), at);
+        d.tick(at + PLAYER_WAIT_MS);
+    }
+
     #[test]
     fn incidents_close_when_quiet_and_reopen_as_new_ones() {
         let mut d = Diagnostics::default();
-        d.record(&fetch("a", "", true, 100, Outcome::Failed("404".into())), T0);
-        let first = d.take_dirty(T0);
+        never_opens(&mut d, "a", T0);
+        let first = d.take_dirty(T0 + PLAYER_WAIT_MS);
         assert_eq!(first.len(), 1);
-        assert!(d.take_dirty(T0 + 1_000).is_empty(), "nothing changed");
-        d.record(&fetch("b", "", true, 100, Outcome::Failed("404".into())), T0 + 60_000);
-        let grown = d.take_dirty(T0 + 60_000);
+        assert!(d.take_dirty(T0 + PLAYER_WAIT_MS + 1_000).is_empty(), "nothing changed");
+        never_opens(&mut d, "b", T0 + 60_000);
+        let grown = d.take_dirty(T0 + 60_000 + PLAYER_WAIT_MS);
         assert_eq!(grown.len(), 1);
         assert_eq!(grown[0].id, first[0].id, "the same incident");
         assert_eq!(grown[0].users, [7]);
-        assert_eq!(grown[0].ended, T0 + 60_000);
+        assert_eq!(grown[0].ended, T0 + 60_000, "when it failed");
         // Quiet for longer than CLOSE_AFTER_MS: it ends; the next is new.
-        let ended = d.take_dirty(T0 + 60_000 + CLOSE_AFTER_MS + 1);
+        let ended = d.take_dirty(T0 + 60_000 + PLAYER_WAIT_MS + CLOSE_AFTER_MS + 1);
         assert_eq!(ended.len(), 1);
-        d.record(&fetch("a", "", true, 100, Outcome::Failed("404".into())), T0 + 400_000);
-        let next = d.take_dirty(T0 + 400_000);
+        never_opens(&mut d, "a", T0 + 400_000);
+        let next = d.take_dirty(T0 + 400_000 + PLAYER_WAIT_MS);
         assert_ne!(next[0].id, first[0].id);
     }
 
     #[test]
-    fn clearing_a_channel_starts_its_register_over() {
+    fn a_resolved_channel_starts_its_register_over() {
         let mut d = Diagnostics::default();
-        d.record(&fetch("a", "", true, 100, Outcome::Failed("404".into())), T0);
-        let before = d.take_dirty(T0);
+        never_opens(&mut d, "a", T0);
+        let before = d.take_dirty(T0 + PLAYER_WAIT_MS);
         assert_eq!(d.problem_count(), 1);
-        d.clear_channel("ch1", T0 + 1_000);
+        assert!(d.verification("ch1").is_some());
+        d.resolved("ch1", T0 + PLAYER_WAIT_MS + 1_000);
         assert_eq!(d.problem_count(), 0);
         assert!(d.unsaved().is_empty());
+        assert!(d.verification("ch1").is_none());
         // Still broken: a new incident, the channel is back.
-        d.record(&fetch("a", "", true, 100, Outcome::Failed("404".into())), T0 + 2_000);
-        let after = d.take_dirty(T0 + 2_000);
+        never_opens(&mut d, "a", T0 + 30_000);
+        let after = d.take_dirty(T0 + 30_000 + PLAYER_WAIT_MS);
         assert_eq!(after.len(), 1);
         assert_ne!(after[0].id, before[0].id);
         assert_eq!(d.problem_count(), 1);
         // A failed write is retried.
         d.requeue(after.clone());
-        assert_eq!(d.take_dirty(T0 + 3_000), after);
+        assert_eq!(d.take_dirty(T0 + 60_000), after);
+    }
+
+    fn pass(at: i64) -> Probe {
+        Probe {
+            at,
+            passed: true,
+            verdict: "ok".into(),
+            error: None,
+        }
+    }
+
+    /// The register lists ch1 from `since`; the server checks it every
+    /// [`PROBE_EVERY_MS`] after that, `n` times, and every check passes.
+    fn checked(d: &mut Diagnostics, since: i64, n: u32) {
+        d.track(&BTreeSet::from(["ch1".to_owned()]), since);
+        let mut at = since + PROBE_EVERY_MS;
+        assert!(d.probe_due(at - 1).is_empty());
+        for _ in 0..n {
+            assert_eq!(d.probe_due(at), ["ch1"]);
+            d.probed("ch1", at - 5_000, pass(at));
+            at += PROBE_EVERY_MS;
+        }
+    }
+
+    #[test]
+    fn a_channel_shown_to_work_leaves_the_register() {
+        let mut d = Diagnostics::default();
+        checked(&mut d, T0, VERIFY_PROBES);
+        assert!(
+            d.ready(T0 + VERIFY_QUIET_MS, |_| true).is_empty(),
+            "nobody watched it yet"
+        );
+        // Customers watch it without trouble.
+        watch(&mut d, "tv", T0 + 60_000, T0 + 60_000 + VERIFY_VIEWING_MS + 12_000, 100);
+        let v = d.verification("ch1").unwrap();
+        assert!(v.viewing_ms >= VERIFY_VIEWING_MS, "{v:?}");
+        assert_eq!((v.probes_ok, v.viewers), (VERIFY_PROBES, 1));
+        assert!(
+            d.ready(T0 + VERIFY_QUIET_MS - 1, |_| true).is_empty(),
+            "not quiet long enough"
+        );
+        assert_eq!(
+            d.ready(T0 + VERIFY_QUIET_MS, |_| true),
+            [Verdict {
+                channel_id: "ch1".into(),
+                how: Resolved::Verified,
+                probes: VERIFY_PROBES,
+                viewing_ms: v.viewing_ms,
+                viewers: 1,
+            }]
+        );
+
+        // The server could not check it: the viewers alone decide.
+        let mut d = Diagnostics::default();
+        d.track(&BTreeSet::from(["ch1".to_owned()]), T0);
+        watch(&mut d, "tv", T0 + 60_000, T0 + 60_000 + VERIFY_VIEWING_MS + 12_000, 100);
+        assert!(d.ready(T0 + VERIFY_QUIET_MS, |_| true).is_empty(), "checks missing");
+        assert_eq!(d.ready(T0 + VERIFY_QUIET_MS, |_| false)[0].how, Resolved::Verified);
+    }
+
+    #[test]
+    fn unwatched_channels_leave_on_the_servers_checks_after_a_while() {
+        let mut d = Diagnostics::default();
+        checked(&mut d, T0, VERIFY_PROBES);
+        assert!(d.ready(T0 + VERIFY_QUIET_MS, |_| true).is_empty());
+        assert!(d.ready(T0 + UNWATCHED_MS - 1, |_| true).is_empty());
+        assert_eq!(d.ready(T0 + UNWATCHED_MS, |_| true)[0].how, Resolved::ServerOnly);
+        // Not in the register any more: not tracked.
+        d.track(&BTreeSet::new(), T0 + UNWATCHED_MS);
+        assert!(d.verification("ch1").is_none());
+        assert!(d.probe_due(T0 + UNWATCHED_MS).is_empty());
+    }
+
+    #[test]
+    fn trouble_or_a_failed_check_starts_the_way_out_over() {
+        let mut d = Diagnostics::default();
+        checked(&mut d, T0, 2);
+        assert_eq!(d.verification("ch1").unwrap().probes_ok, 2);
+        // A failed check.
+        let failed_at = T0 + 15 * MINUTE_MS;
+        d.probed(
+            "ch1",
+            failed_at - 5_000,
+            Probe {
+                at: failed_at,
+                passed: false,
+                verdict: "error".into(),
+                error: Some("502".into()),
+            },
+        );
+        let v = d.verification("ch1").unwrap();
+        assert_eq!((v.since, v.probes_ok), (failed_at, 0));
+        assert_eq!(v.last_probe.unwrap().error.as_deref(), Some("502"));
+        assert!(d.probe_due(failed_at + PROBE_EVERY_MS - 1).is_empty());
+        // A check that started before the trouble does not count; two right
+        // after each other count once.
+        d.probed("ch1", failed_at - 1, pass(failed_at + 60_000));
+        assert_eq!(d.verification("ch1").unwrap().probes_ok, 0);
+        d.probed("ch1", failed_at + 1, pass(failed_at + 70_000));
+        d.probed("ch1", failed_at + 80_000, pass(failed_at + 90_000));
+        assert_eq!(d.verification("ch1").unwrap().probes_ok, 1);
+        // Watching counts, until the channel has trouble again.
+        watch(&mut d, "tv", failed_at + 100_000, failed_at + 200_000, 100);
+        assert!(d.verification("ch1").unwrap().viewing_ms > 0);
+        never_opens(&mut d, "phone", failed_at + 300_000);
+        let v = d.verification("ch1").unwrap();
+        assert_eq!(
+            (v.since, v.probes_ok, v.viewing_ms, v.viewers),
+            (failed_at + 300_000, 0, 0, 0)
+        );
+        assert!(
+            d.ready(failed_at + 300_000 + UNWATCHED_MS, |_| true).is_empty(),
+            "checks are needed again"
+        );
     }
 
     #[test]

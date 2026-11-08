@@ -4,16 +4,17 @@ import {
 import {
   Alert, Button, Descriptions, Drawer, Empty, Grid, Space, Spin, Typography,
 } from 'antd';
-import { CheckOutlined, CopyOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { CopyOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { AuthError } from '../lib/api.js';
 import {
-  ChannelStateTag, KINDS, KindTag, ViewerList, cases, channelDiagnosis, clients, incidentText, ms, span, viewersText,
-  when,
+  ChannelStateTag, KINDS, KindTag, VerificationChecklist, ViewerList, cases, channelDiagnosis, clients, incidentText,
+  ms, resolvedText, span, verificationSteps, viewersText, when,
 } from '../lib/diagnostics.jsx';
 
 // One channel on the Диагностика page: what is wrong now, the last half hour
 // (viewers with and without trouble against the provider's answer time), who
-// is watching, and every problem since the channel was last marked fixed.
+// is watching, every problem since the channel last left the register, and
+// how far it is on its way out (the server's checks and clean viewing).
 
 const POLL_MS = 5_000;
 const CHART_HEIGHT = 120;
@@ -144,11 +145,10 @@ function report(detail) {
 }
 
 export default function ChannelDiagDrawer({
-  channelId, api, message, onAuthError, onClose, go, check, onResolved,
+  channelId, api, message, onAuthError, onClose, go, check,
 }) {
   const screens = Grid.useBreakpoint();
   const [detail, setDetail] = useState(null);
-  const [fixing, setFixing] = useState(false);
 
   // The page re-renders on every poll with fresh callbacks; reading them
   // through a ref keeps the poll below from restarting (and the drawer from
@@ -178,20 +178,6 @@ export default function ChannelDiagDrawer({
     const id = setInterval(tick, POLL_MS);
     return () => clearInterval(id);
   }, [channelId, load]);
-
-  const resolve = async () => {
-    setFixing(true);
-    try {
-      const res = await api.post(`/admin/api/diagnostics/channels/${encodeURIComponent(channelId)}/resolve`, {});
-      onResolved({ channel_id: channelId, name: detail?.name || channelId, cleared_at: res.cleared_at });
-      await load();
-    } catch (e) {
-      if (e instanceof AuthError) onAuthError();
-      else message.error(e.message);
-    } finally {
-      setFixing(false);
-    }
-  };
 
   const copyReport = async () => {
     try {
@@ -258,20 +244,30 @@ export default function ChannelDiagDrawer({
             </section>
           ) : null}
 
-          <section>
-            <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }} wrap>
-              <Space size={6} wrap>
-                <Typography.Text strong>История проблем</Typography.Text>
-                {detail.count ? (
-                  <Typography.Text type="secondary">
-                    {`· с ${when(detail.since, { time: false })}, ${cases(detail.count)} у ${clients(detail.clients)}`}
+          {detail.verification ? (
+            <section>
+              <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }} wrap>
+                <Typography.Text strong>Проверка, что канал снова работает</Typography.Text>
+                {!detail.ongoing ? (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {`готово на ${verificationSteps(detail.verification, detail.verify, false).percent}%`}
                   </Typography.Text>
                 ) : null}
               </Space>
+              <VerificationChecklist verification={detail.verification} req={detail.verify} ongoing={detail.ongoing} />
+              <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8 }}>
+                Когда всё выполнено, канал сам уходит из проблемных. Новая проблема начинает проверку заново.
+              </Typography.Text>
+            </section>
+          ) : null}
+
+          <section>
+            <Space size={6} wrap style={{ marginBottom: 8 }}>
+              <Typography.Text strong>История проблем</Typography.Text>
               {detail.count ? (
-                <Button size="small" icon={<CheckOutlined style={{ color: '#16a34a' }} />} loading={fixing} onClick={resolve}>
-                  Отметить исправленным
-                </Button>
+                <Typography.Text type="secondary">
+                  {`· с ${when(detail.since, { time: false })}, ${cases(detail.count)} у ${clients(detail.clients)}`}
+                </Typography.Text>
               ) : null}
             </Space>
             {detail.history.length ? (
@@ -300,7 +296,12 @@ export default function ChannelDiagDrawer({
                 ) : null}
               </Space>
             ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="С последнего исправления проблем не было" />
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={detail.last_resolved
+                  ? `Проблем нет. Последние решены ${when(detail.last_resolved.resolved)}: ${resolvedText(detail.last_resolved)}`
+                  : 'Проблем не было'}
+              />
             )}
           </section>
 

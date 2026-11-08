@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import {
-  Badge, Modal, Space, Tag, Tooltip, Typography,
+  Badge, Modal, Progress, Space, Tag, Tooltip, Typography,
 } from 'antd';
-import { CheckCircleFilled, CloseCircleFilled } from '@ant-design/icons';
+import {
+  CheckCircleFilled, ClockCircleOutlined, CloseCircleFilled, MinusCircleOutlined,
+} from '@ant-design/icons';
 import { AuthError } from './api.js';
 
 // The Диагностика vocabulary, shared by the page, its channel drawer and the
@@ -28,22 +30,21 @@ export const CHANNEL_STATES = {
 export const VIEWER_STATES = {
   ok: { label: 'Смотрит', color: GREEN },
   buffer: { label: 'Буферизация', color: AMBER },
-  retune: { label: 'Переподключается', color: AMBER },
   noconn: { label: 'Не подключается', color: RED },
   error: { label: 'Видит ошибку', color: RED },
   frozen: { label: 'Картинка стоит', color: RED },
 };
 
 // What an incident in the register was (Kind). `provider`: the cause is at
-// the provider, not with the customers' players.
+// the provider, not with the customers' players. Buffering and players that
+// do not open the channel only get here once several customers have them.
 export const KINDS = {
   errors: { label: 'Ошибки провайдера', tag: 'error', provider: true },
   no_open: { label: 'Не открывался', tag: 'error', provider: true },
   frozen: { label: 'Зависал', tag: 'error', provider: true },
   slow: { label: 'Медленно', tag: 'warning', provider: true },
   buffering: { label: 'Буферизация', tag: 'warning', provider: false },
-  retunes: { label: 'Переподключения', tag: 'warning', provider: false },
-  player: { label: 'Не открывался в плеере', tag: 'default', provider: false },
+  player: { label: 'Не открывался в плеерах', tag: 'default', provider: false },
 };
 
 // One minute of the live strip (MinuteState).
@@ -186,7 +187,6 @@ export function MinuteLegend() {
 
 const TROUBLE_WORDS = {
   buffer: 'буферизация',
-  retune: 'переподключения',
   noconn: 'не подключается',
   error: 'видит ошибки',
   frozen: 'картинка стоит',
@@ -235,10 +235,11 @@ export function channelDiagnosis(ch) {
 export function viewerNote(v) {
   switch (v.state) {
     case 'buffer': return `обновления опаздывают до ${span(v.late_ms)}`;
-    case 'retune': return `включал канал ${times(v.retunes)} за ${RETUNE_WINDOW}`;
     case 'noconn': return v.error ? `не открылся: ${failureText(v.error)}` : 'получил список качеств, но не открыл ни одно';
     case 'error': return `провайдер: ${failureText(v.error)}`;
-    default: return '';
+    // Restarting a channel is the viewer's business, not a problem: shown
+    // only as a note.
+    default: return v.retunes >= 3 ? `переключал канал ${times(v.retunes)} за ${RETUNE_WINDOW}` : '';
   }
 }
 
@@ -271,9 +272,8 @@ export function incidentText(inc) {
     case 'no_open': return `Канал не открылся: ${failureText(inc.detail)}`;
     case 'frozen': return `Видео не менялось ${span(inc.peak)}`;
     case 'slow': return `Ответ провайдера до ${ms(inc.peak)}`;
-    case 'buffering': return `Обновления у зрителей опаздывали до ${span(inc.peak)}`;
-    case 'retunes': return `Канал включали ${times(inc.peak)} за ${RETUNE_WINDOW}${inc.detail ? ` вперемешку с «${inc.detail}»` : ''}`;
-    case 'player': return 'Плеер получил канал, но не открыл ни одно качество';
+    case 'buffering': return `Обновления у нескольких клиентов опаздывали до ${span(inc.peak)}`;
+    case 'player': return 'Плееры нескольких клиентов получили канал, но не открыли ни одно качество';
     default: return '';
   }
 }
@@ -327,7 +327,9 @@ function CheckSteps({ result }) {
 // "Проверить канал сейчас": runs the check (a few seconds: it waits to see
 // the playlist move) and shows the result. Returns the button's props and the
 // modal to render.
-export function useChannelCheck({ api, message, onAuthError }) {
+export function useChannelCheck({
+  api, message, onAuthError, onDone,
+}) {
   const [running, setRunning] = useState(null);
   const [modal, contextHolder] = Modal.useModal();
 
@@ -346,8 +348,131 @@ export function useChannelCheck({ api, message, onAuthError }) {
       else message.error(e.message);
     } finally {
       setRunning(null);
+      onDone?.();
     }
   };
 
   return { run, running, contextHolder };
+}
+
+// How a channel left the register (server: playlist::diagnostics::Resolved).
+export function resolvedText(r) {
+  switch (r.how) {
+    case 'verified':
+      return `${plural(r.probes, 'проверка', 'проверки', 'проверок')} сервером, ${span(r.viewing_ms)} просмотра без перебоев у ${clients(r.viewers)}`;
+    case 'server_only':
+      return `${plural(r.probes, 'проверка', 'проверки', 'проверок')} сервером; зрителей почти не было`;
+    case 'removed':
+      return 'канал удалён из каталога';
+    default:
+      return '';
+  }
+}
+
+const VERDICT_WORDS = {
+  ok: 'прошла',
+  slow: 'прошла, но ответ медленный',
+  frozen: 'не прошла: видео не обновляется',
+  error: 'не прошла',
+  empty: 'не прошла: пустой плейлист',
+};
+
+function probeText(p) {
+  const time = new Date(p.at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const words = VERDICT_WORDS[p.verdict] || (p.passed ? 'прошла' : 'не прошла');
+  const why = !p.passed && p.error ? `: ${failureText(p.error)}` : '';
+  return `последняя в ${time} ${words}${p.verdict === 'error' ? why : ''}`;
+}
+
+const clamp = (x) => Math.max(0, Math.min(1, x));
+
+// A register channel's way out: what it still needs (`req`: the server's
+// requirements, the same for every channel), as a checklist and a share
+// done. While the problem is going on there is nothing to check yet.
+export function verificationSteps(v, req, ongoing) {
+  if (!v || !req) return { steps: [], percent: 0 };
+  const quiet = Date.now() - Date.parse(v.since);
+  const quietFrac = clamp(quiet / req.quiet_ms);
+  const serverFrac = v.checkable ? clamp(v.probes_ok / req.probes) : 1;
+  const viewFrac = clamp(v.viewing_ms / req.viewing_ms);
+  const unwatchedFrac = clamp(quiet / req.unwatched_ms);
+  const steps = [
+    {
+      key: 'quiet',
+      done: !ongoing && quietFrac >= 1,
+      label: ongoing
+        ? 'Проблема идёт сейчас — проверка начнётся, когда она закончится'
+        : `Без проблем ${span(Math.min(quiet, req.quiet_ms))} из ${span(req.quiet_ms)}`,
+    },
+    v.checkable
+      ? {
+        key: 'server',
+        done: serverFrac >= 1,
+        failed: v.last_probe && !v.last_probe.passed,
+        label: `Проверки сервером у провайдера: ${v.probes_ok} из ${req.probes}`,
+        note: v.last_probe ? probeText(v.last_probe) : `первая через ${span(Math.max(0, req.probe_every_ms - quiet))} без проблем`,
+      }
+      : {
+        key: 'server', done: true, skipped: true, label: 'Сервер не может проверить этот канал — решают зрители',
+      },
+    {
+      key: 'viewers',
+      done: viewFrac >= 1 || unwatchedFrac >= 1,
+      label: v.viewing_ms
+        ? `Просмотр без перебоев: ${span(v.viewing_ms)} из ${span(req.viewing_ms)} (${clients(v.viewers)})`
+        : `Просмотр без перебоев: никто пока не смотрел (нужно ${span(req.viewing_ms)})`,
+      note: viewFrac < 1 && !ongoing
+        ? `без зрителей хватит проверок сервера через ${span(Math.max(0, req.unwatched_ms - quiet))}`
+        : null,
+    },
+  ];
+  const percent = ongoing ? 0 : Math.round(100 * Math.min(quietFrac, serverFrac, Math.max(viewFrac, unwatchedFrac)));
+  return { steps, percent };
+}
+
+function StepIcon({ step }) {
+  if (step.skipped) return <MinusCircleOutlined style={{ color: GREY }} />;
+  if (step.done) return <CheckCircleFilled style={{ color: GREEN }} />;
+  if (step.failed) return <CloseCircleFilled style={{ color: RED }} />;
+  return <ClockCircleOutlined style={{ color: GREY }} />;
+}
+
+export function VerificationChecklist({ verification, req, ongoing }) {
+  const { steps } = verificationSteps(verification, req, ongoing);
+  return (
+    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+      {steps.map((s) => (
+        <Space key={s.key} size={8} align="start">
+          <span style={{ display: 'inline-block', paddingTop: 2 }}><StepIcon step={s} /></span>
+          <Space direction="vertical" size={0}>
+            <Typography.Text>{s.label}</Typography.Text>
+            {s.note ? <Typography.Text type={s.failed ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>{s.note}</Typography.Text> : null}
+          </Space>
+        </Space>
+      ))}
+    </Space>
+  );
+}
+
+// The register table's cell: how far along the way out is, the checklist on hover.
+export function VerificationProgress({ verification, req, ongoing }) {
+  if (ongoing) {
+    return <Typography.Text strong style={{ color: '#b91c1c', whiteSpace: 'nowrap' }}>идёт сейчас</Typography.Text>;
+  }
+  const { percent } = verificationSteps(verification, req, ongoing);
+  const failed = verification?.last_probe && !verification.last_probe.passed;
+  return (
+    <Tooltip
+      title={<VerificationChecklist verification={verification} req={req} ongoing={ongoing} />}
+      color="#fff"
+      styles={{ body: { color: 'inherit', minWidth: 300 } }}
+    >
+      <Space direction="vertical" size={0} style={{ minWidth: 140, cursor: 'help' }}>
+        <Typography.Text style={{ fontSize: 12, color: failed ? '#b91c1c' : undefined }}>
+          {failed ? 'проверка не прошла' : 'проверяем'}
+        </Typography.Text>
+        <Progress percent={percent} size="small" status={failed ? 'exception' : 'active'} showInfo={false} />
+      </Space>
+    </Tooltip>
+  );
 }

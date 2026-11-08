@@ -2,20 +2,21 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Empty, Space, Switch, Tooltip, Typography,
 } from 'antd';
-import { CheckOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import ResponsiveTable from '../components/ResponsiveTable.jsx';
 import ChannelDiagDrawer from '../diagnostics/ChannelDiagDrawer.jsx';
 import { AuthError } from '../lib/api.js';
 import {
-  CHANNEL_STATES, ChannelStateTag, KindTag, MinuteLegend, MinuteStrip, ViewerList, causeOf, channelDiagnosis,
-  ms, troubleSummary, useChannelCheck, viewersText, when,
+  CHANNEL_STATES, ChannelStateTag, KindTag, MinuteLegend, MinuteStrip, VerificationProgress, ViewerList, causeOf,
+  channelDiagnosis, ms, resolvedText, span, troubleSummary, useChannelCheck, viewersText, when,
 } from '../lib/diagnostics.jsx';
-import { useWatching } from '../lib/watching.jsx';
 
 // Are the channels customers watch working? The live table is what is being
 // watched right now, judged from the manifests passing through the stream
-// gateway; the problem register keeps every channel that had trouble until
-// the admin marks it fixed (a problem that comes back puts it back).
+// gateway. The problem register keeps every channel that had trouble until
+// it is shown to work again: the server checks it at the provider and
+// watches customers play it; then it moves to the resolved list on its own
+// (a problem that comes back puts it back).
 
 const POLL_MS = 5_000;
 
@@ -58,16 +59,12 @@ const FILTER_NAMES = {
 export default function DiagnosticsPage({
   api, message, onAuthError, go,
 }) {
-  const live = useWatching();
   const [data, setData] = useState(null);
   const [updatedAt, setUpdatedAt] = useState(null);
   const [loading, setLoading] = useState(false);
   const [auto, setAuto] = useState(true);
   const [filter, setFilter] = useState('all');
-  const [undo, setUndo] = useState(null);
-  const [fixing, setFixing] = useState(null);
   const [drawer, setDrawer] = useState(channelFromHash);
-  const check = useChannelCheck({ api, message, onAuthError });
 
   const fail = useCallback((e) => {
     if (e instanceof AuthError) onAuthError();
@@ -87,6 +84,11 @@ export default function DiagnosticsPage({
   }, [api, fail]);
 
   useEffect(() => { load(); }, [load]);
+
+  // A check counts towards the channel's way out: show it at once.
+  const check = useChannelCheck({
+    api, message, onAuthError, onDone: load,
+  });
 
   // Polled while the tab is visible and auto-refresh is on.
   useEffect(() => {
@@ -109,36 +111,10 @@ export default function DiagnosticsPage({
   const openChannel = (id) => go(`diagnostics/${encodeURIComponent(id)}`);
   const closeChannel = () => go('diagnostics');
 
-  const resolve = async (p) => {
-    setFixing(p.channel_id);
-    try {
-      const res = await api.post(`/admin/api/diagnostics/channels/${encodeURIComponent(p.channel_id)}/resolve`, {});
-      setUndo({ channel_id: p.channel_id, name: p.name, cleared_at: res.cleared_at });
-      await load();
-      live.refresh();
-    } catch (e) {
-      fail(e);
-    } finally {
-      setFixing(null);
-    }
-  };
-
-  const restore = async () => {
-    if (!undo) return;
-    try {
-      await api.post(`/admin/api/diagnostics/channels/${encodeURIComponent(undo.channel_id)}/restore`, {
-        cleared_at: undo.cleared_at,
-      });
-      setUndo(null);
-      await load();
-      live.refresh();
-    } catch (e) {
-      fail(e);
-    }
-  };
-
   const channels = data?.channels || [];
   const problems = data?.problems || [];
+  const resolved = data?.resolved || [];
+  const req = data?.verify;
   const slowMs = data?.slow_ms ?? 1500;
   const groupOf = (c) => CHANNEL_STATES[c.state]?.group || 'ok';
   const countOf = (g) => channels.filter((c) => groupOf(c) === g).length;
@@ -230,39 +206,50 @@ export default function DiagnosticsPage({
     { title: 'Впервые', width: 130, render: (_, p) => <Typography.Text type="secondary">{when(p.first, { time: false })}</Typography.Text> },
     {
       title: 'Последний раз',
-      width: 150,
-      render: (_, p) => (p.ongoing
-        ? <Typography.Text strong style={{ color: '#b91c1c' }}>идёт сейчас</Typography.Text>
-        : <Typography.Text type="secondary">{when(p.last)}</Typography.Text>),
+      width: 140,
+      render: (_, p) => <Typography.Text type="secondary">{when(p.last)}</Typography.Text>,
+    },
+    {
+      title: 'Проверка',
+      width: 170,
+      render: (_, p) => <VerificationProgress verification={p.verification} req={req} ongoing={p.ongoing} />,
     },
     {
       title: '',
-      width: 170,
+      width: 56,
       align: 'right',
       render: (_, p) => (
-        <Space size={4}>
-          <Tooltip title="Проверить канал сейчас">
-            <Button
-              size="small"
-              icon={<ThunderboltOutlined />}
-              loading={check.running === p.channel_id}
-              onClick={() => check.run(p.channel_id, p.name)}
-              aria-label="Проверить канал сейчас"
-            />
-          </Tooltip>
-          <Tooltip title="Очистить историю канала. Если проблема повторится, канал вернётся в список.">
-            <Button
-              size="small"
-              icon={<CheckOutlined style={{ color: '#16a34a' }} />}
-              loading={fixing === p.channel_id}
-              onClick={() => resolve(p)}
-            >
-              Исправлено
-            </Button>
-          </Tooltip>
+        <Tooltip title="Проверить канал сейчас (засчитывается в проверку)">
+          <Button
+            size="small"
+            icon={<ThunderboltOutlined />}
+            loading={check.running === p.channel_id}
+            onClick={() => check.run(p.channel_id, p.name)}
+            aria-label="Проверить канал сейчас"
+          />
+        </Tooltip>
+      ),
+    },
+  ];
+
+  const resolvedColumns = [
+    {
+      title: 'Канал',
+      render: (_, r) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Link strong onClick={() => openChannel(r.channel_id)}>{r.name || r.channel_id}</Typography.Link>
+          {r.group ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.group}</Typography.Text> : null}
         </Space>
       ),
     },
+    {
+      title: 'Что было',
+      render: (_, r) => <Space size={4} wrap>{r.kinds.map((k) => <KindTag key={k} kind={k} />)}</Space>,
+    },
+    { title: 'Случаев', dataIndex: 'count', width: 90 },
+    { title: 'Клиентов', dataIndex: 'clients', width: 100 },
+    { title: 'Решено', width: 140, render: (_, r) => <Typography.Text type="secondary">{when(r.resolved)}</Typography.Text> },
+    { title: 'Чем подтверждено', render: (_, r) => <Typography.Text type="secondary">{resolvedText(r)}</Typography.Text> },
   ];
 
   return (
@@ -292,7 +279,7 @@ export default function DiagnosticsPage({
         <SummaryCard
           label="Проблемные каналы"
           value={problems.length}
-          caption="пока не отмечены исправленными"
+          caption="ждут подтверждения, что работают"
           dot="#dc2626"
           valueColor={problems.length ? '#b91c1c' : undefined}
           active={false}
@@ -350,23 +337,16 @@ export default function DiagnosticsPage({
         id="diag-problems"
         title="Проблемные каналы"
         extra={(
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            копятся, пока не отметите канал исправленным; новые проблемы вернут его сюда
-          </Typography.Text>
+          <Tooltip
+            title={req
+              ? `Канал уходит из списка сам: ${span(req.quiet_ms)} без проблем, ${req.probes} проверки сервером у провайдера и ${span(req.viewing_ms)} просмотра без перебоев (без зрителей — ${span(req.unwatched_ms)} проверок сервера). Новая проблема начинает проверку заново.`
+              : null}
+          >
+            <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>уходят сами, когда подтвердится, что работают</Typography.Text>
+          </Tooltip>
         )}
-        styles={{ body: { padding: problems.length || undo ? 0 : undefined } }}
+        styles={{ body: { padding: problems.length ? 0 : undefined } }}
       >
-        {undo ? (
-          <Alert
-            type="success"
-            showIcon
-            style={{ margin: 12 }}
-            message={`${undo.name} отмечен исправленным — история очищена. Если проблема повторится, канал вернётся в список.`}
-            action={<Button size="small" type="link" onClick={restore}>Отменить</Button>}
-            closable
-            onClose={() => setUndo(null)}
-          />
-        ) : null}
         {problems.length ? (
           <ResponsiveTable
             size="middle"
@@ -381,6 +361,27 @@ export default function DiagnosticsPage({
         )}
       </Card>
 
+      {resolved.length ? (
+        <Card
+          title="Решены за 7 дней"
+          extra={(
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              подтверждены проверками сервера и зрителями
+            </Typography.Text>
+          )}
+          styles={{ body: { padding: 0 } }}
+        >
+          <ResponsiveTable
+            size="middle"
+            rowKey={(r) => `${r.channel_id}|${r.resolved}`}
+            pagination={resolved.length > 10 ? { pageSize: 10 } : false}
+            dataSource={resolved}
+            columns={resolvedColumns}
+            scroll={{ x: 'max-content' }}
+          />
+        </Card>
+      ) : null}
+
       <ChannelDiagDrawer
         channelId={drawer}
         api={api}
@@ -389,11 +390,6 @@ export default function DiagnosticsPage({
         onClose={closeChannel}
         go={go}
         check={check}
-        onResolved={(res) => {
-          setUndo(res);
-          load();
-          live.refresh();
-        }}
       />
     </Space>
   );

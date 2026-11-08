@@ -1,28 +1,32 @@
 //! `/admin/api/diagnostics`: the Диагностика page. Live channel health from
 //! the gateway's tracker (`playlist::diagnostics`), the problem register in
 //! PostgreSQL, an on-demand check of a channel at the provider, and the
-//! background job that writes the tracker's incidents.
+//! background jobs that write the tracker's incidents and take channels out
+//! of the register once they are shown to work.
 //!
 //! Like the statistics, reads combine what is stored with what the tracker
 //! has not written yet, so the register is current to the second.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
-use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
+use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::api::{ApiError, ApiResult, body, num_of, ok};
+use super::api::{ApiError, ApiResult, ok};
 use crate::core::fetch::fetch_bounded;
 use crate::core::util::{iso, now_ms};
-use crate::data::incidents::{clear, load_open, prune, restore, save};
-use crate::playlist::diagnostics::{ChannelView, IncidentRow, Kind, SLOW_MS};
+use crate::data::incidents::{ResolutionRow, load_open, prune, resolutions, resolve, save};
+use crate::playlist::diagnostics::{
+    CLOSE_AFTER_MS, ChannelView, IncidentRow, Kind, PROBE_EVERY_MS, Probe, Resolved, SLOW_MS, UNWATCHED_MS,
+    VERIFY_PROBES, VERIFY_QUIET_MS, VERIFY_VIEWING_MS, Verdict, VerificationView,
+};
 use crate::playlist::hls::{is_hls_url, is_master_playlist, parse_media_playlist, rewrite_hls_manifest};
 
 /// Incidents a channel's history lists (the count covers them all).
@@ -31,13 +35,18 @@ const HISTORY_MAX: usize = 50;
 /// The longest the check waits to see a live playlist move.
 const ADVANCE_WAIT_MAX: Duration = Duration::from_secs(10);
 
+/// How far back the "Решены" list goes, and how long it is at most.
+const RESOLVED_DAYS: i64 = 7;
+const RESOLVED_MAX: i64 = 50;
+
+/// Checks the background job runs at the provider at once.
+const PROBES_AT_ONCE: usize = 4;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/diagnostics", get(overview))
         .route("/diagnostics/channels/{id}", get(channel))
         .route("/diagnostics/channels/{id}/check", post(check))
-        .route("/diagnostics/channels/{id}/resolve", post(resolve))
-        .route("/diagnostics/channels/{id}/restore", post(restore_channel))
 }
 
 /// Write the incidents the tracker collected since the last call. A failed
@@ -60,6 +69,106 @@ pub async fn prune_incidents(st: &AppState) {
         Ok(0) => {}
         Ok(n) => tracing::info!(target: "diagnostics", rows = n, "pruned cleared channel incidents"),
         Err(e) => tracing::error!(target: "diagnostics", error = %format!("{e:#}"), "pruning channel incidents failed"),
+    }
+}
+
+/// Whether the server can check a channel at the provider.
+fn checkable(st: &AppState, channel_id: &str) -> bool {
+    st.catalog
+        .channel(channel_id)
+        .is_some_and(|c| !c.builtin && is_hls_url(&c.url))
+}
+
+/// The register's way out, run every minute: check at the provider the
+/// channels quiet long enough, then take out every channel shown to work
+/// (and those deleted from the catalog). A failed write is tried again the
+/// next minute.
+pub async fn verify_register(st: &AppState) {
+    let stored = match load_open(st.store.pool(), None).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(target: "diagnostics", error = %format!("{e:#}"), "loading the problem register failed");
+            return;
+        }
+    };
+    let mut kinds: BTreeMap<String, BTreeSet<Kind>> = BTreeMap::new();
+    let due = {
+        let mut d = st.gateway.diagnostics();
+        for r in stored.into_iter().chain(d.unsaved()) {
+            kinds.entry(r.channel_id).or_default().insert(r.kind);
+        }
+        let ids: BTreeSet<String> = kinds.keys().cloned().collect();
+        d.track(&ids, now_ms());
+        d.probe_due(now_ms())
+    };
+
+    let jobs: Vec<(String, String, bool)> = due
+        .into_iter()
+        .filter_map(|id| {
+            let ch = st.catalog.channel(&id).filter(|c| !c.builtin && is_hls_url(&c.url))?;
+            let strict = kinds.get(&id).is_some_and(|k| k.contains(&Kind::Slow));
+            Some((id, ch.url, strict))
+        })
+        .collect();
+    let done: Vec<(String, i64, Probe)> = futures_util::stream::iter(jobs)
+        .map(|(id, url, strict)| async move {
+            let started = now_ms();
+            let checked = probe(st, &url).await;
+            (id, started, checked.as_probe(strict))
+        })
+        .buffer_unordered(PROBES_AT_ONCE)
+        .collect()
+        .await;
+    for (id, started, probe) in done {
+        if !probe.passed {
+            tracing::info!(target: "diagnostics", channel_id = %id, verdict = %probe.verdict, error = probe.error.as_deref().unwrap_or(""),
+                "register channel failed its check");
+        }
+        st.gateway.diagnostics().probed(&id, started, probe);
+    }
+
+    let now = now_ms();
+    let mut verdicts: Vec<Verdict> = kinds
+        .keys()
+        .filter(|id| st.catalog.channel(id).is_none())
+        .map(|id| Verdict {
+            channel_id: id.clone(),
+            how: Resolved::Removed,
+            probes: 0,
+            viewing_ms: 0,
+            viewers: 0,
+        })
+        .collect();
+    let ready = st.gateway.diagnostics().ready(now, |id| checkable(st, id));
+    verdicts.extend(
+        ready
+            .into_iter()
+            .filter(|v| st.catalog.channel(&v.channel_id).is_some()),
+    );
+    for v in verdicts {
+        resolve_channel(st, &v, now).await;
+    }
+}
+
+/// Take one channel out of the register: stored first, then the tracker.
+async fn resolve_channel(st: &AppState, v: &Verdict, at: i64) {
+    let unsaved: Vec<IncidentRow> = st
+        .gateway
+        .diagnostics()
+        .unsaved()
+        .into_iter()
+        .filter(|r| r.channel_id == v.channel_id && r.started <= at)
+        .collect();
+    match resolve(st.store.pool(), v, at, &unsaved).await {
+        Ok(res) => {
+            st.gateway.diagnostics().resolved(&v.channel_id, at);
+            tracing::info!(target: "diagnostics", channel_id = %v.channel_id, how = v.how.as_str(), probes = v.probes,
+                viewing_s = v.viewing_ms / 1000, viewers = v.viewers, incidents = res.map_or(0, |r| r.incidents),
+                "channel left the problem register");
+        }
+        Err(e) => {
+            tracing::error!(target: "diagnostics", channel_id = %v.channel_id, error = %format!("{e:#}"), "resolving channel failed; will retry");
+        }
     }
 }
 
@@ -154,6 +263,61 @@ fn channel_json(st: &AppState, v: &ChannelView, names: &HashMap<i64, String>) ->
     })
 }
 
+/// What a channel needs to leave the register (the same for every channel).
+fn requirements() -> Value {
+    json!({
+        "quiet_ms": VERIFY_QUIET_MS,
+        "probes": VERIFY_PROBES,
+        "probe_every_ms": PROBE_EVERY_MS,
+        "viewing_ms": VERIFY_VIEWING_MS,
+        "unwatched_ms": UNWATCHED_MS,
+    })
+}
+
+/// A register channel's way out so far; a channel the job has not picked up
+/// yet is just starting.
+fn verification_json(v: Option<VerificationView>, checkable: bool, now: i64) -> Value {
+    let v = v.unwrap_or(VerificationView {
+        since: now,
+        probes_ok: 0,
+        viewing_ms: 0,
+        viewers: 0,
+        last_probe: None,
+    });
+    json!({
+        "since": iso_ms(v.since),
+        "checkable": checkable,
+        "probes_ok": v.probes_ok,
+        "viewing_ms": v.viewing_ms,
+        "viewers": v.viewers,
+        "last_probe": v.last_probe.map(|p| json!({
+            "at": iso_ms(p.at),
+            "passed": p.passed,
+            "verdict": p.verdict,
+            "error": p.error,
+        })),
+    })
+}
+
+fn resolution_json(st: &AppState, r: &ResolutionRow) -> Value {
+    let (name, group) = naming(st, &r.channel_id, &r.channel_name);
+    json!({
+        "channel_id": r.channel_id,
+        "name": name,
+        "group": group,
+        "kinds": r.kinds,
+        "count": r.incidents,
+        "clients": r.users.len(),
+        "first": iso_ms(r.first),
+        "last": iso_ms(r.last),
+        "resolved": iso_ms(r.resolved),
+        "how": r.how,
+        "probes": r.probes,
+        "viewing_ms": r.viewing_ms,
+        "viewers": r.viewers,
+    })
+}
+
 /// One channel's line in the register.
 #[derive(Debug, Serialize)]
 struct Problem {
@@ -166,6 +330,7 @@ struct Problem {
     first: String,
     last: String,
     ongoing: bool,
+    verification: Value,
     #[serde(skip)]
     last_ms: i64,
 }
@@ -188,8 +353,12 @@ fn problems(st: &AppState, rows: Vec<IncidentRow>, now: i64) -> Vec<Problem> {
             let clients: BTreeSet<i64> = rows.iter().flat_map(|r| r.users.iter().copied()).collect();
             let first = rows.iter().map(|r| r.started).min().unwrap_or(now);
             let last = rows.iter().map(|r| r.ended).max().unwrap_or(now);
+            let verification = verification_json(
+                st.gateway.diagnostics().verification(&channel_id),
+                checkable(st, &channel_id),
+                now,
+            );
             Problem {
-                channel_id,
                 name,
                 group,
                 kinds: kinds.into_iter().collect(),
@@ -197,8 +366,10 @@ fn problems(st: &AppState, rows: Vec<IncidentRow>, now: i64) -> Vec<Problem> {
                 clients: clients.len(),
                 first: iso_ms(first),
                 last: iso_ms(last),
-                ongoing: rows.iter().any(|r| now - r.ended <= r.kind.close_after_ms()),
+                ongoing: rows.iter().any(|r| now - r.ended <= CLOSE_AFTER_MS),
+                verification,
                 last_ms: last,
+                channel_id,
             }
         })
         .collect();
@@ -212,11 +383,14 @@ async fn overview(State(st): State<AppState>) -> ApiResult {
     let names = usernames(&st);
     let channels: Vec<Value> = live.iter().map(|v| channel_json(&st, v, &names)).collect();
     let register = register(&st, None).await?;
+    let resolved = resolutions(st.store.pool(), now - RESOLVED_DAYS * 86_400_000, None, RESOLVED_MAX).await?;
     ok(json!({
         "gateway_enabled": st.config.gateway_enabled(),
         "slow_ms": SLOW_MS,
+        "verify": requirements(),
         "channels": channels,
         "problems": problems(&st, register, now),
+        "resolved": resolved.iter().map(|r| resolution_json(&st, r)).collect::<Vec<_>>(),
     }))
 }
 
@@ -224,7 +398,8 @@ async fn channel(State(st): State<AppState>, Path(id): Path<String>) -> ApiResul
     let now = now_ms();
     let view = st.gateway.diagnostics().channel(&id, now);
     let mut history = register(&st, Some(&id)).await?;
-    if view.is_none() && history.is_empty() && st.catalog.channel(&id).is_none() {
+    let last_resolved = resolutions(st.store.pool(), 0, Some(&id), 1).await?;
+    if view.is_none() && history.is_empty() && last_resolved.is_empty() && st.catalog.channel(&id).is_none() {
         return Err(ApiError::not_found());
     }
     history.sort_by_key(|r| std::cmp::Reverse(r.started));
@@ -234,6 +409,7 @@ async fn channel(State(st): State<AppState>, Path(id): Path<String>) -> ApiResul
         .as_ref()
         .map(|v| v.name.clone())
         .or_else(|| history.first().map(|r| r.channel_name.clone()))
+        .or_else(|| last_resolved.first().map(|r| r.channel_name.clone()))
         .unwrap_or_default();
     let (name, group) = naming(&st, &id, &seen);
     let names = usernames(&st);
@@ -249,51 +425,29 @@ async fn channel(State(st): State<AppState>, Path(id): Path<String>) -> ApiResul
                 "clients": r.users.len(),
                 "started": iso_ms(r.started),
                 "ended": iso_ms(r.ended),
-                "ongoing": now - r.ended <= r.kind.close_after_ms(),
+                "ongoing": now - r.ended <= CLOSE_AFTER_MS,
             })
         })
         .collect();
+    let checkable = checkable(&st, &id);
+    let verification =
+        (!history.is_empty()).then(|| verification_json(st.gateway.diagnostics().verification(&id), checkable, now));
     ok(json!({
         "channel_id": id,
         "name": name,
         "group": group,
-        "checkable": st.catalog.channel(&id).is_some_and(|c| !c.builtin && is_hls_url(&c.url)),
+        "checkable": checkable,
         "slow_ms": SLOW_MS,
+        "verify": requirements(),
         "live": view.map(|v| channel_json(&st, &v, &names)),
         "history": incidents,
         "count": history.len(),
         "clients": clients.len(),
         "since": since.map(iso_ms),
+        "ongoing": history.iter().any(|r| now - r.ended <= CLOSE_AFTER_MS),
+        "verification": verification,
+        "last_resolved": last_resolved.first().map(|r| resolution_json(&st, r)),
     }))
-}
-
-async fn resolve(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
-    let at = now_ms();
-    // What the tracker has not written yet goes in first, so the stamp covers it.
-    let unsaved: Vec<IncidentRow> = st
-        .gateway
-        .diagnostics()
-        .unsaved()
-        .into_iter()
-        .filter(|r| r.channel_id == id)
-        .collect();
-    save(st.store.pool(), &unsaved).await?;
-    let cleared = clear(st.store.pool(), &id, at).await?;
-    st.gateway.diagnostics().clear_channel(&id, at);
-    tracing::info!(target: "diagnostics", channel_id = %id, incidents = cleared, "channel marked fixed");
-    ok(json!({ "cleared_at": at, "cleared": cleared }))
-}
-
-async fn restore_channel(State(st): State<AppState>, Path(id): Path<String>, b: Option<Json<Value>>) -> ApiResult {
-    let b = body(b);
-    let Some(at) = num_of(b.get("cleared_at")).filter(|n| *n > 0.0).map(|n| n as i64) else {
-        return Err(ApiError::bad("cleared_at required"));
-    };
-    let restored = restore(st.store.pool(), &id, at).await?;
-    if restored > 0 {
-        st.gateway.diagnostics().restore_channel(&id);
-    }
-    ok(json!({ "restored": restored }))
 }
 
 /// One step of a check.
@@ -310,20 +464,58 @@ fn elapsed_ms(started: std::time::Instant) -> i64 {
     i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX)
 }
 
+/// What a check found.
+#[derive(Debug, Serialize)]
+struct Checked {
+    /// `ok`, `slow`, `frozen`, `error`, `empty`.
+    verdict: &'static str,
+    steps: Vec<Step>,
+    target_ms: i64,
+    segments: usize,
+}
+
+impl Checked {
+    /// As a check towards a register channel's way out. A slow answer passes
+    /// unless slowness is what the channel had (`strict`).
+    fn as_probe(&self, strict: bool) -> Probe {
+        Probe {
+            at: now_ms(),
+            passed: self.verdict == "ok" || (self.verdict == "slow" && !strict),
+            verdict: self.verdict.to_owned(),
+            error: self.steps.iter().find_map(|s| s.error.clone()),
+        }
+    }
+}
+
 /// Check a channel at the provider now: its playlist, the quality a player
 /// would pick first, the newest segment, and whether the playlist moves.
+/// It counts towards the channel's way out of the register, like the
+/// background job's checks.
 async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
     let ch = st.catalog.channel(&id).ok_or_else(ApiError::not_found)?;
     if ch.builtin || !is_hls_url(&ch.url) {
         return Err(ApiError::bad("only HLS provider channels can be checked"));
     }
+    let strict = register(&st, Some(&id)).await?.iter().any(|r| r.kind == Kind::Slow);
+    let started = now_ms();
+    let checked = probe(&st, &ch.url).await;
+    st.gateway.diagnostics().probed(&id, started, checked.as_probe(strict));
+    ok(json!(checked))
+}
+
+/// Check one HLS channel URL at the provider.
+async fn probe(st: &AppState, url: &str) -> Checked {
     let timeout = Duration::from_millis(st.config.gateway.manifest_timeout_ms);
     let max = st.config.gateway.manifest_max_bytes;
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static("VLC/3.0.20 LibVLC/3.0.20"));
     let mut steps: Vec<Step> = Vec::new();
-    let verdict = |steps: &[Step], verdict: &str, target_ms: i64, segments: usize| json!({ "verdict": verdict, "steps": steps, "target_ms": target_ms, "segments": segments });
-
+    let verdict = |steps: Vec<Step>, verdict: &'static str, target_ms: i64, segments: usize| Checked {
+        verdict,
+        steps,
+        target_ms,
+        segments,
+    };
     let fetch = |url: String| {
         let headers = headers.clone();
         let http = st.http.clone();
@@ -334,7 +526,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
         }
     };
 
-    let (entry, ms) = fetch(ch.url.clone()).await;
+    let (entry, ms) = fetch(url.to_owned()).await;
     let entry = match entry {
         Ok(f) => {
             steps.push(Step {
@@ -352,10 +544,10 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
                 ms,
                 error: Some(e.code()),
             });
-            return ok(verdict(&steps, "error", 0, 0));
+            return verdict(steps, "error", 0, 0);
         }
     };
-    let mut media_url = ch.url.clone();
+    let mut media_url = url.to_owned();
     let mut media = entry;
     let entry_text = media.text();
     if is_master_playlist(&entry_text) {
@@ -367,7 +559,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
                 ms: 0,
                 error: Some("empty".into()),
             });
-            return ok(verdict(&steps, "empty", 0, 0));
+            return verdict(steps, "empty", 0, 0);
         };
         let (res, ms) = fetch(variant.clone()).await;
         match res {
@@ -388,7 +580,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
                     ms,
                     error: Some(e.code()),
                 });
-                return ok(verdict(&steps, "error", 0, 0));
+                return verdict(steps, "error", 0, 0);
             }
         }
     }
@@ -396,7 +588,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
     let playlist = parse_media_playlist(&rewrite_hls_manifest(&text, &media.final_url, None));
     let target_ms = (playlist.target_duration * 1000.0) as i64;
     let Some(last) = playlist.segments.last() else {
-        return ok(verdict(&steps, "empty", target_ms, 0));
+        return verdict(steps, "empty", target_ms, 0);
     };
 
     let started = std::time::Instant::now();
@@ -424,7 +616,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
         error: segment.err(),
     });
     if steps.iter().any(|s| !s.ok) {
-        return ok(verdict(&steps, "error", target_ms, playlist.segments.len()));
+        return verdict(steps, "error", target_ms, playlist.segments.len());
     }
 
     let mut outcome = if steps.iter().any(|s| s.ms > SLOW_MS) {
@@ -463,7 +655,7 @@ async fn check(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult 
             }
         }
     }
-    ok(verdict(&steps, outcome, target_ms, playlist.segments.len()))
+    verdict(steps, outcome, target_ms, playlist.segments.len())
 }
 
 /// The first quality of a master playlist with absolute URIs.

@@ -284,6 +284,20 @@ fn start_watch_history(st: &AppState) {
     });
 }
 
+/// Check the problem register's channels at the provider and take out those
+/// shown to work, every minute. Its own task: checks take seconds each.
+fn start_register_verifier(st: &AppState) {
+    let st = st.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            http::diagnostics::verify_register(&st).await;
+        }
+    });
+}
+
 async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
     let st = build_state(Arc::clone(&config), pool).await?;
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -322,6 +336,7 @@ async fn serve(config: Arc<Config>, pool: sqlx::PgPool) -> anyhow::Result<()> {
     });
 
     start_watch_history(&st);
+    start_register_verifier(&st);
     let history = st.clone();
     let activity = Arc::clone(st.channels.activity());
     axum::serve(listener, app(st).into_make_service_with_connect_info::<SocketAddr>())
